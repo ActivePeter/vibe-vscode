@@ -1374,7 +1374,7 @@ export class CopilotAgentSession extends Disposable {
 		}
 		turn.toolCallDetailsReported = true;
 		void this._telemetryReporter.toolCallDetails({
-			provider: 'copilot',
+			provider: this.resourceUri.scheme,
 			session: this.resourceUri.toString(),
 			turnId: turn.id,
 			clientType: turn.clientType,
@@ -1399,7 +1399,7 @@ export class CopilotAgentSession extends Disposable {
 		}
 		const confirmKind = mapPermissionResultToConfirmKind(record?.resultKind, record?.resolvedByHook === true);
 		this._telemetryReporter.toolApproval({
-			provider: 'copilot',
+			provider: this.resourceUri.scheme,
 			session: this.resourceUri.toString(),
 			turnId: this._turnId,
 			toolId: toolName,

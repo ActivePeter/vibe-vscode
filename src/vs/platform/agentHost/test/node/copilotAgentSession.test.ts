@@ -5783,10 +5783,12 @@ suite('CopilotAgentSession', () => {
 		test('tool-call aggregate emits once with cancelled result across abort and idle', async () => {
 			const telemetryService = new CapturingTelemetryService();
 			const sessionUri = AgentSession.uri('copilotcli', 'test-session-1');
+			const peerChatUri = URI.parse(buildChatUri(sessionUri, 'peer-1'));
 			const { session, mockSession } = await createAgentSession(disposables, {
 				telemetryService,
 				sessionUri,
-				chatChannelUri: URI.parse(buildDefaultChatUri(sessionUri)),
+				chatChannelUri: peerChatUri,
+				resource: peerChatUri,
 				clientSnapshot: { tools: [{ name: 'grep' }, { name: 'edit' }], plugins: [], mcpServers: {} },
 			});
 			session.resetTurnState('turn-tool-details');
@@ -5846,10 +5848,12 @@ suite('CopilotAgentSession', () => {
 		test('tool approval waits for permission outcome and falls back only at completion', async () => {
 			const telemetryService = new CapturingTelemetryService();
 			const sessionUri = AgentSession.uri('copilotcli', 'test-session-1');
+			const peerChatUri = URI.parse(buildChatUri(sessionUri, 'peer-1'));
 			const { session, mockSession } = await createAgentSession(disposables, {
 				telemetryService,
 				sessionUri,
-				chatChannelUri: URI.parse(buildDefaultChatUri(sessionUri)),
+				chatChannelUri: peerChatUri,
+				resource: peerChatUri,
 			});
 			session.resetTurnState('turn-approval');
 

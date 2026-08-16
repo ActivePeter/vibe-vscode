@@ -13,6 +13,7 @@ import { NullLogService } from '../../../log/common/log.js';
 import { AgentHostStateManager } from '../../node/agentHostStateManager.js';
 import { AgentHostSessionTitleController } from '../../node/agentHostSessionTitleController.js';
 import { ActionType } from '../../common/state/sessionActions.js';
+import { ChatOriginKind } from '../../common/state/protocol/state.js';
 import { buildChatUri, buildDefaultChatUri, MessageKind, ResponsePartKind, SessionStatus, ToolCallConfirmationReason, ToolCallStatus, TurnState, type ResponsePart, type SessionSummary, type ToolCallCompletedState, type Turn } from '../../common/state/sessionState.js';
 import { type AutoMergeMethod, type CreatedPullRequest, type GitHubIssueOrPullRequest, type IAgentHostOctoKitService } from '../../node/shared/agentHostOctoKitService.js';
 import { type ICopilotApiService, type ICopilotApiServiceRequestOptions, type ICopilotUtilityChatCompletionRequest } from '../../node/shared/copilotApiService.js';
@@ -266,6 +267,27 @@ suite('AgentHostSessionTitleController', () => {
 		}, {
 			independentRenameInstruction: undefined,
 			independentAutoInstruction: 'This chat currently has an auto-generated or placeholder name. Before doing any other work or responding to the user, you MUST call the `rename_chat` tool exactly once to give it a short, descriptive title based on the user\'s intent. If the prompt references a pull request or issue link, resolve that link first and use its context when choosing the title. Do not skip this call even if the current name already seems descriptive.',
+		});
+	});
+
+	test('active-agent mode keeps the fallback title without a rename reminder for side chats', async () => {
+		const { controller, stateManager, session } = setup(undefined, 'Session title', undefined, undefined, undefined, undefined, undefined, true);
+		const chat = buildChatUri(session.toString(), 'side-chat');
+		stateManager.addChat(session.toString(), chat, {
+			origin: {
+				kind: ChatOriginKind.SideChat,
+				chat: buildDefaultChatUri(session),
+				turnId: 'turn-1',
+			},
+		});
+		controller.seedTitleFromFirstMessage(session.toString(), 'salut', chat);
+
+		assert.deepStrictEqual({
+			title: stateManager.getChatState(chat)?.title,
+			instruction: await controller.prepareInstructionForAgent(session.toString(), chat),
+		}, {
+			title: 'salut',
+			instruction: undefined,
 		});
 	});
 

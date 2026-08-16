@@ -21,6 +21,7 @@ import { ISessionsPartService } from '../../../services/sessions/browser/session
 import { ChatOriginKind, IChat, ISession, SessionStatus } from '../../../services/sessions/common/session.js';
 import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
 import { createAndSendSideChat } from './sideChatOrchestration.js';
+import { ITransientSideChatService } from './transientSideChatService.js';
 
 const SIDE_CHAT_SOURCE_REVEAL_TIMEOUT = 2_000;
 
@@ -43,6 +44,7 @@ export class SessionsSideChatProviderContribution extends Disposable implements 
 		@ISessionsManagementService private readonly sessionsManagementService: ISessionsManagementService,
 		@ISessionsService private readonly sessionsService: ISessionsService,
 		@ISessionsPartService private readonly sessionsPartService: ISessionsPartService,
+		@ITransientSideChatService private readonly transientSideChatService: ITransientSideChatService,
 		@IChatService private readonly chatService: IChatService,
 		@IChatWidgetService private readonly chatWidgetService: IChatWidgetService,
 		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
@@ -67,8 +69,18 @@ export class SessionsSideChatProviderContribution extends Disposable implements 
 		if (!source) {
 			throw new Error(`Side chats are not supported for ${sessionResource.toString()}`);
 		}
-		const { session, chatResource, turnId } = source;
-		await createAndSendSideChat(this.sessionsManagementService, this.sessionsService, this.sessionsPartService, session, chatResource, turnId, { query }, selection);
+		const { session, chat, turnId } = source;
+		await createAndSendSideChat(
+			this.sessionsManagementService,
+			this.sessionsService,
+			this.sessionsPartService,
+			this.transientSideChatService,
+			session,
+			chat,
+			turnId,
+			{ query },
+			selection,
+		);
 	}
 
 	/** Observes the source metadata for a side chat. */
@@ -178,7 +190,7 @@ export class SessionsSideChatProviderContribution extends Disposable implements 
 		if (!sourceTurn) {
 			return undefined;
 		}
-		return { session, chatResource: chat.resource, turnId: sourceTurn.id };
+		return { session, chat, turnId: sourceTurn.id };
 	}
 }
 

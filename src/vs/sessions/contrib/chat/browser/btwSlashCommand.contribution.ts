@@ -21,7 +21,8 @@ import { ISessionsPartService } from '../../../services/sessions/browser/session
 import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
 import { SessionIsArchivedContext, SessionIsCreatedContext, SessionSupportsSideChatContext } from '../../../common/contextkeys.js';
 import { SessionStatus } from '../../../services/sessions/common/session.js';
-import { openAndSendSideChat } from './sideChatOrchestration.js';
+import { presentAndSendSideChat } from './sideChatOrchestration.js';
+import { ITransientSideChatService } from './transientSideChatService.js';
 
 
 export class BtwSlashCommandContribution extends Disposable implements IWorkbenchContribution {
@@ -35,6 +36,7 @@ export class BtwSlashCommandContribution extends Disposable implements IWorkbenc
 		@ISessionsPartService sessionsPartService: ISessionsPartService,
 		@IChatService chatService: IChatService,
 		@IChatWidgetService chatWidgetService: IChatWidgetService,
+		@ITransientSideChatService transientSideChatService: ITransientSideChatService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 		@ILogService logService: ILogService,
 		@INotificationService notificationService: INotificationService,
@@ -93,7 +95,21 @@ export class BtwSlashCommandContribution extends Disposable implements IWorkbenc
 				return;
 			}
 
-			await openAndSendSideChat(sessionsManagementService, sessionsService, sessionsPartService, session, sideChat, { query: remainder, attachedContext: options?.attachedContext });
+			try {
+				await presentAndSendSideChat(
+					sessionsManagementService,
+					sessionsService,
+					sessionsPartService,
+					transientSideChatService,
+					session,
+					chat,
+					sideChat,
+					{ query: remainder, attachedContext: options?.attachedContext },
+				);
+			} catch (err) {
+				logService.error('[btw] Failed to send side chat request', err);
+				notificationService.error(localize('btw.sendFailed', "The side question could not be answered."));
+			}
 		}));
 	}
 }

@@ -953,7 +953,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 			this.createInput(this.container, { renderFollowups, renderStyle, renderInputToolbarBelowInput });
 		}
 
-		if (this.location === ChatAgentLocation.Chat && !isInlineChat(this) && !this.scopedContextKeyService.contextMatchesRules(ChatContextKeys.inChatInputWindow)) {
+		if (this.viewOptions.enableChatPet !== false && this.location === ChatAgentLocation.Chat && !isInlineChat(this) && !this.scopedContextKeyService.contextMatchesRules(ChatContextKeys.inChatInputWindow)) {
 			const inputContainer = this.inputPart.inputContainerElement;
 			const petHost = this.inputPart.element;
 			const inputHasContent = observableFromEvent(this, this.inputEditor.onDidChangeModelContent, () => this.inputEditor.getValue().length > 0);
@@ -1931,6 +1931,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 				location: this.location,
 				getSelectedModelRequestOptions: () => this.getSelectedModelRequestOptions(),
 				getCurrentModeInfo: () => this.input.currentModeInfo,
+				renderScrollToBottomButton: this.viewOptions.renderScrollToBottomButton,
 			}
 		));
 

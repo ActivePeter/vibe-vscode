@@ -47,6 +47,7 @@ import { Menus } from '../../../browser/menus.js';
 import { ISessionsChatViewStateService, SessionsChatViewStateService } from './chatViewStateService.js';
 import { SessionsChatResponseFileChangesService } from './sessionTurnChanges.js';
 import { IChatResponseFileChangesService } from '../../../../workbench/contrib/chat/browser/chatResponseFileChangesService.js';
+import { AGENT_SESSIONS_TRANSIENT_SIDE_CHAT_SETTING, ITransientSideChatService, TransientSideChatService } from './transientSideChatService.js';
 
 
 class NewChatInSessionsWindowAction extends Action2 {
@@ -130,6 +131,7 @@ registerSingleton(ICustomizationHarnessService, SessionsCustomizationHarnessServ
 registerSingleton(IChatViewFactory, ChatViewFactory, InstantiationType.Delayed);
 registerSingleton(ISessionsChatViewStateService, SessionsChatViewStateService, InstantiationType.Delayed);
 registerSingleton(IChatResponseFileChangesService, SessionsChatResponseFileChangesService, InstantiationType.Delayed);
+registerSingleton(ITransientSideChatService, TransientSideChatService, InstantiationType.Delayed);
 
 // register accessibility help
 AccessibleViewRegistry.register(new SessionsChatAccessibilityHelp());
@@ -148,6 +150,14 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
 			description: localize('chat.agentSessions.scopedInputHistory', "Controls whether chat input history in the Agents Window is scoped to the current session. Disable this to use shared input history across sessions."),
+		},
+		[AGENT_SESSIONS_TRANSIENT_SIDE_CHAT_SETTING]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			tags: ['experimental', 'advanced'],
+			description: localize('chat.agentSessions.transientSideChat', "Controls whether new side questions appear in a transient answer card above the source chat input. When disabled, side questions open as full chats beside the source chat."),
+			experiment: { mode: 'auto' },
 		},
 	},
 });

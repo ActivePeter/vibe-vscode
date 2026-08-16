@@ -335,6 +335,26 @@ User-created peer chats participate in normal chat navigation. Hidden
 tool-origin chats remain provider-neutral domain objects but are excluded from
 ordinary presentation by their interactivity/origin contracts.
 
+### Transient side questions
+
+`/btw` and the response-selection side-question affordance create normal
+provider-backed side chats. The experiment-driven
+`chat.agentSessions.transientSideChat` setting defaults to false.
+When it is enabled and the source `ChatView` has a live transient host, the new
+chat is closed with `skipHistory` and represented by an in-memory answer card
+above the unchanged source composer. Its send uses `preserveActiveChat`, so
+normal send lifecycle notifications and failures still propagate without
+navigating away from the source chat. When the setting is disabled or no
+transient host is available, the side chat opens in a group beside the source
+before sending.
+
+Closing the card removes only its transient presentation; the side chat remains
+recoverable from Closed chats. **Open Full Chat** reopens the same chat in the
+normal chat UI. A replacement is scoped to the source chat, and asynchronous
+promotion or failure handling must not remove a newer card. The card grows to
+its content up to 60% of the source view height, then scrolls internally without
+the full-chat go-to-bottom control.
+
 ## State propagation
 
 Use the narrowest mechanism that represents the change:

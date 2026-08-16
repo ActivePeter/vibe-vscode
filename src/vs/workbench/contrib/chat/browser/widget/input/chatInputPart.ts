@@ -182,6 +182,42 @@ const CachedLanguageModelsKey = 'chat.cachedLanguageModels.v2';
 const CHAT_INPUT_PICKER_COLLAPSE_WIDTH = 280;
 const PERMISSION_LEVEL_OPTION_ID = 'permissionLevel';
 
+export function observeChatInputHiddenLayoutState(
+	inputPart: HTMLElement,
+	persistentContent: HTMLElement,
+	toolConfirmation: HTMLElement,
+): IDisposable {
+	const store = new DisposableStore();
+	const targetWindow = dom.getWindow(inputPart);
+	const update = () => {
+		const hasVisiblePersistentContent = Array.from(persistentContent.children)
+			.some(child => !child.classList.contains('hidden'));
+		const hasVisibleToolConfirmation = toolConfirmation.getAttribute('aria-hidden') !== 'true';
+		inputPart.classList.toggle('chat-input-has-visible-content', hasVisiblePersistentContent || hasVisibleToolConfirmation);
+	};
+
+	const persistentChildStateObserver = new targetWindow.MutationObserver(update);
+	store.add(toDisposable(() => persistentChildStateObserver.disconnect()));
+	const observePersistentChildren = () => {
+		persistentChildStateObserver.disconnect();
+		for (const child of persistentContent.children) {
+			persistentChildStateObserver.observe(child, { attributes: true, attributeFilter: ['class'] });
+		}
+		update();
+	};
+
+	const persistentChildrenObserver = new targetWindow.MutationObserver(observePersistentChildren);
+	store.add(toDisposable(() => persistentChildrenObserver.disconnect()));
+	persistentChildrenObserver.observe(persistentContent, { childList: true });
+
+	const toolConfirmationObserver = new targetWindow.MutationObserver(update);
+	store.add(toDisposable(() => toolConfirmationObserver.disconnect()));
+	toolConfirmationObserver.observe(toolConfirmation, { attributes: true, attributeFilter: ['aria-hidden'] });
+
+	observePersistentChildren();
+	return store;
+}
+
 export interface IChatInputStyles {
 	overlayBackground: string;
 	listForeground: string;
@@ -3066,6 +3102,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		this.chatPlanReviewContainer = elements.chatPlanReviewContainer;
 		this.chatToolConfirmationCarouselContainer = elements.chatToolConfirmationCarouselContainer;
 		dom.hide(this.chatToolConfirmationCarouselContainer);
+		this._register(observeChatInputHiddenLayoutState(this.container, this.persistentContentContainer, this.chatToolConfirmationCarouselContainer));
 		this._register(this.chatInputNoticeHubService.registerHost(this.noticeHost, this.container));
 		this.chatInputNotificationContainer = elements.chatInputNotificationContainer;
 		this._register(registerChatInputOnboardingHosts(

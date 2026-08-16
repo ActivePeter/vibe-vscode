@@ -45,6 +45,7 @@ import { activeSessionViewBackground, activeSessionViewForeground, agentsPanelBa
 import { setupVoiceInputDecorations } from './voiceInputDecorations.js';
 import { INewChatVoiceTargetService } from './newChatVoice.js';
 import { ISessionsChatViewStateService } from './chatViewStateService.js';
+import { TransientSideChatWidget } from './transientSideChatWidget.js';
 
 export function shouldShowSessionChatTip(sessionStatus: SessionStatus | undefined): boolean {
 	return sessionStatus === undefined || !isActiveSessionStatus(sessionStatus);
@@ -143,6 +144,7 @@ export class ChatView extends AbstractChatView {
 
 	/** Shows an "Ask Question" input when the user selects assistant markdown text. */
 	private readonly _selectionSideChatController: ResponseSelectionSideChatController;
+	private readonly _transientSideChat: TransientSideChatWidget;
 
 	/** Reference to the loaded chat model; disposing releases the model. */
 	private readonly _modelRef = this._register(new MutableDisposable<IChatModelReference>());
@@ -225,6 +227,11 @@ export class ChatView extends AbstractChatView {
 			this._buildStyles(this._isActive)
 		));
 		this._widget.render(this.element);
+		this._transientSideChat = this._register(scopedInstantiationService.createInstance(
+			TransientSideChatWidget,
+			this._widget.inputPart.persistentContentContainerElement,
+			this._widget,
+		));
 		this._register(autorun(reader => {
 			const sessionStatus = this._currentSessionObs.read(reader)?.status.read(reader);
 			if (!shouldShowSessionChatTip(sessionStatus)) {
@@ -349,6 +356,7 @@ export class ChatView extends AbstractChatView {
 		// Reflect this chat's last-turn changes, status, and background activity.
 		this._chatPills.setChat(chat);
 		this._selectionSideChatController.setChat(chat);
+		this._transientSideChat.setSource(chat, session);
 		this._banners.setDebugData(undefined);
 
 		// Reflect read-only (non-interactive) chats: hide the composer and gate
@@ -461,6 +469,7 @@ export class ChatView extends AbstractChatView {
 
 	protected override doLayout(width: number, height: number, _top: number, _left: number): void {
 		this._ensureBannersMounted();
+		this._transientSideChat.layout(height, width);
 		this._widget.layout(height, width);
 	}
 
@@ -470,10 +479,14 @@ export class ChatView extends AbstractChatView {
 	private _ensureBannersMounted(): void {
 		const inputPartElement = this._widget.inputPart.element;
 		const persistentContentContainer = this._widget.inputPart.persistentContentContainerElement;
+		const transientNode = this._transientSideChat.element;
 		const pillsNode = this._chatPills.element;
 		const bannersNode = this._banners.domNode;
-		if (persistentContentContainer.firstChild !== pillsNode) {
-			persistentContentContainer.insertBefore(pillsNode, persistentContentContainer.firstChild);
+		if (persistentContentContainer.firstChild !== transientNode) {
+			persistentContentContainer.insertBefore(transientNode, persistentContentContainer.firstChild);
+		}
+		if (transientNode.nextSibling !== pillsNode) {
+			persistentContentContainer.insertBefore(pillsNode, transientNode.nextSibling);
 		}
 		if (persistentContentContainer.nextSibling !== bannersNode) {
 			inputPartElement.insertBefore(bannersNode, persistentContentContainer.nextSibling);
@@ -530,6 +543,7 @@ export class ChatView extends AbstractChatView {
 		this._isActiveObs.set(active, undefined);
 		this._banners.setActive(active);
 		this._widget.setStyles(this._buildStyles(active));
+		this._transientSideChat.setActive(active);
 	}
 
 	override setVisible(visible: boolean): void {
@@ -538,6 +552,7 @@ export class ChatView extends AbstractChatView {
 		}
 		this._isVisible = visible;
 		this._widget.setVisible(visible);
+		this._transientSideChat.setVisible(visible);
 	}
 }
 

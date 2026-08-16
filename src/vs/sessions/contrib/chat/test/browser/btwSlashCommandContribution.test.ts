@@ -29,11 +29,12 @@ import { ISessionsPartService } from '../../../../services/sessions/browser/sess
 import { ISessionsService } from '../../../../services/sessions/browser/sessionsService.js';
 import { IChat, ISession, SessionStatus } from '../../../../services/sessions/common/session.js';
 import { ISendRequestOptions, ISessionsManagementService } from '../../../../services/sessions/common/sessionsManagement.js';
+import { ITransientSideChatService } from '../../browser/transientSideChatService.js';
 
 suite('BtwSlashCommandContribution', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('opens the created side chat through the sessions service before sending attached context', async () => {
+	test('presents the created side chat transiently before sending attached context', async () => {
 		const store = disposables.add(new DisposableStore());
 		const instantiationService = store.add(new TestInstantiationService());
 		let registered: { data: IChatSlashData; callback: IChatSlashCallback } | undefined;
@@ -111,6 +112,12 @@ suite('BtwSlashCommandContribution', () => {
 		instantiationService.stub(ISessionsPartService, upcastPartial<ISessionsPartService>({
 			getSessionView: () => undefined,
 		}));
+		instantiationService.stub(ITransientSideChatService, upcastPartial<ITransientSideChatService>({
+			show: async (_session, source, target, question) => {
+				callOrder.push(`show:${source.resource.toString()}:${target.resource.toString()}:${question}`);
+				return true;
+			},
+		}));
 		instantiationService.stub(INotificationService, new TestNotificationService());
 		instantiationService.stub(ILogService, new NullLogService());
 
@@ -133,10 +140,16 @@ suite('BtwSlashCommandContribution', () => {
 
 		assert.deepStrictEqual(callOrder, [
 			'create',
-			`open:${sideChat.resource.toString()}`,
+			`show:${sourceChat.resource.toString()}:${sideChat.resource.toString()}:what about this?`,
 			`send:${sideChat.resource.toString()}:what about this?`,
 		]);
 		assert.deepStrictEqual(createArgs, { selection: { text: '  selected text  ' } });
-		assert.deepStrictEqual(sendOptions?.attachedContext, [pastedText]);
+		assert.deepStrictEqual({
+			attachedContext: sendOptions?.attachedContext,
+			preserveActiveChat: sendOptions?.preserveActiveChat,
+		}, {
+			attachedContext: [pastedText],
+			preserveActiveChat: true,
+		});
 	});
 });

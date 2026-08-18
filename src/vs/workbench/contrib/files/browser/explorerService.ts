@@ -43,6 +43,7 @@ export class ExplorerService implements IExplorerService {
 	private view: IExplorerView | undefined;
 	private decorationsProviderRegistered = false;
 	private model: ExplorerModel;
+	private activeRoot: URI | undefined;
 	private onFileChangesScheduler: RunOnceScheduler;
 	private fileChangeEvents: FileChangesEvent[] = [];
 	private revealExcludeMatcher: ResourceGlobMatcher;
@@ -88,7 +89,7 @@ export class ExplorerService implements IExplorerService {
 			events.forEach(e => {
 				if (!shouldRefresh) {
 					for (const resource of e.rawAdded) {
-						const parent = this.model.findClosest(dirname(resource));
+						const parent = this.findClosest(dirname(resource));
 						// Parent of the added resource is resolved and the explorer model is not aware of the added resource - we need to refresh
 						if (parent && !parent.getChild(basename(resource))) {
 							shouldRefresh = true;
@@ -147,7 +148,22 @@ export class ExplorerService implements IExplorerService {
 	}
 
 	get roots(): ExplorerItem[] {
-		return this.model.roots;
+		if (!this.activeRoot) {
+			return this.model.roots;
+		}
+
+		const activeRoot = this.model.roots.find(root => this.uriIdentityService.extUri.isEqual(root.resource, this.activeRoot));
+		return activeRoot ? [activeRoot] : [];
+	}
+
+	async setActiveRoot(resource: URI | undefined): Promise<void> {
+		if ((!this.activeRoot && !resource) || (this.activeRoot && resource && this.uriIdentityService.extUri.isEqual(this.activeRoot, resource))) {
+			return;
+		}
+
+		this.activeRoot = resource;
+		this.roots.forEach(root => root.forgetChildren());
+		await this.view?.setTreeInput();
 	}
 
 	get sortOrderConfiguration(): ISortOrderConfiguration {
@@ -238,11 +254,11 @@ export class ExplorerService implements IExplorerService {
 	// IExplorerService methods
 
 	findClosest(resource: URI): ExplorerItem | null {
-		return this.model.findClosest(resource);
+		return this.findClosestRoot(resource)?.find(resource) ?? null;
 	}
 
 	findClosestRoot(resource: URI): ExplorerItem | null {
-		const parentRoots = this.model.roots.filter(r => this.uriIdentityService.extUri.isEqualOrParent(resource, r.resource))
+		const parentRoots = this.roots.filter(r => this.uriIdentityService.extUri.isEqualOrParent(resource, r.resource))
 			.sort((first, second) => second.resource.path.length - first.resource.path.length);
 		return parentRoots.length ? parentRoots[0] : null;
 	}
@@ -345,7 +361,7 @@ export class ExplorerService implements IExplorerService {
 			return;
 		}
 
-		this.model.roots.forEach(r => r.forgetChildren());
+		this.roots.forEach(r => r.forgetChildren());
 		if (this.view) {
 			await this.view.refresh(true);
 			const resource = this.editorService.activeEditor?.resource;

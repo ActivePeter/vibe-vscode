@@ -24,6 +24,12 @@ export interface IExplorerService {
 	readonly roots: ExplorerItem[];
 	readonly sortOrderConfiguration: ISortOrderConfiguration;
 
+	/**
+	 * Restricts the Explorer to the workspace root matching the resource.
+	 * Passing undefined restores the complete workspace root set.
+	 */
+	setActiveRoot(resource: URI | undefined): Promise<void>;
+
 	getContext(respectMultiSelection: boolean, ignoreNestedChildren?: boolean): ExplorerItem[];
 	hasViewFocus(): boolean;
 	setEditable(stat: ExplorerItem, data: IEditableData | null): Promise<void>;

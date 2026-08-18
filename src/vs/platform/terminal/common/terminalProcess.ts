@@ -41,6 +41,7 @@ export interface IGetTerminalLayoutInfoArgs {
 
 export interface IProcessDetails {
 	id: number;
+	logicalTerminalId?: string;
 	pid: number;
 	title: string;
 	titleSource: TitleEventSource;

@@ -228,6 +228,9 @@ const _allApiProposals = {
 	devDeviceId: {
 		proposal: 'https://raw.githubusercontent.com/microsoft/vscode/main/src/vscode-dts/vscode.proposed.devDeviceId.d.ts',
 	},
+	deverFullscreenPanel: {
+		proposal: 'https://raw.githubusercontent.com/ActivePeter/vibe-vscode/main/src/vscode-dts/vscode.proposed.deverFullscreenPanel.d.ts',
+	},
 	diffCommand: {
 		proposal: 'https://raw.githubusercontent.com/microsoft/vscode/main/src/vscode-dts/vscode.proposed.diffCommand.d.ts',
 	},

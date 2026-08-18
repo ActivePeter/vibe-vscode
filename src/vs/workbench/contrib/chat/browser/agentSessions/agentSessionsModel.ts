@@ -26,6 +26,7 @@ import { IWorkspaceTrustManagementService } from '../../../../../platform/worksp
 import { IChatEntitlementService } from '../../../../services/chat/common/chatEntitlementService.js';
 import { ILifecycleService } from '../../../../services/lifecycle/common/lifecycle.js';
 import { Extensions, IOutputChannelRegistry, IOutputService } from '../../../../services/output/common/output.js';
+import { ILogicalWorkspaceService } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { ChatSessionStatus as AgentSessionStatus, IChatSessionFileChange, IChatSessionFileChange2, IChatSessionItem, IChatSessionsService, isSessionInProgressStatus, ResolvedChatSessionsExtensionPoint } from '../../common/chatSessionsService.js';
 import { getChatSessionType } from '../../common/model/chatUri.js';
 import { IChatWidgetService } from '../chat.js';
@@ -514,7 +515,11 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 	get resolved(): boolean { return this._resolved; }
 
 	private _sessions: ResourceMap<IInternalAgentSession>;
-	get sessions(): IAgentSession[] { return this._dedupeMigratedCopilotCliSessions(Array.from(this._sessions.values())); }
+	get sessions(): IAgentSession[] {
+		const workspaceId = this.logicalWorkspaceService.activeWorkspace.id;
+		return this._dedupeMigratedCopilotCliSessions(Array.from(this._sessions.values()))
+			.filter(session => this.logicalWorkspaceService.workspaceContainsChatSession(workspaceId, session.resource));
+	}
 
 	private readonly resolvers = this._register(new DisposableMap<string, ThrottledDelayer<void>>());
 
@@ -531,16 +536,21 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
 		@IChatEntitlementService private readonly chatEntitlementService: IChatEntitlementService,
+		@ILogicalWorkspaceService private readonly logicalWorkspaceService: ILogicalWorkspaceService,
 	) {
 		super();
 
 		this._sessions = new ResourceMap<IInternalAgentSession>();
 
 		this.cache = this.instantiationService.createInstance(AgentSessionsCache);
+		const initialWorkspaceId = this.logicalWorkspaceService.activeWorkspace.id;
+		const cachedSessionResources: URI[] = [];
 		for (const data of this.cache.loadCachedSessions()) {
 			const session = this.toAgentSession(data);
+			cachedSessionResources.push(session.resource);
 			this._sessions.set(session.resource, session);
 		}
+		this.logicalWorkspaceService.bindChatSessions(initialWorkspaceId, cachedSessionResources);
 		this.sessionStates = this.cache.loadSessionStates();
 
 		this.logger = this._register(this.instantiationService.createInstance(
@@ -580,6 +590,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		}));
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => this.resolve(undefined)));
 		this._register(this.workspaceTrustManagementService.onDidChangeTrust(() => this.resolve(undefined)));
+		this._register(this.logicalWorkspaceService.onDidChangeActiveWorkspace(() => this._onDidChangeSessions.fire()));
 
 		// State
 		this._register(this.storageService.onWillSaveState(() => {
@@ -691,6 +702,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 	}
 
 	private async doResolveProvider(provider: string, options: { refreshProvider: boolean }, token: CancellationToken): Promise<void> {
+		const targetWorkspaceId = this.logicalWorkspaceService.activeWorkspace.id;
 		if (options.refreshProvider) {
 			await this.chatSessionsService.refreshChatSessionItems([provider], token);
 
@@ -723,6 +735,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 				return;
 			}
 
+			this.logicalWorkspaceService.bindChatSessions(targetWorkspaceId, providerSessions.map(session => session.resource));
 			for (const session of providerSessions) {
 				let icon: ThemeIcon;
 				let providerLabel: string;

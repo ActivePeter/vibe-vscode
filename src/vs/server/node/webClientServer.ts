@@ -113,6 +113,7 @@ const APP_ROOT = dirname(FileAccess.asFileUri('').fsPath);
 const STATIC_PATH = `/static`;
 const CALLBACK_PATH = `/callback`;
 const WEB_EXTENSION_PATH = `/web-extension-resource`;
+const DEVER_BUILTIN_WEB_EXTENSION_PATH = 'dever-project-switcher';
 
 export class WebClientServer {
 
@@ -412,9 +413,14 @@ export class WebClientServer {
 			values['WORKBENCH_DEV_CSS_MODULES'] = JSON.stringify(cssModules);
 		}
 
-		if (useTestResolver) {
-			const bundledExtensions: { extensionPath: string; packageJSON: IExtensionManifest }[] = [];
-			for (const extensionPath of ['vscode-test-resolver', 'github-authentication']) {
+		if (!this._environmentService.isBuilt) {
+			const deverPackageNLS = JSON.parse((await promises.readFile(FileAccess.asFileUri(`${builtinExtensionsPath}/${DEVER_BUILTIN_WEB_EXTENSION_PATH}/package.nls.json`).fsPath)).toString());
+			const bundledExtensions: { extensionPath: string; packageJSON: IExtensionManifest; packageNLS?: Record<string, string> }[] = [{
+				extensionPath: DEVER_BUILTIN_WEB_EXTENSION_PATH,
+				packageJSON: JSON.parse((await promises.readFile(FileAccess.asFileUri(`${builtinExtensionsPath}/${DEVER_BUILTIN_WEB_EXTENSION_PATH}/package.json`).fsPath)).toString()),
+				packageNLS: deverPackageNLS,
+			}];
+			for (const extensionPath of useTestResolver ? ['vscode-test-resolver', 'github-authentication'] : []) {
 				const packageJSON = JSON.parse((await promises.readFile(FileAccess.asFileUri(`${builtinExtensionsPath}/${extensionPath}/package.json`).fsPath)).toString());
 				bundledExtensions.push({ extensionPath, packageJSON });
 			}

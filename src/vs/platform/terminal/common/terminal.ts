@@ -190,6 +190,7 @@ export interface IRawTerminalsLayoutInfo<T> {
 
 export interface IPtyHostAttachTarget {
 	id: number;
+	logicalTerminalId?: string;
 	pid: number;
 	title: string;
 	titleSource: TitleEventSource;
@@ -266,6 +267,7 @@ export const enum ProcessPropertyType {
 	FailedShellIntegrationActivation = 'failedShellIntegrationActivation',
 	UsedShellIntegrationInjection = 'usedShellIntegrationInjection',
 	ShellIntegrationInjectionFailureReason = 'shellIntegrationInjectionFailureReason',
+	LogicalTerminalId = 'logicalTerminalId',
 }
 
 export interface IProcessProperty<T extends ProcessPropertyType = ProcessPropertyType> {
@@ -285,6 +287,7 @@ export interface IProcessPropertyMap {
 	[ProcessPropertyType.FailedShellIntegrationActivation]: boolean | undefined;
 	[ProcessPropertyType.UsedShellIntegrationInjection]: boolean | undefined;
 	[ProcessPropertyType.ShellIntegrationInjectionFailureReason]: ShellIntegrationInjectionFailureReason | undefined;
+	[ProcessPropertyType.LogicalTerminalId]: string | undefined;
 }
 
 export interface IFixedTerminalDimensions {
@@ -496,6 +499,12 @@ export const remoteResolverTerminal = Symbol('remoteResolverTerminal');
 
 export interface IShellLaunchConfig {
 	/**
+	 * Stable identity used to associate a user-facing terminal with a logical workspace across
+	 * renderer reloads and persistent process reconnection.
+	 */
+	logicalTerminalId?: string;
+
+	/**
 	 * The name of the terminal, if this is not set the name of the process will be used.
 	 */
 	name?: string;
@@ -566,6 +575,7 @@ export interface IShellLaunchConfig {
 	 */
 	attachPersistentProcess?: {
 		id: number;
+		logicalTerminalId?: string;
 		findRevivedId?: boolean;
 		pid: number;
 		title: string;
@@ -722,6 +732,7 @@ export const enum TerminalLocationConfigValue {
 export type TerminalIcon = ThemeIcon | URI | { light: URI; dark: URI };
 
 export interface IShellLaunchConfigDto {
+	logicalTerminalId?: string;
 	name?: string;
 	executable?: string;
 	args?: string[] | string;
@@ -1176,6 +1187,7 @@ export interface ITerminalBackend extends ITerminalBackendPtyServiceContribution
 	setTerminalLayoutInfo(layoutInfo?: ITerminalsLayoutInfoById): Promise<void>;
 	updateTitle(id: number, title: string, titleSource: TitleEventSource): Promise<void>;
 	updateIcon(id: number, userInitiated: boolean, icon: TerminalIcon, color?: string): Promise<void>;
+	updateProperty<T extends ProcessPropertyType>(id: number, property: T, value: IProcessPropertyMap[T]): Promise<void>;
 	setNextCommandId(id: number, commandLine: string, commandId: string): Promise<void>;
 	getTerminalLayoutInfo(): Promise<ITerminalsLayoutInfo | undefined>;
 	getPerformanceMarks(): Promise<performance.PerformanceMark[]>;

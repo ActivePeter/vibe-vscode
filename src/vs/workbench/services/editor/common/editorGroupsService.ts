@@ -535,6 +535,11 @@ export interface IModalEditorPart extends IEditorPart {
 	readonly modalElement: unknown /* HTMLElement */;
 
 	/**
+	 * Whether this modal editor part covers the complete workbench.
+	 */
+	readonly fullscreen: boolean;
+
+	/**
 	 * Whether the modal editor part is currently maximized.
 	 */
 	readonly maximized: boolean;

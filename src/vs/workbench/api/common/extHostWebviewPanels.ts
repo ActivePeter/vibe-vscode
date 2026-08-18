@@ -12,6 +12,7 @@ import * as typeConverters from './extHostTypeConverters.js';
 import { serializeWebviewOptions, ExtHostWebview, ExtHostWebviews, toExtensionData, shouldSerializeBuffersForPostMessage } from './extHostWebview.js';
 import { IExtHostWorkspace } from './extHostWorkspace.js';
 import { EditorGroupColumn } from '../../services/editor/common/editorGroupColumn.js';
+import { checkProposedApiEnabled } from '../../services/extensions/common/extensions.js';
 import type * as vscode from 'vscode';
 import * as extHostProtocol from './extHost.protocol.js';
 import * as extHostTypes from './extHostTypes.js';
@@ -216,7 +217,7 @@ export class ExtHostWebviewPanels extends Disposable implements extHostProtocol.
 		const handle = ExtHostWebviewPanels.newHandle();
 		this._proxy.$createWebviewPanel(toExtensionData(extension), handle, viewType, {
 			title,
-			panelOptions: serializeWebviewPanelOptions(options),
+			panelOptions: serializeWebviewPanelOptions(extension, options),
 			webviewOptions: serializeWebviewOptions(extension, this.workspace, options),
 			serializeBuffersForPostMessage,
 		}, webviewShowOptions);
@@ -322,9 +323,14 @@ export class ExtHostWebviewPanels extends Disposable implements extHostProtocol.
 	}
 }
 
-function serializeWebviewPanelOptions(options: vscode.WebviewPanelOptions): extHostProtocol.IWebviewPanelOptions {
+function serializeWebviewPanelOptions(extension: IExtensionDescription, options: vscode.WebviewPanelOptions): extHostProtocol.IWebviewPanelOptions {
+	if (options.deverFullscreen) {
+		checkProposedApiEnabled(extension, 'deverFullscreenPanel');
+	}
+
 	return {
 		enableFindWidget: options.enableFindWidget,
 		retainContextWhenHidden: options.retainContextWhenHidden,
+		deverFullscreen: options.deverFullscreen,
 	};
 }

@@ -1,0 +1,6 @@
+{
+  "displayName": "Dever",
+  "description": "Opens the privileged Dever fullscreen panel.",
+  "command.openFullscreenPanel": "Open Fullscreen Panel",
+  "command.closeFullscreenPanel": "Close Fullscreen Panel"
+}

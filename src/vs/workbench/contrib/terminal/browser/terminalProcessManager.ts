@@ -291,6 +291,7 @@ export class TerminalProcessManager extends Disposable implements ITerminalProce
 					const result = await backend.attachToProcess(shellLaunchConfig.attachPersistentProcess.id);
 					if (result) {
 						newProcess = result;
+						await this._persistLogicalTerminalId(backend, result.id, shellLaunchConfig);
 					} else {
 						// Warn and just create a new terminal if attach failed for some reason
 						this._logService.warn(`Attach to process failed for terminal`, shellLaunchConfig.attachPersistentProcess);
@@ -340,6 +341,7 @@ export class TerminalProcessManager extends Disposable implements ITerminalProce
 					const result = shellLaunchConfig.attachPersistentProcess.findRevivedId ? await backend.attachToRevivedProcess(shellLaunchConfig.attachPersistentProcess.id) : await backend.attachToProcess(shellLaunchConfig.attachPersistentProcess.id);
 					if (result) {
 						newProcess = result;
+						await this._persistLogicalTerminalId(backend, result.id, shellLaunchConfig);
 					} else {
 						// Warn and just create a new terminal if attach failed for some reason
 						this._logService.warn(`Attach to process failed for terminal`, shellLaunchConfig.attachPersistentProcess);
@@ -430,6 +432,22 @@ export class TerminalProcessManager extends Disposable implements ITerminalProce
 		});
 
 		return undefined;
+	}
+
+	private async _persistLogicalTerminalId(backend: ITerminalBackend, persistentProcessId: number, shellLaunchConfig: IShellLaunchConfig): Promise<void> {
+		const attachTarget = shellLaunchConfig.attachPersistentProcess;
+		const logicalTerminalId = shellLaunchConfig.logicalTerminalId;
+		if (!attachTarget || !logicalTerminalId || attachTarget.logicalTerminalId === logicalTerminalId) {
+			return;
+		}
+
+		try {
+			await backend.updateProperty(persistentProcessId, ProcessPropertyType.LogicalTerminalId, logicalTerminalId);
+			attachTarget.logicalTerminalId = logicalTerminalId;
+		} catch (error) {
+			// The attached terminal remains usable, but legacy ownership cannot survive another reload.
+			this._logService.warn('Could not persist logical terminal identity for an attached terminal', error);
+		}
 	}
 
 	async relaunch(shellLaunchConfig: IShellLaunchConfig, cols: number, rows: number, reset: boolean): Promise<ITerminalLaunchError | ITerminalLaunchResult | undefined> {

@@ -8,7 +8,10 @@ import { Event } from '../../../base/common/event.js';
 import { Disposable, DisposableMap } from '../../../base/common/lifecycle.js';
 import { URI } from '../../../base/common/uri.js';
 import { generateUuid } from '../../../base/common/uuid.js';
+import { isEqual } from '../../../base/common/resources.js';
+import { localize } from '../../../nls.js';
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
+import { ExtensionIdentifier } from '../../../platform/extensions/common/extensions.js';
 import { IStorageService } from '../../../platform/storage/common/storage.js';
 import { DiffEditorInput } from '../../common/editor/diffEditorInput.js';
 import { EditorInput } from '../../common/editor/editorInput.js';
@@ -17,12 +20,15 @@ import { WebviewIconPath, WebviewInput } from '../../contrib/webviewPanel/browse
 import { IWebViewShowOptions, IWebviewWorkbenchService } from '../../contrib/webviewPanel/browser/webviewWorkbenchService.js';
 import { editorGroupToColumn } from '../../services/editor/common/editorGroupColumn.js';
 import { GroupLocation, GroupsOrder, IEditorGroup, IEditorGroupsService, preferredSideBySideGroupDirection } from '../../services/editor/common/editorGroupsService.js';
-import { ACTIVE_GROUP, IEditorService, PreferredGroup, SIDE_GROUP } from '../../services/editor/common/editorService.js';
+import { ACTIVE_GROUP, IEditorService, MODAL_GROUP, PreferredGroup, SIDE_GROUP } from '../../services/editor/common/editorService.js';
 import { IExtensionService } from '../../services/extensions/common/extensions.js';
 import { IExtHostContext } from '../../services/extensions/common/extHostCustomers.js';
 import * as extHostProtocol from '../common/extHost.protocol.js';
 import { MainThreadWebviews, reviveWebviewContentOptions, reviveWebviewExtension } from './mainThreadWebviews.js';
 import { ThemeIcon } from '../../../base/common/themables.js';
+
+const DEVER_FULLSCREEN_EXTENSION_ID = 'dever.dever-project-switcher';
+const DEVER_FULLSCREEN_VIEW_TYPE = 'dever.projectSwitcher.fullscreen';
 
 /**
  * Bi-directional map between webview handles and inputs.
@@ -95,7 +101,7 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IEditorGroupsService private readonly _editorGroupService: IEditorGroupsService,
 		@IEditorService private readonly _editorService: IEditorService,
-		@IExtensionService extensionService: IExtensionService,
+		@IExtensionService private readonly _extensionService: IExtensionService,
 		@IStorageService storageService: IStorageService,
 		@IWebviewWorkbenchService private readonly _webviewWorkbenchService: IWebviewWorkbenchService,
 	) {
@@ -125,7 +131,7 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 			canResolve: (webview: WebviewInput) => {
 				const viewType = this.webviewPanelViewType.toExternal(webview.viewType);
 				if (typeof viewType === 'string') {
-					extensionService.activateByEvent(`onWebviewPanel:${viewType}`);
+					this._extensionService.activateByEvent(`onWebviewPanel:${viewType}`);
 				}
 				return false;
 			},
@@ -155,13 +161,30 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 		initData: extHostProtocol.IWebviewInitData,
 		showOptions: extHostProtocol.WebviewPanelShowOptions,
 	): void {
-		const targetGroup = this.getTargetGroupFromShowOptions(showOptions);
-		const mainThreadShowOptions: IWebViewShowOptions = showOptions ? {
-			preserveFocus: !!showOptions.preserveFocus,
-			group: targetGroup
-		} : {};
-
 		const extension = reviveWebviewExtension(extensionData);
+		const deverFullscreen = initData.panelOptions.deverFullscreen === true;
+		if (deverFullscreen) {
+			const registeredExtension = this._extensionService.extensions.find(candidate => ExtensionIdentifier.equals(candidate.identifier, extension.id));
+			const isTrustedDeverExtension = ExtensionIdentifier.equals(extension.id, DEVER_FULLSCREEN_EXTENSION_ID) &&
+				viewType === DEVER_FULLSCREEN_VIEW_TYPE &&
+				registeredExtension?.isBuiltin === true &&
+				extension.location !== undefined &&
+				isEqual(registeredExtension.extensionLocation, extension.location);
+			if (!isTrustedDeverExtension) {
+				throw new Error(localize('deverFullscreenPanelUnauthorized', "Only the built-in Dever extension can open the Dever fullscreen panel."));
+			}
+			if (this._editorGroupService.activeModalEditorPart) {
+				throw new Error(localize('deverFullscreenPanelModalConflict', "Close the current modal editor before opening the Dever fullscreen panel."));
+			}
+		}
+
+		const targetGroup = deverFullscreen ? MODAL_GROUP : this.getTargetGroupFromShowOptions(showOptions);
+		const mainThreadShowOptions: IWebViewShowOptions = {
+			preserveFocus: deverFullscreen ? false : !!showOptions.preserveFocus,
+			group: targetGroup,
+			modal: deverFullscreen ? { fullscreen: true } : undefined
+		};
+
 		const origin = this.webviewOriginStore.getOrigin(viewType, extension.id);
 
 		const webview = this._webviewWorkbenchService.openWebview({

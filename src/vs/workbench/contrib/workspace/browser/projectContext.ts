@@ -6,15 +6,18 @@
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { isEqual, isEqualOrParent } from '../../../../base/common/resources.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { createDecorator, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspace, IWorkspaceContextService, IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
 import { ViewContainerLocation } from '../../../common/views.js';
+import { AsyncProjectionCoordinator, IAsyncProjectionContext } from '../../../services/logicalWorkspace/browser/logicalWorkspaceProjection.js';
 import { IPaneCompositePartService } from '../../../services/panecomposite/browser/panecomposite.js';
 import { IExplorerService } from '../../files/browser/files.js';
 import { VIEWLET_ID } from '../../files/common/files.js';
@@ -26,6 +29,10 @@ export const PICK_PROJECT_CONTEXT_COMMAND_ID = 'workbench.action.pickProjectCont
 interface IProjectContextPick extends IQuickPickItem {
 	folder?: IWorkspaceFolder;
 	isAddProjectAction?: boolean;
+}
+
+interface IProjectContextProjectionIntent {
+	readonly folderUri: URI | undefined;
 }
 
 export const IProjectContextService = createDecorator<IProjectContextService>('projectContextService');
@@ -48,6 +55,9 @@ export class ProjectContextService extends Disposable implements IProjectContext
 
 	private readonly _onDidChangeProjectContext = this._register(new Emitter<void>());
 	readonly onDidChangeProjectContext = this._onDidChangeProjectContext.event;
+	private readonly projectionCoordinator: AsyncProjectionCoordinator<IProjectContextProjectionIntent>;
+	private selectedFolderUri: URI | undefined;
+	private pendingRevealFolderUri: URI | undefined;
 
 	constructor(
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
@@ -58,17 +68,27 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		@IExplorerService private readonly explorerService: IExplorerService,
 		@ISCMService private readonly scmService: ISCMService,
 		@ISCMViewService private readonly scmViewService: ISCMViewService,
+		@ILogService logService: ILogService,
 	) {
 		super();
+		this.selectedFolderUri = this.resolveStoredFolder()?.uri;
+		this.projectionCoordinator = this._register(new AsyncProjectionCoordinator(
+			'Project Context',
+			context => this.applyProjectContext(context),
+			logService,
+		));
 
-		const updateProjectContext = () => {
-			void this.explorerService.setActiveRoot(this.selectedFolder?.uri);
-			this._onDidChangeProjectContext.fire();
-		};
+		const updateProjectContext = () => this.synchronizeAvailableFolders();
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(updateProjectContext));
-		this._register(this.workspaceContextService.onDidChangeWorkspaceName(updateProjectContext));
 		this._register(this.workspaceContextService.onDidChangeWorkbenchState(updateProjectContext));
-		void this.explorerService.setActiveRoot(this.selectedFolder?.uri);
+		this._register(this.workspaceContextService.onDidChangeWorkspaceName(() => this._onDidChangeProjectContext.fire()));
+		this._register(this.scmService.onDidAddRepository(repository => {
+			const folder = this.selectedFolder;
+			if (folder && this.belongsToProject(repository, folder)) {
+				void this.requestProjectContextProjection(folder);
+			}
+		}));
+		this.synchronizeAvailableFolders();
 	}
 
 	get workspace(): IWorkspace {
@@ -76,9 +96,9 @@ export class ProjectContextService extends Disposable implements IProjectContext
 	}
 
 	get selectedFolder(): IWorkspaceFolder | undefined {
-		const selectedUri = this.storageService.get(PROJECT_CONTEXT_STORAGE_KEY, StorageScope.WORKSPACE);
-		const folders = this.workspace.folders;
-		return folders.find(folder => folder.uri.toString() === selectedUri) ?? folders[0];
+		return this.selectedFolderUri
+			? this.workspace.folders.find(folder => isEqual(folder.uri, this.selectedFolderUri))
+			: undefined;
 	}
 
 	async pickProjectContext(): Promise<void> {
@@ -87,7 +107,6 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		const picks: IProjectContextPick[] = folders.map(folder => ({
 			label: folder.name,
 			description: folder.uri.fsPath,
-			picked: folder.uri.toString() === selectedFolder?.uri.toString(),
 			folder,
 		}));
 		picks.push({
@@ -98,6 +117,7 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		});
 
 		const pick = await this.quickInputService.pick(picks, {
+			activeItem: picks.find(pick => pick.folder && isEqual(pick.folder.uri, selectedFolder?.uri)),
 			placeHolder: localize('projectContextPickPlaceholder', "Select the project context to inspect"),
 			matchOnDescription: true,
 		});
@@ -105,22 +125,96 @@ export class ProjectContextService extends Disposable implements IProjectContext
 			return;
 		}
 		if (pick.isAddProjectAction) {
+			const existingFolders = new Set(this.workspace.folders.map(folder => folder.uri.toString()));
 			await this.commandService.executeCommand('workbench.action.addRootFolder');
+			const addedFolders = this.workspace.folders.filter(folder => !existingFolders.has(folder.uri.toString()));
+			const addedFolder = addedFolders.at(-1);
+			if (addedFolder) {
+				await this.selectFolder(addedFolder, true);
+			}
 			return;
 		}
 		if (!pick.folder) {
 			return;
 		}
 
-		this.storageService.store(PROJECT_CONTEXT_STORAGE_KEY, pick.folder.uri.toString(), StorageScope.WORKSPACE, StorageTarget.MACHINE);
-		await this.explorerService.setActiveRoot(pick.folder.uri);
-		this._onDidChangeProjectContext.fire();
-		await this.revealProject(pick.folder);
+		await this.selectFolder(pick.folder, true);
 	}
 
-	private async revealProject(folder: IWorkspaceFolder): Promise<void> {
-		await this.paneCompositePartService.openPaneComposite(VIEWLET_ID, ViewContainerLocation.Sidebar, true);
-		await this.explorerService.select(folder.uri, 'force');
+	private resolveStoredFolder(): IWorkspaceFolder | undefined {
+		const selectedUri = this.storageService.get(PROJECT_CONTEXT_STORAGE_KEY, StorageScope.WORKSPACE);
+		return this.workspace.folders.find(folder => folder.uri.toString() === selectedUri) ?? this.workspace.folders[0];
+	}
+
+	private synchronizeAvailableFolders(): void {
+		const selectedFolder = this.selectedFolder ?? this.workspace.folders[0];
+		if (!selectedFolder) {
+			const changed = this.selectedFolderUri !== undefined;
+			this.selectedFolderUri = undefined;
+			this.pendingRevealFolderUri = undefined;
+			this.storageService.remove(PROJECT_CONTEXT_STORAGE_KEY, StorageScope.WORKSPACE);
+			if (changed) {
+				this._onDidChangeProjectContext.fire();
+			}
+			void this.requestProjectContextProjection(undefined);
+			return;
+		}
+
+		const changed = !this.selectedFolderUri || !isEqual(this.selectedFolderUri, selectedFolder.uri);
+		this.selectedFolderUri = selectedFolder.uri;
+		this.storageService.store(PROJECT_CONTEXT_STORAGE_KEY, selectedFolder.uri.toString(), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		if (changed) {
+			this._onDidChangeProjectContext.fire();
+		}
+		void this.requestProjectContextProjection(selectedFolder);
+	}
+
+	private selectFolder(folder: IWorkspaceFolder, reveal: boolean): Promise<void> {
+		const changed = !this.selectedFolderUri || !isEqual(this.selectedFolderUri, folder.uri);
+		this.selectedFolderUri = folder.uri;
+		if (reveal) {
+			this.pendingRevealFolderUri = folder.uri;
+		}
+		this.storageService.store(PROJECT_CONTEXT_STORAGE_KEY, folder.uri.toString(), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		if (changed) {
+			this._onDidChangeProjectContext.fire();
+		}
+		return this.requestProjectContextProjection(folder);
+	}
+
+	private requestProjectContextProjection(folder: IWorkspaceFolder | undefined): Promise<void> {
+		const folderUri = folder?.uri;
+		return this.projectionCoordinator.request({ folderUri }, () => folderUri
+			? !!this.selectedFolder && isEqual(this.selectedFolder.uri, folderUri)
+			: this.selectedFolderUri === undefined);
+	}
+
+	private async applyProjectContext(context: IAsyncProjectionContext<IProjectContextProjectionIntent>): Promise<void> {
+		const folderUri = context.value.folderUri;
+		if (!folderUri) {
+			await this.explorerService.setActiveRoot(undefined);
+			return;
+		}
+		const folder = this.workspace.folders.find(folder => isEqual(folder.uri, folderUri));
+		if (!folder) {
+			return;
+		}
+		await this.explorerService.setActiveRoot(folder.uri);
+		if (!context.isCurrent()) {
+			return;
+		}
+
+		if (this.pendingRevealFolderUri && isEqual(this.pendingRevealFolderUri, folder.uri)) {
+			await this.paneCompositePartService.openPaneComposite(VIEWLET_ID, ViewContainerLocation.Sidebar, true);
+			if (!context.isCurrent()) {
+				return;
+			}
+			await this.explorerService.select(folder.uri, 'force');
+			if (!context.isCurrent()) {
+				return;
+			}
+			this.pendingRevealFolderUri = undefined;
+		}
 
 		const repository = Array.from(this.scmService.repositories).find(candidate => this.belongsToProject(candidate, folder));
 		if (repository) {
@@ -130,7 +224,7 @@ export class ProjectContextService extends Disposable implements IProjectContext
 
 	private belongsToProject(repository: ISCMRepository, folder: IWorkspaceFolder): boolean {
 		const rootUri = repository.provider.rootUri;
-		return !!rootUri && (isEqual(rootUri, folder.uri) || isEqualOrParent(folder.uri, rootUri));
+		return !!rootUri && isEqualOrParent(rootUri, folder.uri);
 	}
 }
 

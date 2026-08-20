@@ -23,6 +23,7 @@ import { runWithFakedTimers } from '../../../../../../base/test/common/timeTrave
 import { Codicon } from '../../../../../../base/common/codicons.js';
 import { MenuId } from '../../../../../../platform/actions/common/actions.js';
 import { ILifecycleService } from '../../../../../services/lifecycle/common/lifecycle.js';
+import { ILogicalWorkspaceService, LogicalWorkspaceActivationActor } from '../../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { TestInstantiationService } from '../../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../../platform/storage/common/storage.js';
 import { AgentSessionProviders, getAgentCanContinueIn, getAgentSessionProvider, getAgentSessionProviderIcon, getAgentSessionProviderName } from '../../../browser/agentSessions/agentSessions.js';
@@ -358,6 +359,58 @@ suite('AgentSessions', () => {
 				await sessionsChangedPromise;
 
 				assert.strictEqual(viewModel.sessions.length, 1);
+			});
+		});
+
+		test('should capture ownership for rapid provider deltas before the resolver runs', async () => {
+			return runWithFakedTimers({}, async () => {
+				const firstSession = makeSimpleSessionItem('session-in-first-workspace');
+				const secondSession = makeSimpleSessionItem('session-in-second-workspace');
+				const controller = new StaticChatSessionItemController([]);
+				mockChatSessionsService.registerChatSessionItemController(chatSessionTestType, controller);
+				viewModel = createViewModel();
+
+				const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+				const firstWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
+				const secondWorkspace = logicalWorkspaceService.createWorkspace('Second');
+
+				controller.setItems([firstSession]);
+				mockChatSessionsService.fireDidChangeSessionItems({ addedOrUpdated: [firstSession] });
+				logicalWorkspaceService.activateWorkspace(secondWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+
+				controller.setItems([firstSession, secondSession]);
+				const sessionsChanged = Event.toPromise(viewModel.onDidChangeSessions);
+				mockChatSessionsService.fireDidChangeSessionItems({ addedOrUpdated: [secondSession] });
+				await sessionsChanged;
+
+				assert.deepStrictEqual({
+					firstInFirstWorkspace: logicalWorkspaceService.workspaceContainsChatSession(firstWorkspaceId, firstSession.resource),
+					firstInSecondWorkspace: logicalWorkspaceService.workspaceContainsChatSession(secondWorkspace.id, firstSession.resource),
+					secondInSecondWorkspace: logicalWorkspaceService.workspaceContainsChatSession(secondWorkspace.id, secondSession.resource),
+				}, {
+					firstInFirstWorkspace: true,
+					firstInSecondWorkspace: false,
+					secondInSecondWorkspace: true,
+				});
+			});
+		});
+
+		test('should release ownership when a provider removes a session', async () => {
+			return runWithFakedTimers({}, async () => {
+				const session = makeSimpleSessionItem('removed-session');
+				const controller = new StaticChatSessionItemController([session]);
+				mockChatSessionsService.registerChatSessionItemController(chatSessionTestType, controller);
+				viewModel = createViewModel();
+
+				const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+				const workspaceId = logicalWorkspaceService.activeWorkspace.id;
+				await viewModel.resolve(chatSessionTestType);
+				assert.strictEqual(logicalWorkspaceService.workspaceContainsChatSession(workspaceId, session.resource), true);
+
+				controller.setItems([]);
+				await viewModel.resolve(chatSessionTestType);
+
+				assert.strictEqual(logicalWorkspaceService.workspaceContainsChatSession(workspaceId, session.resource), false);
 			});
 		});
 

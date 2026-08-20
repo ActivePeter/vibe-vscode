@@ -45,7 +45,6 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 		super();
 
 		this._register(this.chatSessionsService.registerChatSessionItemController(this.chatSessionType, this));
-		this._register(this.logicalWorkspaceService.onDidChangeActiveWorkspace(event => this.emitWorkspaceChange(event.previousWorkspaceId, event.workspaceId)));
 
 		this.registerListeners();
 	}
@@ -57,14 +56,13 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 
 	private _items = new ResourceMap<LocalChatSessionItem>();
 	get items(): readonly IChatSessionItem[] {
-		return this.getVisibleItems(this.logicalWorkspaceService.activeWorkspace.id);
+		return Array.from(this._items.values());
 	}
 
 	async refresh(token: CancellationToken): Promise<void> {
 		const newItems = await this.provideChatSessionItems(token);
-		const workspaceId = this.logicalWorkspaceService.activeWorkspace.id;
 		const previousItems = new ResourceMap<LocalChatSessionItem>();
-		for (const item of this.getVisibleItems(workspaceId)) {
+		for (const item of this._items.values()) {
 			previousItems.set(item.resource, item);
 		}
 
@@ -73,7 +71,7 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 			this._items.set(item.resource, item);
 		}
 
-		const currentItems = this.getVisibleItems(workspaceId);
+		const currentItems = Array.from(this._items.values());
 		const currentResources = new ResourceSet(currentItems.map(item => item.resource));
 		const addedOrUpdated = currentItems.filter(item => {
 			const previous = previousItems.get(item.resource);
@@ -134,15 +132,12 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 
 	private async tryUpdateLiveSessionItem(model: IChatModel): Promise<void> {
 		const updated = this.toChatSessionItem(await chatModelToChatDetail(model));
-		const isVisible = this.logicalWorkspaceService.workspaceContainsChatSession(this.logicalWorkspaceService.activeWorkspace.id, model.sessionResource);
 		if (!updated) {
 			// The session no longer qualifies as a list item (e.g. it has no requests
 			// yet, or its requests were removed). Drop any stale item we were showing.
 			if (this._items.has(model.sessionResource)) {
 				this._items.delete(model.sessionResource);
-				if (isVisible) {
-					this._onDidChangeChatSessionItems.fire({ removed: [model.sessionResource] });
-				}
+				this._onDidChangeChatSessionItems.fire({ removed: [model.sessionResource] });
 			}
 			return;
 		}
@@ -153,9 +148,7 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 		}
 
 		this._items.set(updated.resource, updated);
-		if (isVisible) {
-			this._onDidChangeChatSessionItems.fire({ addedOrUpdated: [updated] });
-		}
+		this._onDidChangeChatSessionItems.fire({ addedOrUpdated: [updated] });
 	}
 
 	private async provideChatSessionItems(token: CancellationToken): Promise<LocalChatSessionItem[]> {
@@ -205,21 +198,6 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 		}
 
 		return new LocalChatSessionItem(chat, model);
-	}
-
-	private getVisibleItems(workspaceId: string): LocalChatSessionItem[] {
-		return Array.from(this._items.values()).filter(item => this.logicalWorkspaceService.workspaceContainsChatSession(workspaceId, item.resource));
-	}
-
-	private emitWorkspaceChange(previousWorkspaceId: string, workspaceId: string): void {
-		const removed = this.getVisibleItems(previousWorkspaceId).map(item => item.resource);
-		const addedOrUpdated = this.getVisibleItems(workspaceId);
-		if (removed.length > 0 || addedOrUpdated.length > 0) {
-			this._onDidChangeChatSessionItems.fire({
-				...(addedOrUpdated.length > 0 ? { addedOrUpdated } : undefined),
-				...(removed.length > 0 ? { removed } : undefined),
-			});
-		}
 	}
 }
 

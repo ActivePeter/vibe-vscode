@@ -14,7 +14,7 @@ interface ILogicalWorkspacePick extends IQuickPickItem {
 	isNewWorkspaceAction?: boolean;
 }
 
-registerAction2(class extends Action2 {
+export class PickLogicalWorkspaceAction extends Action2 {
 	constructor() {
 		super({
 			id: PICK_LOGICAL_WORKSPACE_COMMAND_ID,
@@ -32,7 +32,6 @@ registerAction2(class extends Action2 {
 			description: workspace.id === activeWorkspace.id
 				? localize('logicalWorkspaceActive', "Active workbench context")
 				: localize('logicalWorkspaceInactive', "Restores this context's layout, terminals, and sessions"),
-			picked: workspace.id === activeWorkspace.id,
 			workspace,
 		}));
 		picks.push({
@@ -43,6 +42,7 @@ registerAction2(class extends Action2 {
 		});
 
 		const pick = await quickInputService.pick(picks, {
+			activeItem: picks.find(pick => pick.workspace?.id === activeWorkspace.id),
 			placeHolder: localize('logicalWorkspacePickPlaceholder', "Select the workbench context to restore"),
 			matchOnDescription: true,
 		});
@@ -69,4 +69,6 @@ registerAction2(class extends Action2 {
 			logicalWorkspaceService.activateWorkspace(pick.workspace.id, LogicalWorkspaceActivationActor.Picker);
 		}
 	}
-});
+}
+
+registerAction2(PickLogicalWorkspaceAction);

@@ -8,9 +8,9 @@ declare module 'vscode' {
 	export interface WebviewPanelOptions {
 
 		/**
-		 * Opens this webview as the exclusive Dever fullscreen panel.
+		 * Opens this webview as the exclusive vibe vscode fullscreen panel.
 		 *
-		 * This option is restricted to the built-in Dever extension.
+		 * This option is restricted to the built-in vibe vscode extension.
 		 */
 		readonly deverFullscreen?: boolean;
 	}

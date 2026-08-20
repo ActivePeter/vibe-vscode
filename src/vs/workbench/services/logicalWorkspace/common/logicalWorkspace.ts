@@ -11,6 +11,7 @@ export const PICK_LOGICAL_WORKSPACE_COMMAND_ID = 'workbench.action.pickLogicalWo
 
 export const enum LogicalWorkspaceActivationActor {
 	Picker = 'picker',
+	SharedState = 'sharedState',
 }
 
 export interface ILogicalWorkspaceShellPartLayout {
@@ -73,5 +74,6 @@ export interface ILogicalWorkspaceService {
 	bindChatSession(workspaceId: string, sessionResource: URI): void;
 	bindChatSessions(workspaceId: string, sessionResources: readonly URI[]): void;
 	unbindChatSession(sessionResource: URI): void;
+	unbindChatSessions(sessionResources: readonly URI[]): void;
 	workspaceContainsChatSession(workspaceId: string, sessionResource: URI): boolean;
 }

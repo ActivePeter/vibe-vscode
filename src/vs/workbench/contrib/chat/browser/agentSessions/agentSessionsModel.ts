@@ -575,6 +575,13 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		this._register(this.chatSessionsService.onDidChangeAvailability(() => this.resolve(undefined)));
 		this._register(this.chatSessionsService.onDidChangeSessionItems((delta) => {
 			const changedChatSessionTypes = new Set<string>();
+			const targetWorkspaceId = this.logicalWorkspaceService.activeWorkspace.id;
+			const addedSessionResources = (delta.addedOrUpdated ?? []).map(session => session.resource);
+
+			// Ownership is captured at the provider-delta boundary. The throttled provider refresh may
+			// be coalesced with a later delta from another Workspace, but first-owner-wins keeps each
+			// newly announced resource attached to the Workspace that initiated its appearance.
+			this.logicalWorkspaceService.bindChatSessions(targetWorkspaceId, addedSessionResources);
 
 			for (const resource of delta.addedOrUpdated ?? []) {
 				changedChatSessionTypes.add(getChatSessionType(resource.resource));
@@ -585,7 +592,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 			}
 
 			for (const chatSessionType of changedChatSessionTypes) {
-				this.resolveProvider(chatSessionType, { refreshProvider: false /* skip because we react on an event already */ });
+				this.resolveProvider(chatSessionType, { refreshProvider: false /* skip because we react on an event already */ }, targetWorkspaceId);
 			}
 		}));
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => this.resolve(undefined)));
@@ -665,16 +672,17 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 	}
 
 	async resolve(provider: string | string[] | undefined): Promise<void> {
+		const targetWorkspaceId = this.logicalWorkspaceService.activeWorkspace.id;
 		const providers = Array.isArray(provider)
 			? provider
 			: provider !== undefined
 				? [provider]
 				: this.chatSessionsService.getRegisteredChatSessionItemProviders();
 
-		await Promise.all(providers.map(provider => this.resolveProvider(provider, { refreshProvider: true })));
+		await Promise.all(providers.map(provider => this.resolveProvider(provider, { refreshProvider: true }, targetWorkspaceId)));
 	}
 
-	private resolveProvider(provider: string, options: { refreshProvider: boolean }): Promise<void> {
+	private resolveProvider(provider: string, options: { refreshProvider: boolean }, targetWorkspaceId: string): Promise<void> {
 		if (this.chatEntitlementService.sentiment.hidden) {
 			return Promise.resolve(); // don't resolve if AI features are disabled
 		}
@@ -692,7 +700,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 
 			try {
 				this._onWillResolve.fire(provider);
-				return await this.doResolveProvider(provider, options, token);
+				return await this.doResolveProvider(provider, options, targetWorkspaceId, token);
 			} catch (error) {
 				this.logger.logIfTrace(`Error resolving sessions for provider ${provider}: ${error instanceof Error ? error.stack : String(error)}`);
 			} finally {
@@ -701,8 +709,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		});
 	}
 
-	private async doResolveProvider(provider: string, options: { refreshProvider: boolean }, token: CancellationToken): Promise<void> {
-		const targetWorkspaceId = this.logicalWorkspaceService.activeWorkspace.id;
+	private async doResolveProvider(provider: string, options: { refreshProvider: boolean }, targetWorkspaceId: string, token: CancellationToken): Promise<void> {
 		if (options.refreshProvider) {
 			await this.chatSessionsService.refreshChatSessionItems([provider], token);
 
@@ -787,6 +794,9 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 
 		// Phase 2: Atomically update sessions (sync - reads latest this._sessions
 		// so concurrent updateItems calls for other providers don't lose data)
+		const removedProviderSessionResources = Array.from(this._sessions.values())
+			.filter(session => session.providerType === provider && !sessions.has(session.resource))
+			.map(session => session.resource);
 
 		for (const [, session] of this._sessions) {
 			if (
@@ -812,6 +822,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		}
 
 		this._sessions = sessions;
+		this.logicalWorkspaceService.unbindChatSessions(removedProviderSessionResources);
 		this._resolved = true;
 
 		this.migrateReadStateToProvider(sessions.values());

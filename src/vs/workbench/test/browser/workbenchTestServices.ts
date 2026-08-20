@@ -167,6 +167,7 @@ import { LabelService } from '../../services/label/common/labelService.js';
 import { ILanguageDetectionService } from '../../services/languageDetection/common/languageDetectionWorkerService.js';
 import { IPartVisibilityChangeEvent, IWorkbenchLayoutService, PanelAlignment, Position as PartPosition, Parts, SINGLE_WINDOW_PARTS } from '../../services/layout/browser/layoutService.js';
 import { ILifecycleService, InternalBeforeShutdownEvent, IWillShutdownEventJoiner, ShutdownReason, WillShutdownEvent } from '../../services/lifecycle/common/lifecycle.js';
+import { ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor } from '../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { IPaneCompositePartService } from '../../services/panecomposite/browser/panecomposite.js';
 import { IPathService } from '../../services/path/common/pathService.js';
 import { QuickInputService } from '../../services/quickinput/browser/quickInputService.js';
@@ -257,6 +258,137 @@ export class TestWorkingCopyService extends WorkingCopyService {
 	}
 }
 
+export class TestLogicalWorkspaceService extends Disposable implements ILogicalWorkspaceService {
+
+	declare readonly _serviceBrand: undefined;
+
+	private readonly _onWillChangeActiveWorkspace = this._register(new Emitter<ILogicalWorkspaceActivationEvent>());
+	readonly onWillChangeActiveWorkspace = this._onWillChangeActiveWorkspace.event;
+
+	private readonly _onDidChangeActiveWorkspace = this._register(new Emitter<ILogicalWorkspaceActivationEvent>());
+	readonly onDidChangeActiveWorkspace = this._onDidChangeActiveWorkspace.event;
+
+	private readonly _onDidChangeWorkspaces = this._register(new Emitter<void>());
+	readonly onDidChangeWorkspaces = this._onDidChangeWorkspaces.event;
+
+	private workspaceCounter = 1;
+	private workspaceList: ILogicalWorkspace[] = [{
+		id: 'test-logical-workspace-0',
+		name: 'Workspace',
+		terminalIds: [],
+		chatSessionResources: [],
+		shellLayout: undefined,
+	}];
+	private activeWorkspaceId = this.workspaceList[0].id;
+	private _activationSequence = 0;
+
+	get workspaces(): readonly ILogicalWorkspace[] { return this.workspaceList; }
+	get activeWorkspace(): ILogicalWorkspace { return this.getWorkspace(this.activeWorkspaceId); }
+	get activationSequence(): number { return this._activationSequence; }
+
+	createWorkspace(name: string): ILogicalWorkspace {
+		const workspace: ILogicalWorkspace = {
+			id: `test-logical-workspace-${this.workspaceCounter++}`,
+			name,
+			terminalIds: [],
+			chatSessionResources: [],
+			shellLayout: undefined,
+		};
+		this.workspaceList = [...this.workspaceList, workspace];
+		this._onDidChangeWorkspaces.fire();
+		return workspace;
+	}
+
+	activateWorkspace(workspaceId: string, actor: LogicalWorkspaceActivationActor): void {
+		this.getWorkspace(workspaceId);
+		const previousWorkspaceId = this.activeWorkspaceId;
+		if (previousWorkspaceId === workspaceId) {
+			return;
+		}
+		const event = { actor, sequence: this._activationSequence + 1, previousWorkspaceId, workspaceId };
+		this._onWillChangeActiveWorkspace.fire(event);
+		this.activeWorkspaceId = workspaceId;
+		this._activationSequence = event.sequence;
+		this._onDidChangeActiveWorkspace.fire(event);
+	}
+
+	setShellLayout(workspaceId: string, layout: ILogicalWorkspaceShellLayout): void {
+		this.updateWorkspace(workspaceId, workspace => ({ ...workspace, shellLayout: layout }));
+	}
+
+	bindTerminal(workspaceId: string, logicalTerminalId: string): void {
+		this.bindResources(workspaceId, [logicalTerminalId], 'terminalIds');
+	}
+
+	unbindTerminal(logicalTerminalId: string): void {
+		this.unbindResources([logicalTerminalId], 'terminalIds');
+	}
+
+	workspaceContainsTerminal(workspaceId: string, logicalTerminalId: string): boolean {
+		return this.getWorkspace(workspaceId).terminalIds.includes(logicalTerminalId);
+	}
+
+	bindChatSession(workspaceId: string, sessionResource: URI): void {
+		this.bindChatSessions(workspaceId, [sessionResource]);
+	}
+
+	bindChatSessions(workspaceId: string, sessionResources: readonly URI[]): void {
+		this.bindResources(workspaceId, sessionResources.map(resource => resource.toString()), 'chatSessionResources');
+	}
+
+	unbindChatSession(sessionResource: URI): void {
+		this.unbindChatSessions([sessionResource]);
+	}
+
+	unbindChatSessions(sessionResources: readonly URI[]): void {
+		this.unbindResources(sessionResources.map(resource => resource.toString()), 'chatSessionResources');
+	}
+
+	workspaceContainsChatSession(workspaceId: string, sessionResource: URI): boolean {
+		return this.getWorkspace(workspaceId).chatSessionResources.includes(sessionResource.toString());
+	}
+
+	private bindResources(workspaceId: string, resourceIds: readonly string[], key: 'terminalIds' | 'chatSessionResources'): void {
+		this.getWorkspace(workspaceId);
+		const ownedResources = new Set(this.workspaceList.flatMap(workspace => workspace[key]));
+		const unownedResources = [...new Set(resourceIds)].filter(resourceId => !ownedResources.has(resourceId));
+		if (unownedResources.length === 0) {
+			return;
+		}
+		this.updateWorkspace(workspaceId, workspace => ({ ...workspace, [key]: [...workspace[key], ...unownedResources] }));
+	}
+
+	private unbindResources(resourceIds: readonly string[], key: 'terminalIds' | 'chatSessionResources'): void {
+		const resources = new Set(resourceIds);
+		let changed = false;
+		this.workspaceList = this.workspaceList.map(workspace => {
+			const filtered = workspace[key].filter(resourceId => !resources.has(resourceId));
+			if (filtered.length === workspace[key].length) {
+				return workspace;
+			}
+			changed = true;
+			return { ...workspace, [key]: filtered };
+		});
+		if (changed) {
+			this._onDidChangeWorkspaces.fire();
+		}
+	}
+
+	private updateWorkspace(workspaceId: string, update: (workspace: ILogicalWorkspace) => ILogicalWorkspace): void {
+		this.getWorkspace(workspaceId);
+		this.workspaceList = this.workspaceList.map(workspace => workspace.id === workspaceId ? update(workspace) : workspace);
+		this._onDidChangeWorkspaces.fire();
+	}
+
+	private getWorkspace(workspaceId: string): ILogicalWorkspace {
+		const workspace = this.workspaceList.find(workspace => workspace.id === workspaceId);
+		if (!workspace) {
+			throw new Error(`Unknown logical workspace: ${workspaceId}`);
+		}
+		return workspace;
+	}
+}
+
 export function workbenchInstantiationService(
 	overrides?: {
 		environmentService?: (instantiationService: IInstantiationService) => IEnvironmentService;
@@ -288,6 +420,7 @@ export function workbenchInstantiationService(
 	instantiationService.stub(IProgressService, new TestProgressService());
 	const workspaceContextService = new TestContextService(TestWorkspace);
 	instantiationService.stub(IWorkspaceContextService, workspaceContextService);
+	instantiationService.stub(ILogicalWorkspaceService, disposables.add(new TestLogicalWorkspaceService()));
 	const configService = overrides?.configurationService ? overrides.configurationService(instantiationService) : new TestConfigurationService({
 		files: {
 			participants: {

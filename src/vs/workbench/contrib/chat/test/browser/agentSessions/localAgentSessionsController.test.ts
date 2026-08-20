@@ -14,6 +14,7 @@ import { runWithFakedTimers } from '../../../../../../base/test/common/timeTrave
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
 import { TestInstantiationService } from '../../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { workbenchInstantiationService } from '../../../../../test/browser/workbenchTestServices.js';
+import { ILogicalWorkspaceService, LogicalWorkspaceActivationActor } from '../../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { LocalAgentsSessionsController } from '../../../browser/agentSessions/localAgentSessionsController.js';
 import { IChatService, ResponseModelState } from '../../../common/chatService/chatService.js';
 import { chatModelToChatDetail } from '../../../common/chatService/chatServiceImpl.js';
@@ -259,6 +260,37 @@ suite('LocalAgentsSessionsController', () => {
 			const sessions = controller.items;
 			assert.strictEqual(sessions.length, 1);
 			assert.strictEqual(sessions[0].label, 'History Session');
+		});
+	});
+
+	test('should keep the provider item set authoritative across workspace switches', async () => {
+		return runWithFakedTimers({}, async () => {
+			const controller = createController();
+			const sessionResource = LocalChatSessionUri.forSession('global-provider-session');
+			mockChatService.setLiveSessionItems([]);
+			mockChatService.setHistorySessionItems([{
+				sessionResource,
+				title: 'Global Provider Session',
+				lastMessageDate: Date.now(),
+				isActive: false,
+				lastResponseState: ResponseModelState.Complete,
+				timing: createTestTiming(),
+			}]);
+			await controller.refresh(CancellationToken.None);
+
+			let providerDeltaCount = 0;
+			disposables.add(controller.onDidChangeChatSessionItems(() => providerDeltaCount++));
+			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			const nextWorkspace = logicalWorkspaceService.createWorkspace('Next');
+			logicalWorkspaceService.activateWorkspace(nextWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+
+			assert.deepStrictEqual({
+				items: controller.items.map(item => item.resource.toString()),
+				providerDeltaCount,
+			}, {
+				items: [sessionResource.toString()],
+				providerDeltaCount: 0,
+			});
 		});
 	});
 

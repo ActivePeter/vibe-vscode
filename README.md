@@ -11,7 +11,7 @@ vibe vscode is built on Code - OSS. It evolves the portable development editor o
 Status: ✅ Available　🚧 In progress　⬜ Planned
 
 - ✅ **Web-first operation**: vibe vscode is designed for the browser first. We recommend hosting the development environment on an always-on machine or in the cloud, with the workbench always a web page away. Projects, terminals, and Agent tasks run on the server, while the browser handles interaction and state projection—no desktop client required.
-  - **Non-blocking remote connectivity**: A remote service interruption no longer blocks work with a modal dialog. Reconnecting or unavailable states appear in the status bar, retries resume as soon as the network returns, and current work stays open.
+  - 🚧 **Non-blocking remote connectivity**: Replace modal interruption with status-bar reconnect state, immediate retry after network recovery, and uninterrupted access to the current work. This is not yet included in the current implementation.
 
   After installing dependencies, start the development environment in two terminals:
 

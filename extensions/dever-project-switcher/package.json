@@ -33,16 +33,17 @@
       {
         "command": "dever.openFullscreenPanel",
         "title": "%command.openFullscreenPanel%",
-        "category": "Dever"
+        "category": "vibe vscode"
       },
       {
         "command": "dever.closeFullscreenPanel",
         "title": "%command.closeFullscreenPanel%",
-        "category": "Dever"
+        "category": "vibe vscode"
       }
     ]
   },
   "scripts": {
-    "compile-web": "node ./esbuild.browser.mts"
+    "compile-web": "node ./esbuild.browser.mts",
+    "watch-web": "node ./esbuild.browser.mts --watch"
   }
 }

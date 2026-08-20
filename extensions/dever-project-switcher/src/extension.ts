@@ -50,7 +50,7 @@ function openFullscreenPanel(context: vscode.ExtensionContext): void {
 
 	const panel = vscode.window.createWebviewPanel(
 		FULLSCREEN_PANEL_VIEW_TYPE,
-		vscode.l10n.t('Dever'),
+		vscode.l10n.t('vibe vscode'),
 		vscode.ViewColumn.Active,
 		{
 			enableScripts: true,
@@ -81,8 +81,8 @@ function isFullscreenPanelMessage(value: unknown): value is FullscreenPanelMessa
 
 function renderFullscreenPanel(): string {
 	const nonce = createNonce();
-	const title = escapeHtml(vscode.l10n.t('Dever fullscreen panel'));
-	const description = escapeHtml(vscode.l10n.t('The privileged fullscreen host is active. Dever interfaces can now be mounted in this surface.'));
+	const title = escapeHtml(vscode.l10n.t('vibe vscode fullscreen panel'));
+	const description = escapeHtml(vscode.l10n.t('The privileged fullscreen host is active. vibe vscode interfaces can now be mounted in this surface.'));
 	const close = escapeHtml(vscode.l10n.t('Close'));
 	const language = escapeHtml(vscode.env.language);
 
@@ -140,7 +140,7 @@ function renderFullscreenPanel(): string {
 </head>
 <body>
 	<header>
-		<div class="brand">DEVER</div>
+		<div class="brand">VIBE VSCODE</div>
 		<button id="close" type="button" aria-label="${close}">${close}</button>
 	</header>
 	<main>
@@ -172,5 +172,5 @@ function escapeHtml(value: string): string {
 		.replaceAll('<', '&lt;')
 		.replaceAll('>', '&gt;')
 		.replaceAll('"', '&quot;')
-		.replaceAll("'", '&#039;');
+		.replaceAll('\'', '&#039;');
 }

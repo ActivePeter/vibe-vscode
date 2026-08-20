@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { timeout } from '../../../../base/common/async.js';
+import { errorHandler, setUnexpectedErrorHandler } from '../../../../base/common/errors.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -14,7 +16,7 @@ import { NullLogService } from '../../../../platform/log/common/log.js';
 import { MainThreadWebviewManager } from '../../browser/mainThreadWebviewManager.js';
 import { NullApiDeprecationService } from '../../common/extHostApiDeprecationService.js';
 import { IExtHostRpcService } from '../../common/extHostRpcService.js';
-import { IWebviewContentOptions } from '../../common/extHost.protocol.js';
+import { IWebviewContentOptions, WebviewExtensionDescription } from '../../common/extHost.protocol.js';
 import { ExtHostWebviews } from '../../common/extHostWebview.js';
 import { ExtHostWebviewPanels } from '../../common/extHostWebviewPanels.js';
 import { IExtHostWorkspace } from '../../common/extHostWorkspace.js';
@@ -57,6 +59,41 @@ suite('ExtHostWebview', () => {
 			})
 		} as IExtensionDescription, 'type', 'title', 1, {}));
 	}
+
+	test('disposes the ext host panel when main thread creation is rejected', async () => {
+		const expectedError = new Error('creation rejected');
+		let createdHandle: string | undefined;
+		const shape = new class extends mock<MainThreadWebviewManager>() {
+			async $createWebviewPanel(_extensionData: WebviewExtensionDescription, handle: string): Promise<void> {
+				createdHandle = handle;
+				throw expectedError;
+			}
+			$disposeWebview() { /* noop */ }
+		};
+		const rejectedRpc = SingleProxyRPCProtocol(shape);
+		const extHostWebviews = disposables.add(new ExtHostWebviews(rejectedRpc, { authority: undefined, isRemote: false }, undefined, new NullLogService(), NullApiDeprecationService));
+		const extHostWebviewPanels = disposables.add(new ExtHostWebviewPanels(rejectedRpc, extHostWebviews, undefined));
+		const extension = { extensionLocation: URI.file('/ext/path') } as IExtensionDescription;
+
+		const unexpectedErrors: unknown[] = [];
+		const originalErrorHandler = errorHandler.getUnexpectedErrorHandler();
+		setUnexpectedErrorHandler(error => unexpectedErrors.push(error));
+		try {
+			const panel = extHostWebviewPanels.createWebviewPanel(extension, 'type', 'title', 1, {});
+			let disposed = false;
+			disposables.add(panel.onDidDispose(() => disposed = true));
+
+			await timeout(0);
+
+			assert.strictEqual(disposed, true);
+			assert.ok(createdHandle);
+			assert.strictEqual(extHostWebviewPanels.getWebviewPanel(createdHandle), undefined);
+			assert.throws(() => panel.reveal(), /disposed/);
+			assert.deepStrictEqual(unexpectedErrors, [expectedError]);
+		} finally {
+			setUnexpectedErrorHandler(originalErrorHandler);
+		}
+	});
 
 	test('Cannot register multiple serializers for the same view type', async () => {
 		const viewType = 'view.type';
@@ -282,7 +319,7 @@ suite('ExtHostWebview', () => {
 function createNoopMainThreadWebviews() {
 	return new class extends mock<MainThreadWebviewManager>() {
 		$disposeWebview() { /* noop */ }
-		$createWebviewPanel() { /* noop */ }
+		async $createWebviewPanel(): Promise<void> { /* noop */ }
 		$registerSerializer() { /* noop */ }
 		$unregisterSerializer() { /* noop */ }
 	};

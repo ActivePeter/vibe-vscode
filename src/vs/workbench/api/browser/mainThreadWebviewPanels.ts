@@ -27,18 +27,31 @@ import * as extHostProtocol from '../common/extHost.protocol.js';
 import { MainThreadWebviews, reviveWebviewContentOptions, reviveWebviewExtension } from './mainThreadWebviews.js';
 import { ThemeIcon } from '../../../base/common/themables.js';
 
-const DEVER_FULLSCREEN_EXTENSION_ID = 'dever.dever-project-switcher';
-const DEVER_FULLSCREEN_VIEW_TYPE = 'dever.projectSwitcher.fullscreen';
+const FULLSCREEN_EXTENSION_ID = 'dever.dever-project-switcher';
+const FULLSCREEN_VIEW_TYPE = 'dever.projectSwitcher.fullscreen';
 
 /**
- * Bi-directional map between webview handles and inputs.
+ * The presentation contract attached to a webview handle for its entire lifetime.
+ */
+const enum WebviewPanelPresentation {
+	Editor,
+	FullscreenModal,
+}
+
+interface IWebviewInputEntry {
+	readonly input: WebviewInput;
+	readonly presentation: WebviewPanelPresentation;
+}
+
+/**
+ * Bi-directional map between webview handles and their complete lifecycle records.
  */
 class WebviewInputStore {
-	private readonly _handlesToInputs = new Map<string, WebviewInput>();
+	private readonly _handlesToInputs = new Map<string, IWebviewInputEntry>();
 	private readonly _inputsToHandles = new Map<WebviewInput, string>();
 
-	public add(handle: string, input: WebviewInput): void {
-		this._handlesToInputs.set(handle, input);
+	public add(handle: string, input: WebviewInput, presentation: WebviewPanelPresentation): void {
+		this._handlesToInputs.set(handle, { input, presentation });
 		this._inputsToHandles.set(input, handle);
 	}
 
@@ -47,7 +60,11 @@ class WebviewInputStore {
 	}
 
 	public getInputForHandle(handle: string): WebviewInput | undefined {
-		return this._handlesToInputs.get(handle);
+		return this._handlesToInputs.get(handle)?.input;
+	}
+
+	public getPresentationForHandle(handle: string): WebviewPanelPresentation | undefined {
+		return this._handlesToInputs.get(handle)?.presentation;
 	}
 
 	public delete(handle: string): void {
@@ -62,8 +79,10 @@ class WebviewInputStore {
 		return this._handlesToInputs.size;
 	}
 
-	[Symbol.iterator](): Iterator<WebviewInput> {
-		return this._handlesToInputs.values();
+	*[Symbol.iterator](): Iterator<WebviewInput> {
+		for (const entry of this._handlesToInputs.values()) {
+			yield entry.input;
+		}
 	}
 }
 
@@ -141,9 +160,14 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 
 	public get webviewInputs(): Iterable<WebviewInput> { return this._webviewInputs; }
 
-	public addWebviewInput(handle: extHostProtocol.WebviewHandle, input: WebviewInput, options: { serializeBuffersForPostMessage: boolean }): void {
-		this._webviewInputs.add(handle, input);
-		this._mainThreadWebviews.addWebview(handle, input.webview, options);
+	public addWebviewInput(handle: extHostProtocol.WebviewHandle, input: WebviewInput, options: { serializeBuffersForPostMessage: boolean }, presentation = WebviewPanelPresentation.Editor): void {
+		this._webviewInputs.add(handle, input, presentation);
+		try {
+			this._mainThreadWebviews.addWebview(handle, input.webview, options);
+		} catch (error) {
+			this._webviewInputs.delete(handle);
+			throw error;
+		}
 
 		const disposeSub = input.webview.onDidDispose(() => {
 			disposeSub.dispose();
@@ -154,35 +178,35 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 		});
 	}
 
-	public $createWebviewPanel(
+	public async $createWebviewPanel(
 		extensionData: extHostProtocol.WebviewExtensionDescription,
 		handle: extHostProtocol.WebviewHandle,
 		viewType: string,
 		initData: extHostProtocol.IWebviewInitData,
 		showOptions: extHostProtocol.WebviewPanelShowOptions,
-	): void {
+	): Promise<void> {
 		const extension = reviveWebviewExtension(extensionData);
-		const deverFullscreen = initData.panelOptions.deverFullscreen === true;
-		if (deverFullscreen) {
+		const fullscreen = initData.panelOptions.deverFullscreen === true;
+		if (fullscreen) {
 			const registeredExtension = this._extensionService.extensions.find(candidate => ExtensionIdentifier.equals(candidate.identifier, extension.id));
-			const isTrustedDeverExtension = ExtensionIdentifier.equals(extension.id, DEVER_FULLSCREEN_EXTENSION_ID) &&
-				viewType === DEVER_FULLSCREEN_VIEW_TYPE &&
+			const isTrustedFullscreenExtension = ExtensionIdentifier.equals(extension.id, FULLSCREEN_EXTENSION_ID) &&
+				viewType === FULLSCREEN_VIEW_TYPE &&
 				registeredExtension?.isBuiltin === true &&
 				extension.location !== undefined &&
 				isEqual(registeredExtension.extensionLocation, extension.location);
-			if (!isTrustedDeverExtension) {
-				throw new Error(localize('deverFullscreenPanelUnauthorized', "Only the built-in Dever extension can open the Dever fullscreen panel."));
+			if (!isTrustedFullscreenExtension) {
+				throw new Error(localize('deverFullscreenPanelUnauthorized', "Only the built-in vibe vscode extension can open the vibe vscode fullscreen panel."));
 			}
 			if (this._editorGroupService.activeModalEditorPart) {
-				throw new Error(localize('deverFullscreenPanelModalConflict', "Close the current modal editor before opening the Dever fullscreen panel."));
+				throw new Error(localize('deverFullscreenPanelModalConflict', "Close the current modal editor before opening the vibe vscode fullscreen panel."));
 			}
 		}
 
-		const targetGroup = deverFullscreen ? MODAL_GROUP : this.getTargetGroupFromShowOptions(showOptions);
+		const targetGroup = fullscreen ? MODAL_GROUP : this.getTargetGroupFromShowOptions(showOptions);
 		const mainThreadShowOptions: IWebViewShowOptions = {
-			preserveFocus: deverFullscreen ? false : !!showOptions.preserveFocus,
+			preserveFocus: fullscreen ? false : !!showOptions.preserveFocus,
 			group: targetGroup,
-			modal: deverFullscreen ? { fullscreen: true } : undefined
+			modal: fullscreen ? { fullscreen: true } : undefined
 		};
 
 		const origin = this.webviewOriginStore.getOrigin(viewType, extension.id);
@@ -196,7 +220,17 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 			extension
 		}, this.webviewPanelViewType.fromExternal(viewType), initData.title, undefined, mainThreadShowOptions);
 
-		this.addWebviewInput(handle, webview, { serializeBuffersForPostMessage: initData.serializeBuffersForPostMessage });
+		try {
+			this.addWebviewInput(
+				handle,
+				webview,
+				{ serializeBuffersForPostMessage: initData.serializeBuffersForPostMessage },
+				fullscreen ? WebviewPanelPresentation.FullscreenModal : WebviewPanelPresentation.Editor,
+			);
+		} catch (error) {
+			webview.dispose();
+			throw error;
+		}
 	}
 
 	public $disposeWebview(handle: extHostProtocol.WebviewHandle): void {
@@ -224,8 +258,9 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 			return;
 		}
 
-		const targetGroup = this.getTargetGroupFromShowOptions(showOptions);
-		this._webviewWorkbenchService.revealWebview(webview, targetGroup, !!showOptions.preserveFocus);
+		const fullscreen = this._webviewInputs.getPresentationForHandle(handle) === WebviewPanelPresentation.FullscreenModal;
+		const targetGroup = fullscreen ? MODAL_GROUP : this.getTargetGroupFromShowOptions(showOptions);
+		this._webviewWorkbenchService.revealWebview(webview, targetGroup, fullscreen ? false : !!showOptions.preserveFocus);
 	}
 
 	private getTargetGroupFromShowOptions(showOptions: extHostProtocol.WebviewPanelShowOptions): PreferredGroup {

@@ -5,9 +5,11 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { ViewContainerLocation } from '../../../common/views.js';
 import { IWorkbenchLayoutService, Parts } from '../../../services/layout/browser/layoutService.js';
+import { ILogicalWorkspaceProjection, ILogicalWorkspaceProjectionContext, LogicalWorkspaceProjectionCoordinator } from '../../../services/logicalWorkspace/browser/logicalWorkspaceProjection.js';
 import { ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceShellPartLayout } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { IPaneCompositePartService } from '../../../services/panecomposite/browser/panecomposite.js';
 
@@ -23,59 +25,29 @@ interface ILogicalWorkspaceShellPartBinding {
  * Saves the projected workbench shell before a logical workspace switch and restores the target
  * shell afterwards. The logical workspace service remains the only persistence authority.
  */
-export class LogicalWorkspaceLayoutAdapter extends Disposable implements IWorkbenchContribution {
+export class LogicalWorkspaceLayoutAdapter extends Disposable implements IWorkbenchContribution, ILogicalWorkspaceProjection {
 
 	static readonly ID = 'workbench.contrib.logicalWorkspaceLayoutAdapter';
-
-	private reconcileRequested = false;
-	private reconcileRunning = false;
-	private projectedWorkspaceId: string;
+	readonly id = LogicalWorkspaceLayoutAdapter.ID;
 
 	constructor(
 		@ILogicalWorkspaceService private readonly logicalWorkspaceService: ILogicalWorkspaceService,
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 		@IPaneCompositePartService private readonly paneCompositePartService: IPaneCompositePartService,
+		@IStorageService storageService: IStorageService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		this.projectedWorkspaceId = this.logicalWorkspaceService.activeWorkspace.id;
-
-		this._register(this.logicalWorkspaceService.onWillChangeActiveWorkspace(event => {
-			if (this.projectedWorkspaceId === event.previousWorkspaceId) {
-				this.logicalWorkspaceService.setShellLayout(event.previousWorkspaceId, this.captureShellLayout());
-			}
-		}));
-		this._register(this.logicalWorkspaceService.onDidChangeActiveWorkspace(() => this.requestReconcile()));
+		this._register(new LogicalWorkspaceProjectionCoordinator(logicalWorkspaceService, this, storageService, logService));
 	}
 
-	private requestReconcile(): void {
-		this.reconcileRequested = true;
-		if (!this.reconcileRunning) {
-			void this.reconcileLoop();
-		}
+	capture(workspaceId: string): void {
+		this.logicalWorkspaceService.setShellLayout(workspaceId, this.captureShellLayout());
 	}
 
-	private async reconcileLoop(): Promise<void> {
-		this.reconcileRunning = true;
-		try {
-			while (this.reconcileRequested) {
-				this.reconcileRequested = false;
-				const workspace = this.logicalWorkspaceService.activeWorkspace;
-				const sequence = this.logicalWorkspaceService.activationSequence;
-				if (workspace.shellLayout) {
-					await this.restoreShellLayout(workspace.id, sequence, workspace.shellLayout);
-				}
-				if (this.isCurrentIntent(workspace.id, sequence)) {
-					this.projectedWorkspaceId = workspace.id;
-				}
-			}
-		} catch (error) {
-			this.logService.error('Logical workspace layout reconciliation failed', error);
-		} finally {
-			this.reconcileRunning = false;
-			if (this.reconcileRequested) {
-				this.requestReconcile();
-			}
+	async restore(context: ILogicalWorkspaceProjectionContext): Promise<void> {
+		if (context.workspace.shellLayout) {
+			await this.restoreShellLayout(context, context.workspace.shellLayout);
 		}
 	}
 
@@ -98,10 +70,10 @@ export class LogicalWorkspaceLayoutAdapter extends Disposable implements IWorkbe
 		};
 	}
 
-	private async restoreShellLayout(workspaceId: string, sequence: number, layout: ILogicalWorkspaceShellLayout): Promise<void> {
+	private async restoreShellLayout(context: ILogicalWorkspaceProjectionContext, layout: ILogicalWorkspaceShellLayout): Promise<void> {
 		const bindings = this.getShellPartBindings(layout);
 		for (const binding of bindings) {
-			if (!this.isCurrentIntent(workspaceId, sequence)) {
+			if (!context.isCurrent()) {
 				return;
 			}
 			if (!binding.layout.activeCompositeId) {
@@ -120,17 +92,25 @@ export class LogicalWorkspaceLayoutAdapter extends Disposable implements IWorkbe
 			}
 		}
 
-		if (!this.isCurrentIntent(workspaceId, sequence)) {
+		if (!context.isCurrent()) {
 			return;
 		}
+
+		// Materialize every part that must become visible or whose geometry must change. Geometry is
+		// always applied before final visibility, so hidden state cannot inherit another Workspace's size.
 		for (const binding of bindings) {
-			if (binding.layout.visible && !this.layoutService.isVisible(binding.part)) {
+			const currentSize = this.layoutService.getSize(binding.part);
+			const needsResize = currentSize.width !== binding.layout.width || currentSize.height !== binding.layout.height;
+			if ((binding.layout.visible || needsResize) && !this.layoutService.isVisible(binding.part)) {
 				this.layoutService.setPartHidden(false, binding.part);
 			}
 		}
 
 		for (const binding of bindings) {
-			if (!binding.layout.visible || !this.layoutService.isVisible(binding.part)) {
+			if (!context.isCurrent()) {
+				return;
+			}
+			if (!this.layoutService.isVisible(binding.part)) {
 				continue;
 			}
 			const currentSize = this.layoutService.getSize(binding.part);
@@ -140,7 +120,7 @@ export class LogicalWorkspaceLayoutAdapter extends Disposable implements IWorkbe
 		}
 
 		for (const binding of bindings) {
-			if (!this.isCurrentIntent(workspaceId, sequence)) {
+			if (!context.isCurrent()) {
 				return;
 			}
 			if (!binding.layout.visible && this.layoutService.isVisible(binding.part)) {
@@ -155,9 +135,5 @@ export class LogicalWorkspaceLayoutAdapter extends Disposable implements IWorkbe
 			{ part: Parts.PANEL_PART, location: ViewContainerLocation.Panel, layout: layout.panel },
 			{ part: Parts.AUXILIARYBAR_PART, location: ViewContainerLocation.AuxiliaryBar, layout: layout.auxiliaryBar },
 		];
-	}
-
-	private isCurrentIntent(workspaceId: string, sequence: number): boolean {
-		return this.logicalWorkspaceService.activeWorkspace.id === workspaceId && this.logicalWorkspaceService.activationSequence === sequence;
 	}
 }

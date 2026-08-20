@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { onUnexpectedError } from '../../../base/common/errors.js';
 import { Emitter } from '../../../base/common/event.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { URI } from '../../../base/common/uri.js';
@@ -215,7 +216,7 @@ export class ExtHostWebviewPanels extends Disposable implements extHostProtocol.
 
 		const serializeBuffersForPostMessage = shouldSerializeBuffersForPostMessage(extension);
 		const handle = ExtHostWebviewPanels.newHandle();
-		this._proxy.$createWebviewPanel(toExtensionData(extension), handle, viewType, {
+		const createWebviewPanel = this._proxy.$createWebviewPanel(toExtensionData(extension), handle, viewType, {
 			title,
 			panelOptions: serializeWebviewPanelOptions(extension, options),
 			webviewOptions: serializeWebviewOptions(extension, this.workspace, options),
@@ -224,6 +225,14 @@ export class ExtHostWebviewPanels extends Disposable implements extHostProtocol.
 
 		const webview = this.webviews.createNewWebview(handle, options, extension);
 		const panel = this.createNewWebviewPanel(handle, viewType, title, viewColumn, options, webview, true);
+		void createWebviewPanel.catch(error => {
+			if (this._webviewPanels.get(handle) === panel) {
+				panel.dispose();
+				this._webviewPanels.delete(handle);
+				this.webviews.deleteWebview(handle);
+			}
+			onUnexpectedError(error);
+		});
 
 		return panel;
 	}

@@ -4,18 +4,21 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { deepStrictEqual, fail, strictEqual } from 'assert';
-import { Emitter } from '../../../../../base/common/event.js';
+import { DeferredPromise } from '../../../../../base/common/async.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
-import { TerminalLocation, TitleEventSource, type ITerminalBackend, type TerminalIcon } from '../../../../../platform/terminal/common/terminal.js';
+import { TerminalLocation, TitleEventSource, type IPtyHostAttachTarget, type IShellLaunchConfig, type ITerminalBackend, type TerminalIcon } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../browser/terminal.js';
 import { TerminalService } from '../../browser/terminalService.js';
-import { TERMINAL_CONFIG_SECTION } from '../../common/terminal.js';
+import { ITerminalProfileService, TERMINAL_CONFIG_SECTION } from '../../common/terminal.js';
+import { IWorkbenchEnvironmentService } from '../../../../services/environment/common/environmentService.js';
+import { ILogicalWorkspaceService, LogicalWorkspaceActivationActor } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { IRemoteAgentService } from '../../../../services/remote/common/remoteAgentService.js';
-import { workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
+import { TestEnvironmentService, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import type { IConfigurationChangeEvent } from '../../../../../platform/configuration/common/configuration.js';
 
 suite('Workbench - TerminalService', () => {
@@ -124,6 +127,99 @@ suite('Workbench - TerminalService', () => {
 				strictEqual(backgroundedTerminalDisposables.size, 0);
 				strictEqual(disposalEmitters[i].hasListeners(), false);
 			}
+		});
+
+		test('should restore remote background terminals during reconnection', async () => {
+			const attachTarget = {
+				id: 17,
+				logicalTerminalId: 'remote-background-terminal',
+			} satisfies Partial<IPtyHostAttachTarget> as IPtyHostAttachTarget;
+			let reduceConnectionGraceTimeCount = 0;
+			const backend = {
+				onDidRequestDetach: Event.None,
+				async getTerminalLayoutInfo() {
+					return { tabs: [], background: [attachTarget] };
+				},
+				async reduceConnectionGraceTime() {
+					reduceConnectionGraceTimeCount++;
+				},
+			} satisfies Partial<ITerminalBackend> as unknown as ITerminalBackend;
+			const remoteEnvironmentService = Object.create(TestEnvironmentService, {
+				remoteAuthority: { value: 'test-remote' },
+			}) as IWorkbenchEnvironmentService;
+			const remoteInstantiationService = workbenchInstantiationService({
+				configurationService: () => configurationService,
+				environmentService: () => remoteEnvironmentService,
+			}, store);
+			remoteInstantiationService.stub(ITerminalInstanceService, 'getBackend', async (remoteAuthority: string | undefined) => remoteAuthority === 'test-remote' ? backend : undefined);
+			remoteInstantiationService.stub(ITerminalInstanceService, 'getRegisteredBackends', []);
+			remoteInstantiationService.stub(ITerminalProfileService, 'getContributedDefaultProfile', async () => undefined);
+			remoteInstantiationService.stub(IRemoteAgentService, 'getConnection', null);
+
+			let revivedShellLaunchConfig: IShellLaunchConfig | undefined;
+			const disposalEmitter = store.add(new Emitter<ITerminalInstance>());
+			const revivedInstance = {
+				instanceId: 18,
+				get shellLaunchConfig() { return revivedShellLaunchConfig!; },
+				onDisposed: disposalEmitter.event,
+				onIconChanged: Event.None,
+				onProcessIdReady: Event.None,
+				onTitleChanged: Event.None,
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			remoteInstantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', (config: Parameters<ITerminalInstanceService['convertProfileToShellLaunchConfig']>[0]) => revivedShellLaunchConfig = config as IShellLaunchConfig);
+			remoteInstantiationService.stub(ITerminalInstanceService, 'createInstance', () => revivedInstance);
+			const remoteTerminalService = store.add(remoteInstantiationService.createInstance(TerminalService));
+			remoteInstantiationService.stub(ITerminalService, remoteTerminalService);
+			remoteTerminalService.registerProcessSupport(true);
+
+			await remoteTerminalService.whenConnected;
+
+			deepStrictEqual({
+				reduceConnectionGraceTimeCount,
+				restoredInBackground: remoteTerminalService.instances.includes(revivedInstance),
+				attachTarget: revivedShellLaunchConfig?.attachPersistentProcess,
+			}, {
+				reduceConnectionGraceTimeCount: 1,
+				restoredInBackground: true,
+				attachTarget,
+			});
+		});
+	});
+
+	suite('logical workspace terminals', () => {
+		test('should retain the initiating Workspace while terminal profiles resolve', async () => {
+			const profilesReady = new DeferredPromise<void>();
+			instantiationService.stub(ITerminalProfileService, 'profilesReady', profilesReady.p);
+			const shellLaunchConfig: IShellLaunchConfig = { executable: '/bin/sh' };
+			instantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', () => shellLaunchConfig);
+
+			const instance = {
+				shellLaunchConfig,
+				shellType: undefined,
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			instantiationService.stub(ITerminalGroupService, 'createGroup', () => ({
+				terminalInstances: [instance],
+			} satisfies Partial<ITerminalGroup> as ITerminalGroup));
+			terminalService.registerProcessSupport(true);
+
+			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			const initiatingWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
+			const targetWorkspace = logicalWorkspaceService.createWorkspace('Target');
+			const terminalPromise = terminalService.createTerminal({
+				config: { executable: '/bin/sh' },
+				skipContributedProfileCheck: true,
+			});
+			logicalWorkspaceService.activateWorkspace(targetWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+			profilesReady.complete();
+			await terminalPromise;
+
+			deepStrictEqual({
+				initiatingWorkspaceOwnsTerminal: logicalWorkspaceService.workspaceContainsTerminal(initiatingWorkspaceId, shellLaunchConfig.logicalTerminalId!),
+				targetWorkspaceOwnsTerminal: logicalWorkspaceService.workspaceContainsTerminal(targetWorkspace.id, shellLaunchConfig.logicalTerminalId!),
+			}, {
+				initiatingWorkspaceOwnsTerminal: true,
+				targetWorkspaceOwnsTerminal: false,
+			});
 		});
 	});
 

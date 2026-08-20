@@ -468,6 +468,8 @@ export class TerminalService extends Disposable implements ITerminalService {
 		backend.reduceConnectionGraceTime();
 		mark('code/terminal/willRecreateTerminalGroups');
 		await this._recreateTerminalGroups(layoutInfo);
+		const revivedInstances = await this._reviveBackgroundTerminalInstances(layoutInfo?.background ?? []);
+		this._backgroundedTerminalInstances = revivedInstances.map(instance => ({ instance }));
 		mark('code/terminal/didRecreateTerminalGroups');
 		// now that terminals have been restored,
 		// attach listeners to update remote when terminals are changed
@@ -977,6 +979,8 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async createTerminal(options?: ICreateTerminalOptions): Promise<ITerminalInstance> {
+		const targetLogicalWorkspaceId = this._logicalWorkspaceService.activeWorkspace.id;
+
 		// Await the initialization of available profiles as long as this is not a pty terminal or a
 		// local terminal in a remote workspace as profile won't be used in those cases and these
 		// terminals need to be launched before remote connections are established.
@@ -1073,7 +1077,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 			throw new Error('Could not create terminal when process support is not registered');
 		}
 
-		this._prepareLogicalWorkspaceTerminal(shellLaunchConfig);
+		this._prepareLogicalWorkspaceTerminal(shellLaunchConfig, targetLogicalWorkspaceId);
 		this._evaluateLocalCwd(shellLaunchConfig);
 		const location = await this.resolveLocation(options?.location) || this._terminalConfigurationService.defaultLocation;
 
@@ -1101,7 +1105,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return instance;
 	}
 
-	private _prepareLogicalWorkspaceTerminal(shellLaunchConfig: IShellLaunchConfig): void {
+	private _prepareLogicalWorkspaceTerminal(shellLaunchConfig: IShellLaunchConfig, targetWorkspaceId: string): void {
 		const attachTarget = shellLaunchConfig.attachPersistentProcess;
 		if (!shellLaunchConfig.logicalTerminalId && attachTarget?.logicalTerminalId) {
 			shellLaunchConfig.logicalTerminalId = attachTarget.logicalTerminalId;
@@ -1117,7 +1121,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		const logicalTerminalId = shellLaunchConfig.logicalTerminalId ?? generateUuid();
 		shellLaunchConfig.logicalTerminalId = logicalTerminalId;
 		shellLaunchConfig.forcePersist = true;
-		this._logicalWorkspaceService.bindTerminal(this._logicalWorkspaceService.activeWorkspace.id, logicalTerminalId);
+		this._logicalWorkspaceService.bindTerminal(targetWorkspaceId, logicalTerminalId);
 	}
 
 	async createAndFocusTerminal(options?: ICreateTerminalOptions): Promise<ITerminalInstance> {

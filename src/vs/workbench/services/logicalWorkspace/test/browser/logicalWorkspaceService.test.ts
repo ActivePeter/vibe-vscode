@@ -110,6 +110,30 @@ suite('LogicalWorkspaceService', () => {
 		});
 	});
 
+	test('recovers a missed broadcast before an older page write can split state', async () => {
+		const firstStorageService = disposables.add(new TestStorageService());
+		const secondStorageService = disposables.add(new TestStorageService());
+		const firstStore = disposables.add(new LogicalWorkspaceStateStore(firstStorageService, contextService));
+		const winner = { schemaVersion: 2, workspaces: [{ id: 'winner' }] };
+		firstStore.writeSharedState({ schemaVersion: 2, workspaces: [{ id: 'superseded' }] });
+		firstStore.writeSharedState(winner);
+
+		const secondStore = disposables.add(new LogicalWorkspaceStateStore(secondStorageService, contextService));
+		const secondPageConverged = Event.toPromise(secondStore.onDidChangeSharedState);
+		secondStore.writeSharedState({ schemaVersion: 2, workspaces: [{ id: 'stale-write' }] });
+		await secondPageConverged;
+
+		assert.deepStrictEqual({
+			firstState: firstStore.readSharedState(),
+			secondState: secondStore.readSharedState(),
+			secondStoredValue: secondStorageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE),
+		}, {
+			firstState: winner,
+			secondState: winner,
+			secondStoredValue: firstStorageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE),
+		});
+	});
+
 	test('announces activation before changing the active workspace', () => {
 		const service = createService();
 		const previousWorkspaceId = service.activeWorkspace.id;

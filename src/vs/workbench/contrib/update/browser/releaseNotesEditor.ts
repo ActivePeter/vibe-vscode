@@ -106,7 +106,7 @@ export class ReleaseNotesManager extends Disposable {
 				preserveFocus: false,
 			});
 		} else {
-			this._currentReleaseNotes = this._webviewWorkbenchService.openWebview(
+			this._currentReleaseNotes = await this._webviewWorkbenchService.openWebview(
 				{
 					title,
 					options: {

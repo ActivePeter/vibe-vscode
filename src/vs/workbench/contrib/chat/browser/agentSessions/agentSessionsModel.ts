@@ -578,17 +578,21 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 			const changedChatSessionTypes = new Set<string>();
 			const targetWorkspaceId = this.logicalWorkspaceService.activeWorkspace.id;
 			const addedSessionResources = (delta.addedOrUpdated ?? []).map(session => session.resource);
+			const removedSessionResources = delta.removed ?? [];
 
 			// Ownership is captured at the provider-delta boundary. The throttled provider refresh may
-			// be coalesced with a later delta from another Workspace, but first-owner-wins keeps each
-			// newly announced resource attached to the Workspace that initiated its appearance.
-			this.mutateSessionOwnership(() => this.logicalWorkspaceService.bindChatSessions(targetWorkspaceId, addedSessionResources));
+			// be coalesced with a later delta from another Workspace, so removals must release their
+			// previous owner before a rapid re-add can bind the resource to its new Workspace.
+			this.mutateSessionOwnership(() => {
+				this.logicalWorkspaceService.unbindChatSessions(removedSessionResources);
+				this.logicalWorkspaceService.bindChatSessions(targetWorkspaceId, addedSessionResources);
+			});
 
 			for (const resource of delta.addedOrUpdated ?? []) {
 				changedChatSessionTypes.add(getChatSessionType(resource.resource));
 			}
 
-			for (const resource of delta.removed ?? []) {
+			for (const resource of removedSessionResources) {
 				changedChatSessionTypes.add(getChatSessionType(resource));
 			}
 

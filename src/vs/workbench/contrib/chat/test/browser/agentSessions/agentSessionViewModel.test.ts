@@ -414,6 +414,39 @@ suite('AgentSessions', () => {
 			});
 		});
 
+		test('should move ownership when a removed URI is rapidly re-added in another Workspace', async () => {
+			return runWithFakedTimers({}, async () => {
+				const session = makeSimpleSessionItem('rapidly-moved-session');
+				const controller = new StaticChatSessionItemController([session]);
+				mockChatSessionsService.registerChatSessionItemController(chatSessionTestType, controller);
+				viewModel = createViewModel();
+
+				const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+				const firstWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
+				const secondWorkspace = logicalWorkspaceService.createWorkspace('Second');
+				await viewModel.resolve(chatSessionTestType);
+
+				controller.setItems([]);
+				mockChatSessionsService.fireDidChangeSessionItems({ removed: [session.resource] });
+				logicalWorkspaceService.activateWorkspace(secondWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+
+				controller.setItems([session]);
+				const sessionsChanged = Event.toPromise(viewModel.onDidChangeSessions);
+				mockChatSessionsService.fireDidChangeSessionItems({ addedOrUpdated: [session] });
+				await sessionsChanged;
+
+				assert.deepStrictEqual({
+					firstWorkspaceOwnsSession: logicalWorkspaceService.workspaceContainsChatSession(firstWorkspaceId, session.resource),
+					secondWorkspaceOwnsSession: logicalWorkspaceService.workspaceContainsChatSession(secondWorkspace.id, session.resource),
+					visibleSessions: viewModel.sessions.map(session => session.resource.toString()),
+				}, {
+					firstWorkspaceOwnsSession: false,
+					secondWorkspaceOwnsSession: true,
+					visibleSessions: [session.resource.toString()],
+				});
+			});
+		});
+
 		test('should refresh when session ownership changes without changing the active Workspace', async () => {
 			return runWithFakedTimers({}, async () => {
 				const session = makeSimpleSessionItem('externally-unbound-session');

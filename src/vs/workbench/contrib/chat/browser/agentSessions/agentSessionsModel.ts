@@ -26,7 +26,7 @@ import { IWorkspaceTrustManagementService } from '../../../../../platform/worksp
 import { IChatEntitlementService } from '../../../../services/chat/common/chatEntitlementService.js';
 import { ILifecycleService } from '../../../../services/lifecycle/common/lifecycle.js';
 import { Extensions, IOutputChannelRegistry, IOutputService } from '../../../../services/output/common/output.js';
-import { ILogicalWorkspaceService } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILogicalWorkspaceService, onDidChangeLogicalWorkspaceStateSlice } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { ChatSessionStatus as AgentSessionStatus, IChatSessionFileChange, IChatSessionFileChange2, IChatSessionItem, IChatSessionsService, isSessionInProgressStatus, ResolvedChatSessionsExtensionPoint } from '../../common/chatSessionsService.js';
 import { getChatSessionType } from '../../common/model/chatUri.js';
 import { IChatWidgetService } from '../chat.js';
@@ -525,6 +525,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 
 	private readonly cache: AgentSessionsCache;
 	private readonly logger: AgentSessionsLogger;
+	private sessionOwnershipMutationDepth = 0;
 
 	constructor(
 		@IChatSessionsService private readonly chatSessionsService: IChatSessionsService,
@@ -581,7 +582,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 			// Ownership is captured at the provider-delta boundary. The throttled provider refresh may
 			// be coalesced with a later delta from another Workspace, but first-owner-wins keeps each
 			// newly announced resource attached to the Workspace that initiated its appearance.
-			this.logicalWorkspaceService.bindChatSessions(targetWorkspaceId, addedSessionResources);
+			this.mutateSessionOwnership(() => this.logicalWorkspaceService.bindChatSessions(targetWorkspaceId, addedSessionResources));
 
 			for (const resource of delta.addedOrUpdated ?? []) {
 				changedChatSessionTypes.add(getChatSessionType(resource.resource));
@@ -597,7 +598,14 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		}));
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => this.resolve(undefined)));
 		this._register(this.workspaceTrustManagementService.onDidChangeTrust(() => this.resolve(undefined)));
-		this._register(this.logicalWorkspaceService.onDidChangeActiveWorkspace(() => this._onDidChangeSessions.fire()));
+		this._register(onDidChangeLogicalWorkspaceStateSlice(this.logicalWorkspaceService, state => ({
+			activeWorkspaceId: state.activeWorkspaceId,
+			sessionResources: state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.chatSessionResources ?? [],
+		}))(() => {
+			if (this.sessionOwnershipMutationDepth === 0) {
+				this._onDidChangeSessions.fire();
+			}
+		}));
 
 		// State
 		this._register(this.storageService.onWillSaveState(() => {
@@ -608,6 +616,21 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 
 	getSession(resource: URI): IAgentSession | undefined {
 		return this._sessions.get(resource);
+	}
+
+	/**
+	 * Ownership methods broadcast synchronously. Model-originated ownership writes are one part of
+	 * a larger Session-model transaction, whose final change event is emitted after `_sessions` is
+	 * committed. Suppressing only that synchronous echo keeps observers from seeing partial state;
+	 * external ownership changes continue through the state-slice listener above.
+	 */
+	private mutateSessionOwnership(mutation: () => void): void {
+		this.sessionOwnershipMutationDepth++;
+		try {
+			mutation();
+		} finally {
+			this.sessionOwnershipMutationDepth--;
+		}
 	}
 
 	/**
@@ -742,7 +765,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 				return;
 			}
 
-			this.logicalWorkspaceService.bindChatSessions(targetWorkspaceId, providerSessions.map(session => session.resource));
+			this.mutateSessionOwnership(() => this.logicalWorkspaceService.bindChatSessions(targetWorkspaceId, providerSessions.map(session => session.resource)));
 			for (const session of providerSessions) {
 				let icon: ThemeIcon;
 				let providerLabel: string;
@@ -822,7 +845,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		}
 
 		this._sessions = sessions;
-		this.logicalWorkspaceService.unbindChatSessions(removedProviderSessionResources);
+		this.mutateSessionOwnership(() => this.logicalWorkspaceService.unbindChatSessions(removedProviderSessionResources));
 		this._resolved = true;
 
 		this.migrateReadStateToProvider(sessions.values());

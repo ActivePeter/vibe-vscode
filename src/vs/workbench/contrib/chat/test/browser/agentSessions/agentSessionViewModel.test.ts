@@ -414,6 +414,37 @@ suite('AgentSessions', () => {
 			});
 		});
 
+		test('should refresh when session ownership changes without changing the active Workspace', async () => {
+			return runWithFakedTimers({}, async () => {
+				const session = makeSimpleSessionItem('externally-unbound-session');
+				const controller = new StaticChatSessionItemController([session]);
+				mockChatSessionsService.registerChatSessionItemController(chatSessionTestType, controller);
+				viewModel = createViewModel();
+				await viewModel.resolve(chatSessionTestType);
+
+				const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+				const activeWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
+				let changeCount = 0;
+				disposables.add(viewModel.onDidChangeSessions(() => changeCount++));
+				logicalWorkspaceService.setShellLayout(activeWorkspaceId, {
+					primarySideBar: { visible: true, width: 280, height: 800, activeCompositeId: 'workbench.view.explorer' },
+					panel: { visible: false, width: 1200, height: 260, activeCompositeId: 'workbench.panel.terminal' },
+					auxiliaryBar: { visible: false, width: 300, height: 800, activeCompositeId: '' },
+				});
+				logicalWorkspaceService.unbindChatSession(session.resource);
+
+				assert.deepStrictEqual({
+					activeWorkspaceId: logicalWorkspaceService.activeWorkspace.id,
+					changeCount,
+					visibleSessions: viewModel.sessions.map(session => session.resource.toString()),
+				}, {
+					activeWorkspaceId,
+					changeCount: 1,
+					visibleSessions: [],
+				});
+			});
+		});
+
 		test('should maintain provider reference in session view model', async () => {
 			return runWithFakedTimers({}, async () => {
 				const controller = new StaticChatSessionItemController([makeSimpleSessionItem('session-1')]);

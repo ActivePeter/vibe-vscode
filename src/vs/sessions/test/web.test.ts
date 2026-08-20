@@ -36,6 +36,7 @@ import { getSingletonServiceDescriptors } from '../../platform/instantiation/com
 import { ServiceIdentifier } from '../../platform/instantiation/common/instantiation.js';
 import { IWorkbench } from '../../workbench/browser/web.api.js';
 import { isEqual } from '../../base/common/resources.js';
+import { ILogicalWorkspaceService } from '../../workbench/services/logicalWorkspace/common/logicalWorkspace.js';
 
 /**
  * Mock files pre-seeded in the in-memory file system. These match the
@@ -557,6 +558,9 @@ export class TestSessionsBrowserMain extends SessionsBrowserMain {
 		// getSingletonServiceDescriptors() returns the mutable internal array, so
 		// replacing entries here ensures both BrowserMain and Workbench pick up mocks.
 		const registry = getSingletonServiceDescriptors();
+		if (!registry.some(([serviceId]) => serviceId === ILogicalWorkspaceService)) {
+			throw new Error('Sessions entrypoint did not register ILogicalWorkspaceService');
+		}
 		const overrides: [ServiceIdentifier<any>, SyncDescriptor<any>][] = [
 			[IChatEntitlementService, new SyncDescriptor(MockChatEntitlementService)],
 			[IDefaultAccountService, new SyncDescriptor(MockDefaultAccountService)],

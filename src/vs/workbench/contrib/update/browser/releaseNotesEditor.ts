@@ -101,7 +101,10 @@ export class ReleaseNotesManager extends Disposable {
 		if (this._currentReleaseNotes) {
 			this._currentReleaseNotes.setWebviewTitle(title);
 			this._currentReleaseNotes.webview.setHtml(html);
-			this._webviewWorkbenchService.revealWebview(this._currentReleaseNotes, activeEditorPane ? activeEditorPane.group : this._editorGroupService.activeGroup, false);
+			this._webviewWorkbenchService.revealWebview(this._currentReleaseNotes, {
+				group: activeEditorPane ? activeEditorPane.group : this._editorGroupService.activeGroup,
+				preserveFocus: false,
+			});
 		} else {
 			this._currentReleaseNotes = this._webviewWorkbenchService.openWebview(
 				{

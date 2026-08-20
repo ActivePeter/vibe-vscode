@@ -202,12 +202,7 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 			}
 		}
 
-		const targetGroup = fullscreen ? MODAL_GROUP : this.getTargetGroupFromShowOptions(showOptions);
-		const mainThreadShowOptions: IWebViewShowOptions = {
-			preserveFocus: fullscreen ? false : !!showOptions.preserveFocus,
-			group: targetGroup,
-			modal: fullscreen ? { fullscreen: true } : undefined
-		};
+		const mainThreadShowOptions = this.getWorkbenchShowOptions(showOptions, fullscreen);
 
 		const origin = this.webviewOriginStore.getOrigin(viewType, extension.id);
 
@@ -259,8 +254,15 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 		}
 
 		const fullscreen = this._webviewInputs.getPresentationForHandle(handle) === WebviewPanelPresentation.FullscreenModal;
-		const targetGroup = fullscreen ? MODAL_GROUP : this.getTargetGroupFromShowOptions(showOptions);
-		this._webviewWorkbenchService.revealWebview(webview, targetGroup, fullscreen ? false : !!showOptions.preserveFocus);
+		this._webviewWorkbenchService.revealWebview(webview, this.getWorkbenchShowOptions(showOptions, fullscreen));
+	}
+
+	private getWorkbenchShowOptions(showOptions: extHostProtocol.WebviewPanelShowOptions, fullscreen: boolean): IWebViewShowOptions {
+		return {
+			preserveFocus: fullscreen ? false : !!showOptions.preserveFocus,
+			group: fullscreen ? MODAL_GROUP : this.getTargetGroupFromShowOptions(showOptions),
+			modal: fullscreen ? { fullscreen: true } : undefined,
+		};
 	}
 
 	private getTargetGroupFromShowOptions(showOptions: extHostProtocol.WebviewPanelShowOptions): PreferredGroup {

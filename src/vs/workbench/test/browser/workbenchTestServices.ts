@@ -167,7 +167,7 @@ import { LabelService } from '../../services/label/common/labelService.js';
 import { ILanguageDetectionService } from '../../services/languageDetection/common/languageDetectionWorkerService.js';
 import { IPartVisibilityChangeEvent, IWorkbenchLayoutService, PanelAlignment, Position as PartPosition, Parts, SINGLE_WINDOW_PARTS } from '../../services/layout/browser/layoutService.js';
 import { ILifecycleService, InternalBeforeShutdownEvent, IWillShutdownEventJoiner, ShutdownReason, WillShutdownEvent } from '../../services/lifecycle/common/lifecycle.js';
-import { ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor } from '../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceStateChangeEvent, ILogicalWorkspaceStateSnapshot, LogicalWorkspaceActivationActor, LogicalWorkspaceStateChangeKind } from '../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { IPaneCompositePartService } from '../../services/panecomposite/browser/panecomposite.js';
 import { IPathService } from '../../services/path/common/pathService.js';
 import { QuickInputService } from '../../services/quickinput/browser/quickInputService.js';
@@ -271,6 +271,9 @@ export class TestLogicalWorkspaceService extends Disposable implements ILogicalW
 	private readonly _onDidChangeWorkspaces = this._register(new Emitter<void>());
 	readonly onDidChangeWorkspaces = this._onDidChangeWorkspaces.event;
 
+	private readonly _onDidChangeState = this._register(new Emitter<ILogicalWorkspaceStateChangeEvent>());
+	readonly onDidChangeState = this._onDidChangeState.event;
+
 	private workspaceCounter = 1;
 	private workspaceList: ILogicalWorkspace[] = [{
 		id: 'test-logical-workspace-0',
@@ -282,11 +285,13 @@ export class TestLogicalWorkspaceService extends Disposable implements ILogicalW
 	private activeWorkspaceId = this.workspaceList[0].id;
 	private _activationSequence = 0;
 
+	get state(): ILogicalWorkspaceStateSnapshot { return { activeWorkspaceId: this.activeWorkspaceId, workspaces: this.workspaceList }; }
 	get workspaces(): readonly ILogicalWorkspace[] { return this.workspaceList; }
 	get activeWorkspace(): ILogicalWorkspace { return this.getWorkspace(this.activeWorkspaceId); }
 	get activationSequence(): number { return this._activationSequence; }
 
 	createWorkspace(name: string): ILogicalWorkspace {
+		const previousState = this.state;
 		const workspace: ILogicalWorkspace = {
 			id: `test-logical-workspace-${this.workspaceCounter++}`,
 			name,
@@ -295,6 +300,7 @@ export class TestLogicalWorkspaceService extends Disposable implements ILogicalW
 			shellLayout: undefined,
 		};
 		this.workspaceList = [...this.workspaceList, workspace];
+		this.fireStateChange(LogicalWorkspaceStateChangeKind.Workspaces, previousState);
 		this._onDidChangeWorkspaces.fire();
 		return workspace;
 	}
@@ -305,10 +311,12 @@ export class TestLogicalWorkspaceService extends Disposable implements ILogicalW
 		if (previousWorkspaceId === workspaceId) {
 			return;
 		}
+		const previousState = this.state;
 		const event = { actor, sequence: this._activationSequence + 1, previousWorkspaceId, workspaceId };
 		this._onWillChangeActiveWorkspace.fire(event);
 		this.activeWorkspaceId = workspaceId;
 		this._activationSequence = event.sequence;
+		this.fireStateChange(LogicalWorkspaceStateChangeKind.ActiveWorkspace, previousState);
 		this._onDidChangeActiveWorkspace.fire(event);
 	}
 
@@ -360,6 +368,7 @@ export class TestLogicalWorkspaceService extends Disposable implements ILogicalW
 
 	private unbindResources(resourceIds: readonly string[], key: 'terminalIds' | 'chatSessionResources'): void {
 		const resources = new Set(resourceIds);
+		const previousState = this.state;
 		let changed = false;
 		this.workspaceList = this.workspaceList.map(workspace => {
 			const filtered = workspace[key].filter(resourceId => !resources.has(resourceId));
@@ -370,14 +379,22 @@ export class TestLogicalWorkspaceService extends Disposable implements ILogicalW
 			return { ...workspace, [key]: filtered };
 		});
 		if (changed) {
+			this.fireStateChange(LogicalWorkspaceStateChangeKind.Workspaces, previousState);
 			this._onDidChangeWorkspaces.fire();
 		}
 	}
 
 	private updateWorkspace(workspaceId: string, update: (workspace: ILogicalWorkspace) => ILogicalWorkspace): void {
 		this.getWorkspace(workspaceId);
+		const previousState = this.state;
 		this.workspaceList = this.workspaceList.map(workspace => workspace.id === workspaceId ? update(workspace) : workspace);
+		this.fireStateChange(LogicalWorkspaceStateChangeKind.Workspaces, previousState);
 		this._onDidChangeWorkspaces.fire();
+	}
+
+	private fireStateChange(changed: LogicalWorkspaceStateChangeKind, previousState: ILogicalWorkspaceStateSnapshot): void {
+		const state = this.state;
+		this._onDidChangeState.fire({ changed, previousState, state });
 	}
 
 	private getWorkspace(workspaceId: string): ILogicalWorkspace {

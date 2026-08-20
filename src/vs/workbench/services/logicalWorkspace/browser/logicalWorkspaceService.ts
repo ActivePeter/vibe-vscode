@@ -13,7 +13,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ILogicalWorkspaceStateStore } from './logicalWorkspaceStateStore.js';
-import { ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceShellPartLayout, LogicalWorkspaceActivationActor } from '../common/logicalWorkspace.js';
+import { ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceShellPartLayout, ILogicalWorkspaceStateChangeEvent, ILogicalWorkspaceStateSnapshot, LogicalWorkspaceActivationActor, LogicalWorkspaceStateChangeKind } from '../common/logicalWorkspace.js';
 
 const LOGICAL_WORKSPACE_SHARED_SCHEMA_VERSION = 2;
 const LEGACY_LOGICAL_WORKSPACE_STORAGE_KEY = 'workbench.logicalWorkspace.state.v1';
@@ -57,8 +57,11 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 	private readonly _onDidChangeWorkspaces = this._register(new Emitter<void>());
 	readonly onDidChangeWorkspaces = this._onDidChangeWorkspaces.event;
 
+	private readonly _onDidChangeState = this._register(new Emitter<ILogicalWorkspaceStateChangeEvent>());
+	readonly onDidChangeState = this._onDidChangeState.event;
+
 	private readonly physicalWorkspaceId: string;
-	private state: ILogicalWorkspaceState;
+	private _state: ILogicalWorkspaceState;
 	private _activationSequence = 0;
 
 	constructor(
@@ -69,20 +72,24 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		super();
 		this.physicalWorkspaceId = workspaceContextService.getWorkspace().id;
 		const loaded = this.loadState();
-		this.state = loaded.state;
-		this.stateStore.writeActiveWorkspaceId(this.physicalWorkspaceId, this.state.activeWorkspaceId);
+		this._state = loaded.state;
+		this.stateStore.writeActiveWorkspaceId(this.physicalWorkspaceId, this._state.activeWorkspaceId);
 		this._register(stateStore.onDidChangeSharedState(() => this.acceptSharedState()));
 		if (loaded.shouldWriteSharedState) {
 			this.saveSharedState();
 		}
 	}
 
+	get state(): ILogicalWorkspaceStateSnapshot {
+		return this._state;
+	}
+
 	get workspaces(): readonly ILogicalWorkspace[] {
-		return this.state.workspaces;
+		return this._state.workspaces;
 	}
 
 	get activeWorkspace(): ILogicalWorkspace {
-		return this.getWorkspace(this.state.activeWorkspaceId);
+		return this.getWorkspace(this._state.activeWorkspaceId);
 	}
 
 	get activationSequence(): number {
@@ -102,13 +109,13 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			chatSessionResources: [],
 			shellLayout: undefined,
 		};
-		this.commitWorkspaces([...this.state.workspaces, workspace]);
+		this.commitWorkspaces([...this._state.workspaces, workspace]);
 		return workspace;
 	}
 
 	activateWorkspace(workspaceId: string, actor: LogicalWorkspaceActivationActor): void {
 		this.getWorkspace(workspaceId);
-		const previousWorkspaceId = this.state.activeWorkspaceId;
+		const previousWorkspaceId = this._state.activeWorkspaceId;
 		if (previousWorkspaceId === workspaceId) {
 			return;
 		}
@@ -116,9 +123,9 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		const sequence = this._activationSequence + 1;
 		const event = { actor, sequence, previousWorkspaceId, workspaceId };
 		this._onWillChangeActiveWorkspace.fire(event);
-		this.state = { ...this.state, activeWorkspaceId: workspaceId };
 		this.stateStore.writeActiveWorkspaceId(this.physicalWorkspaceId, workspaceId);
 		this._activationSequence = sequence;
+		this.setState({ ...this._state, activeWorkspaceId: workspaceId }, false);
 		this._onDidChangeActiveWorkspace.fire(event);
 	}
 
@@ -128,7 +135,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			return;
 		}
 
-		this.commitWorkspaces(this.state.workspaces.map(workspace => workspace.id === workspaceId
+		this.commitWorkspaces(this._state.workspaces.map(workspace => workspace.id === workspaceId
 			? { ...workspace, shellLayout: layout }
 			: workspace));
 	}
@@ -167,39 +174,38 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 
 	private bindResources(workspaceId: string, resourceIds: readonly string[], key: 'terminalIds' | 'chatSessionResources'): void {
 		this.getWorkspace(workspaceId);
-		const ownedResourceIds = new Set(this.state.workspaces.flatMap(workspace => workspace[key]));
+		const ownedResourceIds = new Set(this._state.workspaces.flatMap(workspace => workspace[key]));
 		const resourceIdsToBind = [...new Set(resourceIds)].filter(resourceId => !ownedResourceIds.has(resourceId));
 		if (resourceIdsToBind.length === 0) {
 			return;
 		}
 
-		this.commitWorkspaces(this.state.workspaces.map(workspace => workspace.id === workspaceId
+		this.commitWorkspaces(this._state.workspaces.map(workspace => workspace.id === workspaceId
 			? { ...workspace, [key]: [...workspace[key], ...resourceIdsToBind] }
 			: workspace));
 	}
 
 	private unbindResources(resourceIds: readonly string[], key: 'terminalIds' | 'chatSessionResources'): void {
 		const resourceIdsToRemove = new Set(resourceIds);
-		const changedWorkspaceIds = this.state.workspaces
+		const changedWorkspaceIds = this._state.workspaces
 			.filter(workspace => workspace[key].some(resourceId => resourceIdsToRemove.has(resourceId)))
 			.map(workspace => workspace.id);
 		if (changedWorkspaceIds.length === 0) {
 			return;
 		}
 
-		this.commitWorkspaces(this.state.workspaces.map(workspace => changedWorkspaceIds.includes(workspace.id)
+		this.commitWorkspaces(this._state.workspaces.map(workspace => changedWorkspaceIds.includes(workspace.id)
 			? { ...workspace, [key]: workspace[key].filter(resourceId => !resourceIdsToRemove.has(resourceId)) }
 			: workspace));
 	}
 
 	private commitWorkspaces(workspaces: readonly ILogicalWorkspace[]): void {
-		this.state = { ...this.state, workspaces };
-		this.saveSharedState();
+		this.setState({ ...this._state, workspaces }, true);
 		this._onDidChangeWorkspaces.fire();
 	}
 
 	private getWorkspace(workspaceId: string): ILogicalWorkspace {
-		const workspace = this.state.workspaces.find(candidate => candidate.id === workspaceId);
+		const workspace = this._state.workspaces.find(candidate => candidate.id === workspaceId);
 		if (!workspace) {
 			throw new Error(`Unknown logical workspace: ${workspaceId}`);
 		}
@@ -256,11 +262,11 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		if (!incoming) {
 			return;
 		}
-		if (equals(this.state.workspaces, incoming.workspaces)) {
+		if (equals(this._state.workspaces, incoming.workspaces)) {
 			return;
 		}
 
-		const previousWorkspaceId = this.state.activeWorkspaceId;
+		const previousWorkspaceId = this._state.activeWorkspaceId;
 		const activeWorkspaceId = incoming.workspaces.some(workspace => workspace.id === previousWorkspaceId)
 			? previousWorkspaceId
 			: incoming.workspaces[0].id;
@@ -272,12 +278,14 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		}
 		// Shared snapshots deliberately use whole-document last-write-wins. The active selection is
 		// page-local and is therefore preserved unless the winning snapshot removed that Workspace.
-		this.state = { ...incoming, activeWorkspaceId };
-		this._onDidChangeWorkspaces.fire();
-
 		if (activationEvent) {
 			this.stateStore.writeActiveWorkspaceId(this.physicalWorkspaceId, activeWorkspaceId);
 			this._activationSequence = activationEvent.sequence;
+		}
+		this.setState({ ...incoming, activeWorkspaceId }, false);
+		this._onDidChangeWorkspaces.fire();
+
+		if (activationEvent) {
 			this._onDidChangeActiveWorkspace.fire(activationEvent);
 		}
 	}
@@ -286,7 +294,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		if (!raw || typeof raw !== 'object') {
 			return undefined;
 		}
-		const parsed = raw as Partial<ILogicalWorkspaceSharedState>;
+		const parsed = raw as Record<string, unknown>;
 		if (parsed.schemaVersion !== LOGICAL_WORKSPACE_SHARED_SCHEMA_VERSION || !Array.isArray(parsed.workspaces) || parsed.workspaces.length === 0) {
 			return undefined;
 		}
@@ -301,11 +309,15 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			return undefined;
 		}
 		try {
-			const parsed = JSON.parse(raw) as Partial<ILegacyLogicalWorkspaceStateV1>;
-			if (parsed.schemaVersion !== 1 || typeof parsed.activeWorkspaceId !== 'string' || !Array.isArray(parsed.workspaces) || !this.areValidWorkspaces(parsed.workspaces) || !parsed.workspaces.some(workspace => workspace.id === parsed.activeWorkspaceId)) {
+			const parsed: unknown = JSON.parse(raw);
+			if (!parsed || typeof parsed !== 'object') {
 				return undefined;
 			}
-			return { schemaVersion: 1, activeWorkspaceId: parsed.activeWorkspaceId, workspaces: parsed.workspaces };
+			const candidate = parsed as Record<string, unknown>;
+			if (candidate.schemaVersion !== 1 || typeof candidate.activeWorkspaceId !== 'string' || !Array.isArray(candidate.workspaces) || !this.areValidWorkspaces(candidate.workspaces) || !candidate.workspaces.some(workspace => workspace.id === candidate.activeWorkspaceId)) {
+				return undefined;
+			}
+			return { schemaVersion: 1, activeWorkspaceId: candidate.activeWorkspaceId, workspaces: candidate.workspaces };
 		} catch {
 			return undefined;
 		}
@@ -316,27 +328,37 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			return undefined;
 		}
 		try {
-			const parsed = JSON.parse(raw) as Partial<ILegacyLogicalWorkspaceState>;
-			if (!Array.isArray(parsed.workspaces) || parsed.workspaces.length === 0 || typeof parsed.activeWorkspaceId !== 'string') {
+			const parsed: unknown = JSON.parse(raw);
+			if (!parsed || typeof parsed !== 'object') {
+				return undefined;
+			}
+			const candidate = parsed as Record<string, unknown>;
+			if (!Array.isArray(candidate.workspaces) || candidate.workspaces.length === 0 || typeof candidate.activeWorkspaceId !== 'string') {
 				return undefined;
 			}
 			const workspaceIds = new Set<string>();
-			for (const workspace of parsed.workspaces) {
+			const workspaces: Pick<ILogicalWorkspace, 'id' | 'name'>[] = [];
+			for (const rawWorkspace of candidate.workspaces) {
+				if (!rawWorkspace || typeof rawWorkspace !== 'object') {
+					return undefined;
+				}
+				const workspace = rawWorkspace as Record<string, unknown>;
 				if (typeof workspace.id !== 'string' || !workspace.id || workspaceIds.has(workspace.id) || typeof workspace.name !== 'string' || !workspace.name.trim()) {
 					return undefined;
 				}
 				workspaceIds.add(workspace.id);
+				workspaces.push({ id: workspace.id, name: workspace.name });
 			}
-			if (!workspaceIds.has(parsed.activeWorkspaceId)) {
+			if (!workspaceIds.has(candidate.activeWorkspaceId)) {
 				return undefined;
 			}
-			return { activeWorkspaceId: parsed.activeWorkspaceId, workspaces: parsed.workspaces };
+			return { activeWorkspaceId: candidate.activeWorkspaceId, workspaces };
 		} catch {
 			return undefined;
 		}
 	}
 
-	private areValidWorkspaces(workspaces: readonly ILogicalWorkspace[]): boolean {
+	private areValidWorkspaces(workspaces: readonly unknown[]): workspaces is readonly ILogicalWorkspace[] {
 		const workspaceIds = new Set<string>();
 		const terminalIds = new Set<string>();
 		const chatSessionResources = new Set<string>();
@@ -349,7 +371,11 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			}
 			return true;
 		};
-		for (const workspace of workspaces) {
+		for (const rawWorkspace of workspaces) {
+			if (!rawWorkspace || typeof rawWorkspace !== 'object') {
+				return false;
+			}
+			const workspace = rawWorkspace as Record<string, unknown>;
 			if (
 				typeof workspace.id !== 'string' || !workspace.id || workspaceIds.has(workspace.id) ||
 				typeof workspace.name !== 'string' || !workspace.name.trim() ||
@@ -364,26 +390,53 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		return true;
 	}
 
-	private isShellLayout(layout: ILogicalWorkspaceShellLayout | undefined): boolean {
-		return layout === undefined || (
-			this.isShellPartLayout(layout.primarySideBar) &&
-			this.isShellPartLayout(layout.panel) &&
-			this.isShellPartLayout(layout.auxiliaryBar)
-		);
+	private isShellLayout(layout: unknown): layout is ILogicalWorkspaceShellLayout | undefined {
+		if (layout === undefined) {
+			return true;
+		}
+		if (!layout || typeof layout !== 'object') {
+			return false;
+		}
+		const candidate = layout as Record<string, unknown>;
+		return this.isShellPartLayout(candidate.primarySideBar)
+			&& this.isShellPartLayout(candidate.panel)
+			&& this.isShellPartLayout(candidate.auxiliaryBar);
 	}
 
-	private isShellPartLayout(part: ILogicalWorkspaceShellPartLayout | undefined): boolean {
-		return !!part
-			&& typeof part.visible === 'boolean'
-			&& Number.isFinite(part.width) && part.width >= 0
-			&& Number.isFinite(part.height) && part.height >= 0
-			&& typeof part.activeCompositeId === 'string';
+	private isShellPartLayout(part: unknown): part is ILogicalWorkspaceShellPartLayout {
+		if (!part || typeof part !== 'object') {
+			return false;
+		}
+		const candidate = part as Record<string, unknown>;
+		return typeof candidate.visible === 'boolean'
+			&& typeof candidate.width === 'number' && Number.isFinite(candidate.width) && candidate.width >= 0
+			&& typeof candidate.height === 'number' && Number.isFinite(candidate.height) && candidate.height >= 0
+			&& typeof candidate.activeCompositeId === 'string';
+	}
+
+	private setState(state: ILogicalWorkspaceState, persistSharedState: boolean): void {
+		const previousState = this._state;
+		this._state = state;
+		if (persistSharedState) {
+			this.saveSharedState();
+		}
+
+		let changed = LogicalWorkspaceStateChangeKind.None;
+		if (previousState.activeWorkspaceId !== state.activeWorkspaceId) {
+			changed |= LogicalWorkspaceStateChangeKind.ActiveWorkspace;
+		}
+		if (!equals(previousState.workspaces, state.workspaces)) {
+			changed |= LogicalWorkspaceStateChangeKind.Workspaces;
+		}
+		if (changed !== LogicalWorkspaceStateChangeKind.None) {
+			this._onDidChangeState.fire({ changed, previousState, state });
+		}
 	}
 
 	private saveSharedState(): void {
 		this.stateStore.writeSharedState({
 			schemaVersion: LOGICAL_WORKSPACE_SHARED_SCHEMA_VERSION,
-			workspaces: this.state.workspaces,
+			workspaces: this._state.workspaces,
 		});
 	}
 }

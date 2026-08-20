@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Event } from '../../../../base/common/event.js';
+import { equals } from '../../../../base/common/objects.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 
@@ -46,6 +47,26 @@ export interface ILogicalWorkspaceActivationEvent {
 	readonly workspaceId: string;
 }
 
+/**
+ * Immutable state exposed to projections and state-slice observers.
+ */
+export interface ILogicalWorkspaceStateSnapshot {
+	readonly activeWorkspaceId: string;
+	readonly workspaces: readonly ILogicalWorkspace[];
+}
+
+export const enum LogicalWorkspaceStateChangeKind {
+	None = 0,
+	ActiveWorkspace = 1 << 0,
+	Workspaces = 1 << 1,
+}
+
+export interface ILogicalWorkspaceStateChangeEvent {
+	readonly changed: LogicalWorkspaceStateChangeKind;
+	readonly previousState: ILogicalWorkspaceStateSnapshot;
+	readonly state: ILogicalWorkspaceStateSnapshot;
+}
+
 export const ILogicalWorkspaceService = createDecorator<ILogicalWorkspaceService>('logicalWorkspaceService');
 
 /**
@@ -58,7 +79,9 @@ export interface ILogicalWorkspaceService {
 	readonly onWillChangeActiveWorkspace: Event<ILogicalWorkspaceActivationEvent>;
 	readonly onDidChangeActiveWorkspace: Event<ILogicalWorkspaceActivationEvent>;
 	readonly onDidChangeWorkspaces: Event<void>;
+	readonly onDidChangeState: Event<ILogicalWorkspaceStateChangeEvent>;
 
+	readonly state: ILogicalWorkspaceStateSnapshot;
 	readonly workspaces: readonly ILogicalWorkspace[];
 	readonly activeWorkspace: ILogicalWorkspace;
 	readonly activationSequence: number;
@@ -76,4 +99,25 @@ export interface ILogicalWorkspaceService {
 	unbindChatSession(sessionResource: URI): void;
 	unbindChatSessions(sessionResources: readonly URI[]): void;
 	workspaceContainsChatSession(workspaceId: string, sessionResource: URI): boolean;
+}
+
+/**
+ * Creates an event for a semantic slice of Logical Workspace state. Consumers select the complete
+ * state they depend on once; unrelated mutations are suppressed by structural equality.
+ */
+export function onDidChangeLogicalWorkspaceStateSlice<T>(
+	service: ILogicalWorkspaceService,
+	selector: (state: ILogicalWorkspaceStateSnapshot) => T,
+	isEqual: (current: T, next: T) => boolean = equals,
+): Event<T> {
+	return (listener, thisArgs, disposables) => {
+		let current = selector(service.state);
+		return service.onDidChangeState(event => {
+			const next = selector(event.state);
+			if (!isEqual(current, next)) {
+				current = next;
+				listener.call(thisArgs, next);
+			}
+		}, undefined, disposables);
+	};
 }

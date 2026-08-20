@@ -71,8 +71,7 @@ export interface IWebviewWorkbenchService {
 	 */
 	revealWebview(
 		webview: WebviewInput,
-		group: IEditorGroup | GroupIdentifier | ACTIVE_GROUP_TYPE | SIDE_GROUP_TYPE,
-		preserveFocus: boolean
+		showOptions: IWebViewShowOptions,
 	): void;
 
 	/**
@@ -294,17 +293,17 @@ export class WebviewEditorService extends Disposable implements IWebviewWorkbenc
 
 	public revealWebview(
 		webview: WebviewInput,
-		group: IEditorGroup | GroupIdentifier | ACTIVE_GROUP_TYPE | SIDE_GROUP_TYPE,
-		preserveFocus: boolean
+		showOptions: IWebViewShowOptions,
 	): void {
 		const topLevelEditor = this.findTopLevelEditorForWebview(webview);
 
 		this._editorService.openEditor(topLevelEditor, {
-			preserveFocus,
+			preserveFocus: showOptions.preserveFocus,
+			modal: showOptions.modal,
 			// preserve pre 1.38 behaviour to not make group active when preserveFocus: true
 			// but make sure to restore the editor to fix https://github.com/microsoft/vscode/issues/79633
-			activation: preserveFocus ? EditorActivation.RESTORE : undefined
-		}, group);
+			activation: showOptions.preserveFocus ? EditorActivation.RESTORE : undefined
+		}, showOptions.group);
 	}
 
 	private findTopLevelEditorForWebview(webview: WebviewInput): EditorInput {

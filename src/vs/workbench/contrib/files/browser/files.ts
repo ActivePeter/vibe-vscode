@@ -22,6 +22,8 @@ import { isActiveElement } from '../../../../base/browser/dom.js';
 export interface IExplorerService {
 	readonly _serviceBrand: undefined;
 	readonly roots: ExplorerItem[];
+	/** Roots currently projected into the Explorer tree. */
+	readonly visibleRoots: ExplorerItem[];
 	readonly sortOrderConfiguration: ISortOrderConfiguration;
 
 	/**

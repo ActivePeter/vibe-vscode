@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Event } from '../../../../base/common/event.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { equals } from '../../../../base/common/objects.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -69,6 +70,11 @@ export interface ILogicalWorkspaceStateChangeEvent {
 
 export const ILogicalWorkspaceService = createDecorator<ILogicalWorkspaceService>('logicalWorkspaceService');
 
+export interface ILogicalWorkspaceTerminalOwnershipLease extends IDisposable {
+	/** Makes this claim durable after the Terminal instance exists. The first successful claim wins. */
+	commit(): void;
+}
+
 /**
  * Owns the logical workspace registry and its resource membership. Resource lookup methods are
  * pure reads; membership can only change through the explicit bind and unbind methods.
@@ -90,6 +96,7 @@ export interface ILogicalWorkspaceService {
 	activateWorkspace(workspaceId: string, actor: LogicalWorkspaceActivationActor): void;
 	setShellLayout(workspaceId: string, layout: ILogicalWorkspaceShellLayout): void;
 
+	acquireTerminalOwnership(workspaceId: string, logicalTerminalId: string): ILogicalWorkspaceTerminalOwnershipLease;
 	bindTerminal(workspaceId: string, logicalTerminalId: string): void;
 	unbindTerminal(logicalTerminalId: string): void;
 	workspaceContainsTerminal(workspaceId: string, logicalTerminalId: string): boolean;
@@ -98,6 +105,12 @@ export interface ILogicalWorkspaceService {
 	bindChatSessions(workspaceId: string, sessionResources: readonly URI[]): void;
 	unbindChatSession(sessionResource: URI): void;
 	unbindChatSessions(sessionResources: readonly URI[]): void;
+	/**
+	 * Atomically applies a provider catalog delta. Removed resources are released before added
+	 * resources are claimed, allowing a delete/re-add of the same URI to move ownership in one
+	 * observable commit.
+	 */
+	updateChatSessionOwnership(workspaceId: string, added: readonly URI[], removed: readonly URI[]): void;
 	workspaceContainsChatSession(workspaceId: string, sessionResource: URI): boolean;
 }
 

@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { deepStrictEqual, fail, strictEqual } from 'assert';
+import { deepStrictEqual, fail, rejects, strictEqual } from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
@@ -245,7 +245,7 @@ suite('Workbench - TerminalService', () => {
 					await terminalService.createTerminal({
 						config: { executable: '/bin/sh' },
 						skipContributedProfileCheck: true,
-						logicalWorkspaceId: options.logicalWorkspaceId,
+						creationContext: options.creationContext,
 					});
 				},
 			}));
@@ -273,6 +273,24 @@ suite('Workbench - TerminalService', () => {
 				initiatingWorkspaceOwnsTerminal: true,
 				targetWorkspaceOwnsTerminal: false,
 			});
+		});
+
+		test('should commit terminal ownership only after an instance is created', async () => {
+			const shellLaunchConfig: IShellLaunchConfig = { executable: '/bin/sh' };
+			instantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', () => shellLaunchConfig);
+			instantiationService.stub(ITerminalGroupService, 'createGroup', () => {
+				throw new Error('terminal group creation failed');
+			});
+			terminalService.registerProcessSupport(true);
+
+			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			await rejects(terminalService.createTerminal({
+				config: { executable: '/bin/sh' },
+				skipContributedProfileCheck: true,
+			}), /terminal group creation failed/);
+
+			strictEqual(typeof shellLaunchConfig.logicalTerminalId, 'string');
+			strictEqual(logicalWorkspaceService.workspaces.some(workspace => workspace.terminalIds.includes(shellLaunchConfig.logicalTerminalId!)), false);
 		});
 	});
 

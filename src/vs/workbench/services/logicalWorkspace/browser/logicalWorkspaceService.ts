@@ -13,7 +13,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ILogicalWorkspaceStateStore } from './logicalWorkspaceStateStore.js';
-import { ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceShellPartLayout, ILogicalWorkspaceStateChangeEvent, ILogicalWorkspaceStateSnapshot, LogicalWorkspaceActivationActor, LogicalWorkspaceStateChangeKind } from '../common/logicalWorkspace.js';
+import { ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceShellPartLayout, ILogicalWorkspaceStateChangeEvent, ILogicalWorkspaceStateSnapshot, ILogicalWorkspaceTerminalOwnershipLease, LogicalWorkspaceActivationActor, LogicalWorkspaceStateChangeKind } from '../common/logicalWorkspace.js';
 
 const LOGICAL_WORKSPACE_SHARED_SCHEMA_VERSION = 2;
 const LEGACY_LOGICAL_WORKSPACE_STORAGE_KEY = 'workbench.logicalWorkspace.state.v1';
@@ -61,6 +61,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 	readonly onDidChangeState = this._onDidChangeState.event;
 
 	private readonly physicalWorkspaceId: string;
+	private readonly pendingTerminalOwnershipClaims = new Map<string, Map<string, number>>();
 	private _state: ILogicalWorkspaceState;
 	private _activationSequence = 0;
 
@@ -140,6 +141,47 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			: workspace));
 	}
 
+	acquireTerminalOwnership(workspaceId: string, logicalTerminalId: string): ILogicalWorkspaceTerminalOwnershipLease {
+		this.getWorkspace(workspaceId);
+		let claims = this.pendingTerminalOwnershipClaims.get(logicalTerminalId);
+		if (!claims) {
+			claims = new Map();
+			this.pendingTerminalOwnershipClaims.set(logicalTerminalId, claims);
+		}
+		claims.set(workspaceId, (claims.get(workspaceId) ?? 0) + 1);
+		let disposed = false;
+		let committed = false;
+		return {
+			commit: () => {
+				if (disposed || committed) {
+					return;
+				}
+				committed = true;
+				if (!this.findTerminalOwner(logicalTerminalId)) {
+					const targetWorkspaceId = this._state.workspaces.some(workspace => workspace.id === workspaceId)
+						? workspaceId
+						: this._state.activeWorkspaceId;
+					this.bindTerminal(targetWorkspaceId, logicalTerminalId);
+				}
+			},
+			dispose: () => {
+				if (disposed) {
+					return;
+				}
+				disposed = true;
+				const leaseCount = claims.get(workspaceId);
+				if (leaseCount === 1) {
+					claims.delete(workspaceId);
+				} else if (leaseCount !== undefined) {
+					claims.set(workspaceId, leaseCount - 1);
+				}
+				if (claims.size === 0 && this.pendingTerminalOwnershipClaims.get(logicalTerminalId) === claims) {
+					this.pendingTerminalOwnershipClaims.delete(logicalTerminalId);
+				}
+			},
+		};
+	}
+
 	bindTerminal(workspaceId: string, logicalTerminalId: string): void {
 		this.bindResources(workspaceId, [logicalTerminalId], 'terminalIds');
 	}
@@ -149,7 +191,29 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 	}
 
 	workspaceContainsTerminal(workspaceId: string, logicalTerminalId: string): boolean {
-		return this.getWorkspace(workspaceId).terminalIds.includes(logicalTerminalId);
+		this.getWorkspace(workspaceId);
+		const owner = this.findTerminalOwner(logicalTerminalId);
+		if (owner) {
+			return owner.id === workspaceId;
+		}
+		return this.findPendingTerminalOwnerId(logicalTerminalId) === workspaceId;
+	}
+
+	private findTerminalOwner(logicalTerminalId: string): ILogicalWorkspace | undefined {
+		return this._state.workspaces.find(workspace => workspace.terminalIds.includes(logicalTerminalId));
+	}
+
+	private findPendingTerminalOwnerId(logicalTerminalId: string): string | undefined {
+		const claims = this.pendingTerminalOwnershipClaims.get(logicalTerminalId);
+		if (!claims) {
+			return undefined;
+		}
+		for (const workspaceId of claims.keys()) {
+			if (this._state.workspaces.some(workspace => workspace.id === workspaceId)) {
+				return workspaceId;
+			}
+		}
+		return undefined;
 	}
 
 	bindChatSession(workspaceId: string, sessionResource: URI): void {
@@ -168,35 +232,42 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		this.unbindResources(sessionResources.map(resource => resource.toString()), 'chatSessionResources');
 	}
 
+	updateChatSessionOwnership(workspaceId: string, added: readonly URI[], removed: readonly URI[]): void {
+		this.updateResourceOwnership('chatSessionResources', workspaceId, added.map(resource => resource.toString()), removed.map(resource => resource.toString()));
+	}
+
 	workspaceContainsChatSession(workspaceId: string, sessionResource: URI): boolean {
 		return this.getWorkspace(workspaceId).chatSessionResources.includes(sessionResource.toString());
 	}
 
 	private bindResources(workspaceId: string, resourceIds: readonly string[], key: 'terminalIds' | 'chatSessionResources'): void {
-		this.getWorkspace(workspaceId);
-		const ownedResourceIds = new Set(this._state.workspaces.flatMap(workspace => workspace[key]));
-		const resourceIdsToBind = [...new Set(resourceIds)].filter(resourceId => !ownedResourceIds.has(resourceId));
-		if (resourceIdsToBind.length === 0) {
-			return;
-		}
-
-		this.commitWorkspaces(this._state.workspaces.map(workspace => workspace.id === workspaceId
-			? { ...workspace, [key]: [...workspace[key], ...resourceIdsToBind] }
-			: workspace));
+		this.updateResourceOwnership(key, workspaceId, resourceIds, []);
 	}
 
 	private unbindResources(resourceIds: readonly string[], key: 'terminalIds' | 'chatSessionResources'): void {
-		const resourceIdsToRemove = new Set(resourceIds);
-		const changedWorkspaceIds = this._state.workspaces
-			.filter(workspace => workspace[key].some(resourceId => resourceIdsToRemove.has(resourceId)))
-			.map(workspace => workspace.id);
-		if (changedWorkspaceIds.length === 0) {
-			return;
-		}
+		this.updateResourceOwnership(key, undefined, [], resourceIds);
+	}
 
-		this.commitWorkspaces(this._state.workspaces.map(workspace => changedWorkspaceIds.includes(workspace.id)
-			? { ...workspace, [key]: workspace[key].filter(resourceId => !resourceIdsToRemove.has(resourceId)) }
-			: workspace));
+	private updateResourceOwnership(
+		key: 'terminalIds' | 'chatSessionResources',
+		targetWorkspaceId: string | undefined,
+		addedResourceIds: readonly string[],
+		removedResourceIds: readonly string[],
+	): void {
+		if (targetWorkspaceId) {
+			this.getWorkspace(targetWorkspaceId);
+		}
+		const removed = new Set(removedResourceIds);
+		const retainedOwnership = new Set(this._state.workspaces.flatMap(workspace => workspace[key].filter(resourceId => !removed.has(resourceId))));
+		const idsToClaim = [...new Set(addedResourceIds)].filter(resourceId => !retainedOwnership.has(resourceId));
+		const workspaces = this._state.workspaces.map(workspace => {
+			const retained = workspace[key].filter(resourceId => !removed.has(resourceId));
+			const resources = workspace.id === targetWorkspaceId ? [...retained, ...idsToClaim] : retained;
+			return equals(resources, workspace[key]) ? workspace : { ...workspace, [key]: resources };
+		});
+		if (!equals(this._state.workspaces, workspaces)) {
+			this.commitWorkspaces(workspaces);
+		}
 	}
 
 	private commitWorkspaces(workspaces: readonly ILogicalWorkspace[]): void {

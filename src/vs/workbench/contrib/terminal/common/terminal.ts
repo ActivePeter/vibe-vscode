@@ -61,7 +61,7 @@ export interface ITerminalProfileResolverService {
 }
 
 export interface IRegisterContributedProfileArgs {
-	extensionIdentifier: string; id: string; title: string; options: ICreateContributedTerminalProfileOptions; titleTemplate?: string;
+	extensionIdentifier: string; id: string; title: string; options: Omit<ICreateContributedTerminalProfileOptions, 'creationContext'>; titleTemplate?: string;
 }
 
 export const ITerminalProfileService = createDecorator<ITerminalProfileService>('terminalProfileService');

@@ -79,7 +79,7 @@ export class ExplorerService implements IExplorerService {
 
 			let shouldRefresh = false;
 			// For DELETED and UPDATED events go through the explorer model and check if any of the items got affected
-			this.roots.forEach(r => {
+			this.model.roots.forEach(r => {
 				if (this.view && !shouldRefresh) {
 					shouldRefresh = doesFileEventAffect(r, this.view, events, types);
 				}
@@ -148,6 +148,10 @@ export class ExplorerService implements IExplorerService {
 	}
 
 	get roots(): ExplorerItem[] {
+		return this.model.roots;
+	}
+
+	get visibleRoots(): ExplorerItem[] {
 		if (!this.activeRoot) {
 			return this.model.roots;
 		}
@@ -162,7 +166,6 @@ export class ExplorerService implements IExplorerService {
 		}
 
 		this.activeRoot = resource;
-		this.roots.forEach(root => root.forgetChildren());
 		await this.view?.setTreeInput();
 	}
 
@@ -254,11 +257,11 @@ export class ExplorerService implements IExplorerService {
 	// IExplorerService methods
 
 	findClosest(resource: URI): ExplorerItem | null {
-		return this.findClosestRoot(resource)?.find(resource) ?? null;
+		return this.model.findClosest(resource);
 	}
 
 	findClosestRoot(resource: URI): ExplorerItem | null {
-		const parentRoots = this.roots.filter(r => this.uriIdentityService.extUri.isEqualOrParent(resource, r.resource))
+		const parentRoots = this.model.roots.filter(r => this.uriIdentityService.extUri.isEqualOrParent(resource, r.resource))
 			.sort((first, second) => second.resource.path.length - first.resource.path.length);
 		return parentRoots.length ? parentRoots[0] : null;
 	}
@@ -361,7 +364,7 @@ export class ExplorerService implements IExplorerService {
 			return;
 		}
 
-		this.roots.forEach(r => r.forgetChildren());
+		this.model.roots.forEach(r => r.forgetChildren());
 		if (this.view) {
 			await this.view.refresh(true);
 			const resource = this.editorService.activeEditor?.resource;

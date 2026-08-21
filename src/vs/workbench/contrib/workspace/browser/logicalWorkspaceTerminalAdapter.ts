@@ -9,7 +9,7 @@ import { IStorageService } from '../../../../platform/storage/common/storage.js'
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { ILogicalWorkspaceProjection, ILogicalWorkspaceProjectionContext, LogicalWorkspaceProjectionCoordinator } from '../../../services/logicalWorkspace/browser/logicalWorkspaceProjection.js';
-import { ILogicalWorkspaceService } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILogicalWorkspaceService, onDidChangeLogicalWorkspaceStateSlice } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { ITerminalInstance, ITerminalService } from '../../terminal/browser/terminal.js';
 
 /**
@@ -22,6 +22,8 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWork
 	readonly id = LogicalWorkspaceTerminalAdapter.ID;
 
 	private readonly projectionCoordinator: LogicalWorkspaceProjectionCoordinator;
+	private projectionDepth = 0;
+	private reconcileAfterProjection = false;
 
 	constructor(
 		@ILogicalWorkspaceService private readonly logicalWorkspaceService: ILogicalWorkspaceService,
@@ -32,8 +34,11 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWork
 		super();
 
 		this.projectionCoordinator = this._register(new LogicalWorkspaceProjectionCoordinator(logicalWorkspaceService, this, storageService, logService));
-		this._register(this.terminalService.onDidChangeInstances(() => void this.projectionCoordinator.requestReconcile()));
-		this._register(this.logicalWorkspaceService.onDidChangeWorkspaces(() => void this.projectionCoordinator.requestReconcile()));
+		this._register(this.terminalService.onDidChangeInstances(() => this.requestReconcile()));
+		this._register(onDidChangeLogicalWorkspaceStateSlice(
+			this.logicalWorkspaceService,
+			state => state.workspaces.map(workspace => ({ id: workspace.id, terminalIds: workspace.terminalIds })),
+		)(() => this.requestReconcile()));
 		this._register(this.terminalService.onDidDisposeInstance(instance => this.handleDisposedTerminal(instance)));
 		this.terminalService.whenConnected.then(() => this.projectionCoordinator.requestReconcile()).catch(error => this.logService.error('Logical workspace terminal reconciliation could not await terminal connection', error));
 	}
@@ -47,7 +52,28 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWork
 	}
 
 	restore(context: ILogicalWorkspaceProjectionContext): Promise<void> {
-		return this.synchronizeTerminals(context);
+		return this.runProjectionTransaction(context);
+	}
+
+	private requestReconcile(): void {
+		if (this.projectionDepth > 0) {
+			this.reconcileAfterProjection = true;
+			return;
+		}
+		void this.projectionCoordinator.requestReconcile();
+	}
+
+	private async runProjectionTransaction(context: ILogicalWorkspaceProjectionContext): Promise<void> {
+		this.projectionDepth++;
+		try {
+			await this.synchronizeTerminals(context);
+		} finally {
+			this.projectionDepth--;
+			if (this.projectionDepth === 0 && this.reconcileAfterProjection) {
+				this.reconcileAfterProjection = false;
+				void this.projectionCoordinator.requestReconcile();
+			}
+		}
 	}
 
 	private async synchronizeTerminals(context: ILogicalWorkspaceProjectionContext): Promise<void> {

@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { CancellationToken } from '../../../../../../base/common/cancellation.js';
-import { timeout } from '../../../../../../base/common/async.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../../base/common/cancellation.js';
+import { DeferredPromise, timeout } from '../../../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../../base/common/lifecycle.js';
 import { observableValue } from '../../../../../../base/common/observable.js';
@@ -16,9 +16,9 @@ import { TestInstantiationService } from '../../../../../../platform/instantiati
 import { workbenchInstantiationService } from '../../../../../test/browser/workbenchTestServices.js';
 import { ILogicalWorkspaceService, LogicalWorkspaceActivationActor } from '../../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { LocalAgentsSessionsController } from '../../../browser/agentSessions/localAgentSessionsController.js';
-import { IChatService, ResponseModelState } from '../../../common/chatService/chatService.js';
+import { IChatDetail, IChatService, ResponseModelState } from '../../../common/chatService/chatService.js';
 import { chatModelToChatDetail } from '../../../common/chatService/chatServiceImpl.js';
-import { ChatSessionStatus, IChatSessionItem, IChatSessionsService, localChatSessionType } from '../../../common/chatSessionsService.js';
+import { ChatSessionStatus, IChatSessionItem, IChatSessionItemsDelta, IChatSessionsService, localChatSessionType } from '../../../common/chatSessionsService.js';
 import { ChatEditingSessionState, ModifiedFileEntryState } from '../../../common/editing/chatEditingService.js';
 import { ChatRequestRemovalReason, IChatChangedRequestEvent, IChatChangeEvent, IChatModel, IChatRequestModel, IChatResponseModel } from '../../../common/model/chatModel.js';
 import { LocalChatSessionUri } from '../../../common/model/chatUri.js';
@@ -260,6 +260,150 @@ suite('LocalAgentsSessionsController', () => {
 			const sessions = controller.items;
 			assert.strictEqual(sessions.length, 1);
 			assert.strictEqual(sessions[0].label, 'History Session');
+		});
+	});
+
+	test('should retain the last catalog when history loading fails', async () => {
+		return runWithFakedTimers({}, async () => {
+			const controller = createController();
+			const sessionResource = LocalChatSessionUri.forSession('retained-after-error');
+			mockChatService.setHistorySessionItems([{
+				sessionResource,
+				title: 'Retained Session',
+				lastMessageDate: Date.now(),
+				isActive: false,
+				lastResponseState: ResponseModelState.Complete,
+				timing: createTestTiming(),
+			}]);
+			await controller.refresh(CancellationToken.None);
+			const deltas: IChatSessionItemsDelta[] = [];
+			disposables.add(controller.onDidChangeChatSessionItems(delta => deltas.push(delta)));
+			mockChatService.getHistorySessionItems = async () => { throw new Error('history unavailable'); };
+
+			await controller.refresh(CancellationToken.None);
+
+			assert.deepStrictEqual({
+				items: controller.items.map(item => item.resource.toString()),
+				deltas,
+			}, {
+				items: [sessionResource.toString()],
+				deltas: [],
+			});
+		});
+	});
+
+	test('should not commit a partial catalog after cancellation', async () => {
+		return runWithFakedTimers({}, async () => {
+			const controller = createController();
+			const retainedResource = LocalChatSessionUri.forSession('retained-after-cancel');
+			mockChatService.setHistorySessionItems([{
+				sessionResource: retainedResource,
+				title: 'Retained Session',
+				lastMessageDate: Date.now(),
+				isActive: false,
+				lastResponseState: ResponseModelState.Complete,
+				timing: createTestTiming(),
+			}]);
+			await controller.refresh(CancellationToken.None);
+
+			const history = new DeferredPromise<IChatDetail[]>();
+			const historyEntered = new DeferredPromise<void>();
+			mockChatService.setLiveSessionItems([{
+				sessionResource: LocalChatSessionUri.forSession('partial-live'),
+				title: 'Partial Live Session',
+				lastMessageDate: Date.now(),
+				isActive: false,
+				lastResponseState: ResponseModelState.Complete,
+				timing: createTestTiming(),
+			}]);
+			mockChatService.getHistorySessionItems = () => {
+				historyEntered.complete();
+				return history.p;
+			};
+			const cancellation = disposables.add(new CancellationTokenSource());
+			const refresh = controller.refresh(cancellation.token);
+			await historyEntered.p;
+			cancellation.cancel();
+			history.complete([]);
+			await refresh;
+
+			assert.deepStrictEqual(controller.items.map(item => item.resource.toString()), [retainedResource.toString()]);
+		});
+	});
+
+	test('should discard a refresh that completes after a newer generation', async () => {
+		return runWithFakedTimers({}, async () => {
+			const controller = createController();
+			const firstHistory = new DeferredPromise<IChatDetail[]>();
+			const secondHistory = new DeferredPromise<IChatDetail[]>();
+			const firstHistoryEntered = new DeferredPromise<void>();
+			const secondHistoryEntered = new DeferredPromise<void>();
+			let historyCall = 0;
+			mockChatService.getHistorySessionItems = () => {
+				if (++historyCall === 1) {
+					firstHistoryEntered.complete();
+					return firstHistory.p;
+				}
+				secondHistoryEntered.complete();
+				return secondHistory.p;
+			};
+			const firstRefresh = controller.refresh(CancellationToken.None);
+			await firstHistoryEntered.p;
+			const secondRefresh = controller.refresh(CancellationToken.None);
+			await secondHistoryEntered.p;
+			const newerResource = LocalChatSessionUri.forSession('newer-generation');
+			secondHistory.complete([{
+				sessionResource: newerResource,
+				title: 'Newer Session',
+				lastMessageDate: Date.now(),
+				isActive: false,
+				lastResponseState: ResponseModelState.Complete,
+				timing: createTestTiming(),
+			}]);
+			await secondRefresh;
+			firstHistory.complete([{
+				sessionResource: LocalChatSessionUri.forSession('older-generation'),
+				title: 'Older Session',
+				lastMessageDate: Date.now(),
+				isActive: false,
+				lastResponseState: ResponseModelState.Complete,
+				timing: createTestTiming(),
+			}]);
+			await firstRefresh;
+
+			assert.deepStrictEqual(controller.items.map(item => item.resource.toString()), [newerResource.toString()]);
+		});
+	});
+
+	test('should not publish a stale live item after its model stops qualifying', async () => {
+		return runWithFakedTimers({}, async () => {
+			const controller = createController();
+			const sessionResource = LocalChatSessionUri.forSession('stale-live-item');
+			const model = createMockChatModel({ sessionResource, hasRequests: true });
+			mockChatService.setLiveSessionItems([await chatModelToChatDetail(model)]);
+			const history = new DeferredPromise<IChatDetail[]>();
+			const historyEntered = new DeferredPromise<void>();
+			mockChatService.getHistorySessionItems = () => {
+				historyEntered.complete();
+				return history.p;
+			};
+			const deltas: IChatSessionItemsDelta[] = [];
+			disposables.add(controller.onDidChangeChatSessionItems(delta => deltas.push(delta)));
+
+			mockChatService.addSession(model);
+			await historyEntered.p;
+			model.removeRequests();
+			await timeout(0);
+			history.complete([]);
+			await timeout(0);
+
+			assert.deepStrictEqual({
+				items: controller.items,
+				addedResources: deltas.flatMap(delta => delta.addedOrUpdated ?? []).map(item => item.resource.toString()),
+			}, {
+				items: [],
+				addedResources: [],
+			});
 		});
 	});
 

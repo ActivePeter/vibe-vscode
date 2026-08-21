@@ -290,6 +290,84 @@ suite('LogicalWorkspaceService', () => {
 		}]);
 	});
 
+	test('moves session ownership with one atomic catalog commit', () => {
+		const service = createService();
+		const firstWorkspaceId = service.activeWorkspace.id;
+		const secondWorkspace = service.createWorkspace('Second');
+		const sessionResource = URI.parse('test-session:atomic-move');
+		service.bindChatSession(firstWorkspaceId, sessionResource);
+		let workspaceChangeCount = 0;
+		disposables.add(service.onDidChangeWorkspaces(() => workspaceChangeCount++));
+
+		service.updateChatSessionOwnership(secondWorkspace.id, [sessionResource], [sessionResource]);
+
+		assert.deepStrictEqual({
+			firstOwnsSession: service.workspaceContainsChatSession(firstWorkspaceId, sessionResource),
+			secondOwnsSession: service.workspaceContainsChatSession(secondWorkspace.id, sessionResource),
+			workspaceChangeCount,
+		}, {
+			firstOwnsSession: false,
+			secondOwnsSession: true,
+			workspaceChangeCount: 1,
+		});
+	});
+
+	test('exposes pending terminal ownership and persists it only on lease commit', () => {
+		const service = createService();
+		const workspaceId = service.activeWorkspace.id;
+		const rolledBackLease = service.acquireTerminalOwnership(workspaceId, 'rolled-back-terminal');
+		assert.deepStrictEqual({
+			visibleWhilePending: service.workspaceContainsTerminal(workspaceId, 'rolled-back-terminal'),
+			persistedWhilePending: service.activeWorkspace.terminalIds.includes('rolled-back-terminal'),
+		}, {
+			visibleWhilePending: true,
+			persistedWhilePending: false,
+		});
+		rolledBackLease.dispose();
+
+		const committedLease = service.acquireTerminalOwnership(workspaceId, 'committed-terminal');
+		committedLease.commit();
+		committedLease.dispose();
+
+		assert.deepStrictEqual({
+			rolledBackOwner: service.workspaceContainsTerminal(workspaceId, 'rolled-back-terminal'),
+			committedOwner: service.workspaceContainsTerminal(workspaceId, 'committed-terminal'),
+			persistedTerminalIds: service.activeWorkspace.terminalIds,
+		}, {
+			rolledBackOwner: false,
+			committedOwner: true,
+			persistedTerminalIds: ['committed-terminal'],
+		});
+	});
+
+	test('assigns a concurrently claimed terminal to the first successful creation', () => {
+		const service = createService();
+		const firstWorkspaceId = service.activeWorkspace.id;
+		const secondWorkspace = service.createWorkspace('Second');
+		const firstLease = service.acquireTerminalOwnership(firstWorkspaceId, 'shared-terminal');
+		const secondLease = service.acquireTerminalOwnership(secondWorkspace.id, 'shared-terminal');
+
+		assert.deepStrictEqual({
+			firstPendingOwner: service.workspaceContainsTerminal(firstWorkspaceId, 'shared-terminal'),
+			secondPendingOwner: service.workspaceContainsTerminal(secondWorkspace.id, 'shared-terminal'),
+		}, {
+			firstPendingOwner: true,
+			secondPendingOwner: false,
+		});
+
+		secondLease.commit();
+		secondLease.dispose();
+		firstLease.dispose();
+
+		assert.deepStrictEqual({
+			firstOwner: service.workspaceContainsTerminal(firstWorkspaceId, 'shared-terminal'),
+			secondOwner: service.workspaceContainsTerminal(secondWorkspace.id, 'shared-terminal'),
+		}, {
+			firstOwner: false,
+			secondOwner: true,
+		});
+	});
+
 	test('falls back with ordered activation events when an external snapshot removes the active workspace', () => {
 		const service = createService();
 		const fallbackWorkspace = service.activeWorkspace;

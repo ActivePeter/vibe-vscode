@@ -168,7 +168,7 @@ export class MainThreadTerminalService extends Disposable implements MainThreadT
 				config: shellLaunchConfig,
 				cwd: launchConfig.isRemoteResolverTerminal ? shellLaunchConfig.cwd : undefined,
 				location: await this._deserializeParentTerminal(launchConfig.location),
-				logicalWorkspaceId: launchConfig.logicalWorkspaceId,
+				creationContext: launchConfig.creationContext,
 			});
 			r(terminal);
 		});

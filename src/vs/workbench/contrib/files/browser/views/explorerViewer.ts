@@ -375,7 +375,7 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 			return;
 		}
 
-		const roots = this.explorerService.roots.filter(root => this.searchSupportsScheme(root.resource.scheme));
+		const roots = this.explorerService.visibleRoots.filter(root => this.searchSupportsScheme(root.resource.scheme));
 		this.filterSessionStartState = { viewState: tree.getViewState(), input, rootsWithProviders: new Set(roots) };
 
 		this.explorerFindActiveContextKey.set(true);
@@ -491,13 +491,13 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 			phantomParent.forgetChildren();
 		}
 		this.phantomParents.clear();
-		this.explorerService.roots.forEach(root => root.unmarkItemAndChildren());
+		this.explorerService.visibleRoots.forEach(root => root.unmarkItemAndChildren());
 	}
 
 	// Highlight
 
 	private startHighlightSession(): void {
-		const roots = this.explorerService.roots.filter(root => this.searchSupportsScheme(root.resource.scheme));
+		const roots = this.explorerService.visibleRoots.filter(root => this.searchSupportsScheme(root.resource.scheme));
 		this.highlightSessionStartState = { rootsWithProviders: new Set(roots) };
 	}
 
@@ -1794,7 +1794,7 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 
 		// Find parent to add to
 		if (!target) {
-			target = this.explorerService.roots[this.explorerService.roots.length - 1];
+			target = this.explorerService.visibleRoots[this.explorerService.visibleRoots.length - 1];
 			targetSector = ListViewTargetSector.BOTTOM;
 		}
 		if (!target.isDirectory && target.parent) {

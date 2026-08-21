@@ -11,7 +11,7 @@ import { IMarkdownString } from '../../../../../base/common/htmlContent.js';
 import { Disposable, DisposableMap } from '../../../../../base/common/lifecycle.js';
 import { ResourceMap, ResourceSet } from '../../../../../base/common/map.js';
 import { MarshalledId } from '../../../../../base/common/marshallingIds.js';
-import { safeStringify } from '../../../../../base/common/objects.js';
+import { equals, safeStringify } from '../../../../../base/common/objects.js';
 import { derived, IObservable, observableSignalFromEvent } from '../../../../../base/common/observable.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI, UriComponents } from '../../../../../base/common/uri.js';
@@ -525,7 +525,8 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 
 	private readonly cache: AgentSessionsCache;
 	private readonly logger: AgentSessionsLogger;
-	private sessionOwnershipMutationDepth = 0;
+	private sessionOwnershipProjection: readonly string[] = [];
+	private sessionChangeSequence = 0;
 
 	constructor(
 		@IChatSessionsService private readonly chatSessionsService: IChatSessionsService,
@@ -565,6 +566,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 
 		this.readDateBaseline = this.resolveReadDateBaseline(); // we use this to account for bugfixes in the read/unread tracking
 		this.loadMigratedReadResources();
+		this.sessionOwnershipProjection = this.getSessionOwnershipProjection();
 
 		this.registerListeners();
 	}
@@ -580,13 +582,9 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 			const addedSessionResources = (delta.addedOrUpdated ?? []).map(session => session.resource);
 			const removedSessionResources = delta.removed ?? [];
 
-			// Ownership is captured at the provider-delta boundary. The throttled provider refresh may
-			// be coalesced with a later delta from another Workspace, so removals must release their
-			// previous owner before a rapid re-add can bind the resource to its new Workspace.
-			this.mutateSessionOwnership(() => {
-				this.logicalWorkspaceService.unbindChatSessions(removedSessionResources);
-				this.logicalWorkspaceService.bindChatSessions(targetWorkspaceId, addedSessionResources);
-			});
+			// Ownership is captured at the provider-delta boundary. Applying the complete delta in one
+			// service transaction makes a rapid remove/re-add observable as one committed owner change.
+			this.logicalWorkspaceService.updateChatSessionOwnership(targetWorkspaceId, addedSessionResources, removedSessionResources);
 
 			for (const resource of delta.addedOrUpdated ?? []) {
 				changedChatSessionTypes.add(getChatSessionType(resource.resource));
@@ -606,8 +604,9 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 			activeWorkspaceId: state.activeWorkspaceId,
 			sessionResources: state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.chatSessionResources ?? [],
 		}))(() => {
-			if (this.sessionOwnershipMutationDepth === 0) {
-				this._onDidChangeSessions.fire();
+			const projection = this.getSessionOwnershipProjection();
+			if (!equals(this.sessionOwnershipProjection, projection)) {
+				this.emitSessionsChanged();
 			}
 		}));
 
@@ -622,19 +621,20 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		return this._sessions.get(resource);
 	}
 
-	/**
-	 * Ownership methods broadcast synchronously. Model-originated ownership writes are one part of
-	 * a larger Session-model transaction, whose final change event is emitted after `_sessions` is
-	 * committed. Suppressing only that synchronous echo keeps observers from seeing partial state;
-	 * external ownership changes continue through the state-slice listener above.
-	 */
-	private mutateSessionOwnership(mutation: () => void): void {
-		this.sessionOwnershipMutationDepth++;
-		try {
-			mutation();
-		} finally {
-			this.sessionOwnershipMutationDepth--;
-		}
+	private getSessionOwnershipProjection(): readonly string[] {
+		return this.sessions.map(session => session.resource.toString());
+	}
+
+	private emitSessionsChanged(): void {
+		this.sessionOwnershipProjection = this.getSessionOwnershipProjection();
+		this.sessionChangeSequence++;
+		this._onDidChangeSessions.fire();
+	}
+
+	private resolveOwnershipWorkspaceId(workspaceId: string): string {
+		return this.logicalWorkspaceService.workspaces.some(workspace => workspace.id === workspaceId)
+			? workspaceId
+			: this.logicalWorkspaceService.activeWorkspace.id;
 	}
 
 	/**
@@ -769,7 +769,6 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 				return;
 			}
 
-			this.mutateSessionOwnership(() => this.logicalWorkspaceService.bindChatSessions(targetWorkspaceId, providerSessions.map(session => session.resource)));
 			for (const session of providerSessions) {
 				let icon: ThemeIcon;
 				let providerLabel: string;
@@ -818,6 +817,9 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 				}));
 			}
 		}
+		if (token.isCancellationRequested || this.lifecycleService.willShutdown) {
+			return;
+		}
 
 		// Phase 2: Atomically update sessions (sync - reads latest this._sessions
 		// so concurrent updateItems calls for other providers don't lose data)
@@ -849,7 +851,6 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		}
 
 		this._sessions = sessions;
-		this.mutateSessionOwnership(() => this.logicalWorkspaceService.unbindChatSessions(removedProviderSessionResources));
 		this._resolved = true;
 
 		this.migrateReadStateToProvider(sessions.values());
@@ -859,7 +860,18 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		for (const session of sessionsWithChangedArchivedState) {
 			this._onDidChangeSessionArchivedState.fire(session);
 		}
-		this._onDidChangeSessions.fire();
+		// Ownership listeners run synchronously. If the owner transaction does not change the current
+		// visible projection (for example, its target Workspace is now inactive), publish the catalog
+		// commit explicitly so observers of getSession() still see this generation.
+		const sessionChangeSequence = this.sessionChangeSequence;
+		this.logicalWorkspaceService.updateChatSessionOwnership(
+			this.resolveOwnershipWorkspaceId(targetWorkspaceId),
+			Array.from(sessions.values()).filter(session => session.providerType === provider).map(session => session.resource),
+			removedProviderSessionResources,
+		);
+		if (this.sessionChangeSequence === sessionChangeSequence) {
+			this.emitSessionsChanged();
+		}
 	}
 
 	private toAgentSession(data: IInternalAgentSessionData): IInternalAgentSession {
@@ -940,7 +952,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 			this._onDidChangeSessionArchivedState.fire(agentSession);
 		}
 
-		this._onDidChangeSessions.fire();
+		this.emitSessionsChanged();
 	}
 
 	private isPinned(session: IInternalAgentSessionData): boolean {
@@ -955,7 +967,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		const state = this.resolveStateEntry(session) ?? {};
 		this.sessionStates.set(session.resource, { ...state, pinned });
 
-		this._onDidChangeSessions.fire();
+		this.emitSessionsChanged();
 	}
 
 	private isMarkedUnread(session: IInternalAgentSessionData): boolean {
@@ -1052,7 +1064,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		this.sessionStates.set(session.resource, { ...state, read: newRead });
 
 		if (!skipEvent) {
-			this._onDidChangeSessions.fire();
+			this.emitSessionsChanged();
 		}
 	}
 

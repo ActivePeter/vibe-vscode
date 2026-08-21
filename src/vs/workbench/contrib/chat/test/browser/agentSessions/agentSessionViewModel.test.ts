@@ -395,6 +395,34 @@ suite('AgentSessions', () => {
 			});
 		});
 
+		test('should publish a catalog commit when its ownership target becomes inactive', async () => {
+			return runWithFakedTimers({}, async () => {
+				const session = makeSimpleSessionItem('resolved-for-inactive-workspace');
+				const controller = new StaticChatSessionItemController([session]);
+				mockChatSessionsService.registerChatSessionItemController(chatSessionTestType, controller);
+				viewModel = createViewModel();
+
+				const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+				const firstWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
+				const secondWorkspace = logicalWorkspaceService.createWorkspace('Second');
+				const sessionsChanged = Event.toPromise(viewModel.onDidChangeSessions);
+				const resolving = viewModel.resolve(chatSessionTestType);
+				logicalWorkspaceService.activateWorkspace(secondWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+
+				await Promise.all([resolving, sessionsChanged]);
+
+				assert.deepStrictEqual({
+					catalogContainsSession: viewModel.getSession(session.resource)?.resource.toString(),
+					visibleSessions: viewModel.sessions,
+					firstWorkspaceOwnsSession: logicalWorkspaceService.workspaceContainsChatSession(firstWorkspaceId, session.resource),
+				}, {
+					catalogContainsSession: session.resource.toString(),
+					visibleSessions: [],
+					firstWorkspaceOwnsSession: true,
+				});
+			});
+		});
+
 		test('should release ownership when a provider removes a session', async () => {
 			return runWithFakedTimers({}, async () => {
 				const session = makeSimpleSessionItem('removed-session');
@@ -411,6 +439,33 @@ suite('AgentSessions', () => {
 				await viewModel.resolve(chatSessionTestType);
 
 				assert.strictEqual(logicalWorkspaceService.workspaceContainsChatSession(workspaceId, session.resource), false);
+			});
+		});
+
+		test('should publish an ownership delta even when the provider refresh fails', async () => {
+			return runWithFakedTimers({}, async () => {
+				const session = makeSimpleSessionItem('removed-before-provider-failure');
+				const controller = new StaticChatSessionItemController([session]);
+				mockChatSessionsService.registerChatSessionItemController(chatSessionTestType, controller);
+				viewModel = createViewModel();
+				await viewModel.resolve(chatSessionTestType);
+
+				mockChatSessionsService.getChatSessionItems = async function* () {
+					throw new Error('provider refresh failed');
+				};
+				const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+				const workspaceId = logicalWorkspaceService.activeWorkspace.id;
+				const sessionsChanged = Event.toPromise(viewModel.onDidChangeSessions);
+				mockChatSessionsService.fireDidChangeSessionItems({ removed: [session.resource] });
+				await sessionsChanged;
+
+				assert.deepStrictEqual({
+					ownsSession: logicalWorkspaceService.workspaceContainsChatSession(workspaceId, session.resource),
+					visibleSessions: viewModel.sessions.map(session => session.resource.toString()),
+				}, {
+					ownsSession: false,
+					visibleSessions: [],
+				});
 			});
 		});
 

@@ -11,7 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
-import { TerminalLocation, TitleEventSource, type IPtyHostAttachTarget, type IShellLaunchConfig, type ITerminalBackend, type TerminalIcon } from '../../../../../platform/terminal/common/terminal.js';
+import { TerminalLocation, TitleEventSource, type ICreateContributedTerminalProfileOptions, type IPtyHostAttachTarget, type IShellLaunchConfig, type ITerminalBackend, type TerminalIcon } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../browser/terminal.js';
 import { TerminalService } from '../../browser/terminalService.js';
 import { ITerminalProfileService, TERMINAL_CONFIG_SECTION } from '../../common/terminal.js';
@@ -211,6 +211,59 @@ suite('Workbench - TerminalService', () => {
 			});
 			logicalWorkspaceService.activateWorkspace(targetWorkspace.id, LogicalWorkspaceActivationActor.Picker);
 			profilesReady.complete();
+			await terminalPromise;
+
+			deepStrictEqual({
+				initiatingWorkspaceOwnsTerminal: logicalWorkspaceService.workspaceContainsTerminal(initiatingWorkspaceId, shellLaunchConfig.logicalTerminalId!),
+				targetWorkspaceOwnsTerminal: logicalWorkspaceService.workspaceContainsTerminal(targetWorkspace.id, shellLaunchConfig.logicalTerminalId!),
+			}, {
+				initiatingWorkspaceOwnsTerminal: true,
+				targetWorkspaceOwnsTerminal: false,
+			});
+		});
+
+		test('should retain the initiating Workspace through a contributed profile provider', async () => {
+			const providerReady = new DeferredPromise<void>();
+			const providerEntered = new DeferredPromise<void>();
+			const shellLaunchConfig: IShellLaunchConfig = { executable: '/bin/sh' };
+			instantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', () => shellLaunchConfig);
+
+			const instance = {
+				shellLaunchConfig,
+				shellType: undefined,
+				focusWhenReady: async () => { },
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			instantiationService.stub(ITerminalGroupService, 'instances', [instance]);
+			instantiationService.stub(ITerminalGroupService, 'createGroup', () => ({
+				terminalInstances: [instance],
+			} satisfies Partial<ITerminalGroup> as ITerminalGroup));
+			instantiationService.stub(ITerminalGroupService, 'setActiveInstanceByIndex', () => { });
+			instantiationService.stub(ITerminalProfileService, 'getContributedProfileProvider', () => ({
+				createContributedTerminalProfile: async (options: ICreateContributedTerminalProfileOptions) => {
+					providerEntered.complete();
+					await providerReady.p;
+					await terminalService.createTerminal({
+						config: { executable: '/bin/sh' },
+						skipContributedProfileCheck: true,
+						logicalWorkspaceId: options.logicalWorkspaceId,
+					});
+				},
+			}));
+			terminalService.registerProcessSupport(true);
+
+			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			const initiatingWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
+			const targetWorkspace = logicalWorkspaceService.createWorkspace('Target');
+			const terminalPromise = terminalService.createTerminal({
+				config: {
+					title: 'Contributed',
+					id: 'contributed',
+					extensionIdentifier: 'test.extension',
+				},
+			});
+			await providerEntered.p;
+			logicalWorkspaceService.activateWorkspace(targetWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+			providerReady.complete();
 			await terminalPromise;
 
 			deepStrictEqual({

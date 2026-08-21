@@ -979,7 +979,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async createTerminal(options?: ICreateTerminalOptions): Promise<ITerminalInstance> {
-		const targetLogicalWorkspaceId = this._logicalWorkspaceService.activeWorkspace.id;
+		const targetLogicalWorkspaceId = options?.logicalWorkspaceId ?? this._logicalWorkspaceService.activeWorkspace.id;
 
 		// Await the initialization of available profiles as long as this is not a pty terminal or a
 		// local terminal in a remote workspace as profile won't be used in those cases and these
@@ -1038,6 +1038,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 				location,
 				cwd: shellLaunchConfig.cwd,
 				titleTemplate: contributedProfile.titleTemplate,
+				logicalWorkspaceId: targetLogicalWorkspaceId,
 			});
 			const instanceHost = resolvedLocation === TerminalLocation.Editor ? this._terminalEditorService : this._terminalGroupService;
 			// TODO@meganrogge: This returns undefined in the remote & web smoke tests but the function
@@ -1065,6 +1066,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 					location,
 					cwd: shellLaunchConfig.cwd,
 					titleTemplate: fallbackProfile.titleTemplate,
+					logicalWorkspaceId: targetLogicalWorkspaceId,
 				});
 				const instance = instanceHost.instances[instanceCount];
 				if (!instance) {

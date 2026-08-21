@@ -222,6 +222,7 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 				{ serializeBuffersForPostMessage: initData.serializeBuffersForPostMessage },
 				fullscreen ? WebviewPanelPresentation.FullscreenModal : WebviewPanelPresentation.Editor,
 			);
+			this.updateWebviewViewStates(this._editorService.activeEditor);
 		} catch (error) {
 			webview.dispose();
 			throw error;

@@ -94,7 +94,7 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 
 			this.logicalWorkspaceService.bindChatSession(this.logicalWorkspaceService.activeWorkspace.id, model.sessionResource);
 			await this.refresh(CancellationToken.None);
-			if (this._isDisposed) {
+			if (this._isDisposed || this.chatService.getSession(model.sessionResource) !== model) {
 				return;
 			}
 
@@ -120,18 +120,22 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 				this._modelListeners.deleteAndDispose(sessionResource);
 			}
 
-			const removedSessionResources = e.sessionResources.filter(resource => getChatSessionType(resource) === this.chatSessionType);
-			if (removedSessionResources.length) {
-				for (const resource of removedSessionResources) {
-					this._items.delete(resource);
-				}
-				this._onDidChangeChatSessionItems.fire({ removed: removedSessionResources });
+			if (e.sessionResources.some(resource => getChatSessionType(resource) === this.chatSessionType)) {
+				// Disposing the live model is not the same as deleting the persisted session. Reconcile
+				// against the authoritative live/history catalog so `removed` is emitted only when the
+				// session was actually deleted (or was never persisted).
+				void this.refresh(CancellationToken.None);
 			}
 		}));
 	}
 
 	private async tryUpdateLiveSessionItem(model: IChatModel): Promise<void> {
-		const updated = this.toChatSessionItem(await chatModelToChatDetail(model));
+		const detail = await chatModelToChatDetail(model);
+		if (this.chatService.getSession(model.sessionResource) !== model) {
+			return;
+		}
+
+		const updated = this.toChatSessionItem(detail);
 		if (!updated) {
 			// The session no longer qualifies as a list item (e.g. it has no requests
 			// yet, or its requests were removed). Drop any stale item we were showing.

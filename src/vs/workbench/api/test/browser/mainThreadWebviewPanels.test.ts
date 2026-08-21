@@ -48,6 +48,7 @@ suite('MainThreadWebviewPanels', () => {
 			override readonly onDidAddGroup = Event.None;
 			override readonly onDidRemoveGroup = Event.None;
 			override readonly onDidMoveGroup = Event.None;
+			override readonly groups = [];
 			override registerContextKeyProvider(): IDisposable { return Disposable.None; }
 		}();
 		const webviewDidDispose = disposables.add(new Emitter<void>());

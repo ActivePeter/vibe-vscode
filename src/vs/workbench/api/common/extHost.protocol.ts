@@ -670,6 +670,7 @@ export interface TerminalLaunchConfig {
 	isTransient?: boolean;
 	shellIntegrationNonce?: string;
 	titleTemplate?: string;
+	logicalWorkspaceId?: string;
 }
 
 

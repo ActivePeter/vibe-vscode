@@ -758,6 +758,12 @@ export interface ICreateTerminalOptions {
 	 * when the workbench is not yet loaded.
 	 */
 	skipContributedProfileCheck?: boolean;
+
+	/**
+	 * The logical Workspace captured by a delegated terminal creation operation.
+	 * @internal
+	 */
+	logicalWorkspaceId?: string;
 }
 
 export interface TerminalEditorLocation {

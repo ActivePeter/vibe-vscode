@@ -717,6 +717,11 @@ export interface ICreateContributedTerminalProfileOptions {
 	location?: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean };
 	cwd?: string | URI;
 	titleTemplate?: string;
+	/**
+	 * The logical Workspace that initiated this delegated terminal creation.
+	 * @internal
+	 */
+	logicalWorkspaceId?: string;
 }
 
 export enum TerminalLocation {

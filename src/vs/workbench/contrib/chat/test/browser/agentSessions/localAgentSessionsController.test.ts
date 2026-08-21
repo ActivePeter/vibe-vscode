@@ -816,7 +816,48 @@ suite('LocalAgentsSessionsController', () => {
 			});
 		});
 
-		test('should remove session from items and fire removed event on onDidDisposeSession', async () => {
+		test('should retain a persisted session when its live model is disposed', async () => {
+			return runWithFakedTimers({}, async () => {
+				const controller = createController();
+
+				const sessionResource = LocalChatSessionUri.forSession('persisted-dispose-session');
+				const mockModel = createMockChatModel({
+					sessionResource,
+					hasRequests: true
+				});
+				const sessionDetail = await chatModelToChatDetail(mockModel);
+
+				mockChatService.setLiveSessionItems([sessionDetail]);
+				mockChatService.addSession(mockModel);
+				await controller.refresh(CancellationToken.None);
+
+				const removedResources: URI[] = [];
+				disposables.add(controller.onDidChangeChatSessionItems(delta => {
+					if (delta.removed) {
+						removedResources.push(...delta.removed);
+					}
+				}));
+
+				mockChatService.setLiveSessionItems([]);
+				mockChatService.setHistorySessionItems([{ ...sessionDetail, isActive: false }]);
+				mockChatService.removeSession(sessionResource);
+				mockChatService.fireDidDisposeSession([sessionResource]);
+				await timeout(0);
+
+				const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+				assert.deepStrictEqual({
+					itemResources: controller.items.map(item => item.resource.toString()),
+					removedResources: removedResources.map(resource => resource.toString()),
+					workspaceOwnsSession: logicalWorkspaceService.workspaceContainsChatSession(logicalWorkspaceService.activeWorkspace.id, sessionResource),
+				}, {
+					itemResources: [sessionResource.toString()],
+					removedResources: [],
+					workspaceOwnsSession: true,
+				});
+			});
+		});
+
+		test('should remove a deleted session from items and fire a removed event', async () => {
 			return runWithFakedTimers({}, async () => {
 				const controller = createController();
 
@@ -840,18 +881,17 @@ suite('LocalAgentsSessionsController', () => {
 					}
 				}));
 
-				// Fire onDidDisposeSession (simulates removeHistoryEntry)
+				// removeHistoryEntry deletes the persisted item and marks any live model deleted before
+				// firing onDidDisposeSession.
+				mockChatService.setLiveSessionItems([]);
+				mockChatService.setHistorySessionItems([]);
+				mockChatService.removeSession(sessionResource);
 				mockChatService.fireDidDisposeSession([sessionResource]);
+				await timeout(0);
 
-				// Session should be removed from items immediately
 				assert.strictEqual(controller.items.length, 0, 'items should be empty after dispose');
 				assert.strictEqual(removedResources.length, 1, 'removed event should fire');
 				assert.strictEqual(removedResources[0].toString(), sessionResource.toString());
-
-				// Even if refresh is called again, the session should not reappear
-				// (because getLiveSessionItems would still return it, but shouldBeInHistory
-				// would filter it in the real ChatService — here we simulate by keeping
-				// liveSessionItems unchanged, but _items was already cleared)
 			});
 		});
 
@@ -871,12 +911,13 @@ suite('LocalAgentsSessionsController', () => {
 				await controller.refresh(CancellationToken.None);
 				assert.strictEqual(controller.items.length, 1);
 
-				// Dispose the session
-				mockChatService.fireDidDisposeSession([sessionResource]);
-				assert.strictEqual(controller.items.length, 0);
-
-				// Clear live items (simulates isDeleted filtering in real ChatService)
+				// Delete the session from both authoritative sources before disposal is announced.
 				mockChatService.setLiveSessionItems([]);
+				mockChatService.setHistorySessionItems([]);
+				mockChatService.removeSession(sessionResource);
+				mockChatService.fireDidDisposeSession([sessionResource]);
+				await timeout(0);
+				assert.strictEqual(controller.items.length, 0);
 
 				// Refresh should not bring it back
 				await controller.refresh(CancellationToken.None);

@@ -73,6 +73,7 @@ export interface ITerminalInternalOptions {
 	isRemoteResolverTerminal?: boolean;
 	forceShellIntegration?: boolean;
 	useShellEnvironment?: boolean;
+	logicalWorkspaceId?: string;
 	resolvedExtHostIdentifier?: ExtHostTerminalIdentifier;
 	/**
 	 * This location is different from the API location because it can include splitActiveTerminal,
@@ -198,6 +199,7 @@ export class ExtHostTerminal extends Disposable {
 			isTransient: options.isTransient ?? undefined,
 			shellIntegrationNonce: options.shellIntegrationNonce ?? undefined,
 			titleTemplate: options.titleTemplate ?? undefined,
+			logicalWorkspaceId: internalOptions?.logicalWorkspaceId,
 		});
 	}
 
@@ -215,6 +217,7 @@ export class ExtHostTerminal extends Disposable {
 			isTransient: true,
 			shellIntegrationNonce: shellIntegrationNonce ?? undefined,
 			titleTemplate: titleTemplate ?? undefined,
+			logicalWorkspaceId: internalOptions?.logicalWorkspaceId,
 		});
 		// At this point, the id has been set via `$acceptTerminalOpened`
 		if (typeof this._id === 'string') {

@@ -22,6 +22,7 @@ import { getChatSessionType } from '../../common/model/chatUri.js';
 import { getInProgressSessionDescription } from '../chatSessions/chatSessionDescription.js';
 import { chatResponseStateToSessionStatus, getSessionStatusForModel } from '../chatSessions/chatSessions.contribution.js';
 import { Schemas } from '../../../../../base/common/network.js';
+import { ILogicalWorkspaceService } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 
 export class LocalAgentsSessionsController extends Disposable implements IChatSessionItemController, IWorkbenchContribution {
 
@@ -33,12 +34,15 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 	readonly onDidChangeChatSessionItems = this._onDidChangeChatSessionItems.event;
 
 	private readonly _modelListeners = this._register(new DisposableResourceMap());
+	private readonly modelUpdateGenerations = new ResourceMap<number>();
 
 	private _isDisposed = false;
+	private refreshGeneration = 0;
 
 	constructor(
 		@IChatService private readonly chatService: IChatService,
 		@IChatSessionsService private readonly chatSessionsService: IChatSessionsService,
+		@ILogicalWorkspaceService private readonly logicalWorkspaceService: ILogicalWorkspaceService,
 	) {
 		super();
 
@@ -58,21 +62,24 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 	}
 
 	async refresh(token: CancellationToken): Promise<void> {
-		const newItems = await this.provideChatSessionItems(token);
-
-		const newResources = new ResourceSet(newItems.map(i => i.resource));
-		const addedOrUpdated: LocalChatSessionItem[] = [];
-		const removed: URI[] = [];
-
-		for (const item of newItems) {
-			if (!this._items.has(item.resource)) {
-				addedOrUpdated.push(item);
-			}
+		const generation = ++this.refreshGeneration;
+		let newItems: LocalChatSessionItem[] | undefined;
+		try {
+			newItems = await this.provideChatSessionItems(token);
+		} catch {
+			// A failed catalog read is not an authoritative empty snapshot. Keep the last committed set.
+			return;
 		}
-		for (const resource of this._items.keys()) {
-			if (!newResources.has(resource)) {
-				removed.push(resource);
-			}
+		// A newly created model is not observed until its initial refresh finishes. Revalidate the
+		// eligibility predicate at commit time so a request removal during that window cannot flash a
+		// stale provider row before the model listener performs its first update.
+		newItems = newItems?.filter(item => this.chatService.getSession(item.resource)?.hasRequests !== false);
+		if (!newItems || token.isCancellationRequested || this._isDisposed || generation !== this.refreshGeneration) {
+			return;
+		}
+		const previousItems = new ResourceMap<LocalChatSessionItem>();
+		for (const item of this._items.values()) {
+			previousItems.set(item.resource, item);
 		}
 
 		this._items.clear();
@@ -80,6 +87,13 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 			this._items.set(item.resource, item);
 		}
 
+		const currentItems = Array.from(this._items.values());
+		const currentResources = new ResourceSet(currentItems.map(item => item.resource));
+		const addedOrUpdated = currentItems.filter(item => {
+			const previous = previousItems.get(item.resource);
+			return !previous || !previous.isEqual(item);
+		});
+		const removed = Array.from(previousItems.keys()).filter(resource => !currentResources.has(resource));
 		if (addedOrUpdated.length > 0 || removed.length > 0) {
 			this._onDidChangeChatSessionItems.fire({
 				...(addedOrUpdated.length > 0 ? { addedOrUpdated } : undefined),
@@ -94,8 +108,9 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 				return;
 			}
 
+			this.logicalWorkspaceService.bindChatSession(this.logicalWorkspaceService.activeWorkspace.id, model.sessionResource);
 			await this.refresh(CancellationToken.None);
-			if (this._isDisposed) {
+			if (this._isDisposed || this.chatService.getSession(model.sessionResource) !== model) {
 				return;
 			}
 
@@ -119,21 +134,35 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 		this._register(this.chatService.onDidDisposeSession(e => {
 			for (const sessionResource of e.sessionResources) {
 				this._modelListeners.deleteAndDispose(sessionResource);
+				this.modelUpdateGenerations.delete(sessionResource);
 			}
 
-			const removedSessionResources = e.sessionResources.filter(resource => getChatSessionType(resource) === this.chatSessionType);
-			if (removedSessionResources.length) {
-				for (const resource of removedSessionResources) {
-					this._items.delete(resource);
-				}
-				this._onDidChangeChatSessionItems.fire({ removed: removedSessionResources });
+			if (e.sessionResources.some(resource => getChatSessionType(resource) === this.chatSessionType)) {
+				// Disposing the live model is not the same as deleting the persisted session. Reconcile
+				// against the authoritative live/history catalog so `removed` is emitted only when the
+				// session was actually deleted (or was never persisted).
+				void this.refresh(CancellationToken.None);
 			}
 		}));
 	}
 
 	private async tryUpdateLiveSessionItem(model: IChatModel): Promise<void> {
-		const updated = this.toChatSessionItem(await chatModelToChatDetail(model));
+		// Stats collection can await editing diffs. Keep ordering per resource so a slow earlier model
+		// change cannot overwrite a later title, status, or request transition.
+		const generation = (this.modelUpdateGenerations.get(model.sessionResource) ?? 0) + 1;
+		this.modelUpdateGenerations.set(model.sessionResource, generation);
+		const detail = await chatModelToChatDetail(model);
+		if (this._isDisposed
+			|| this.chatService.getSession(model.sessionResource) !== model
+			|| this.modelUpdateGenerations.get(model.sessionResource) !== generation) {
+			return;
+		}
+
+		const updated = this.toChatSessionItem(detail);
 		if (!updated) {
+			// Invalidate an in-flight catalog even when this resource was not committed yet. Otherwise
+			// an older refresh can add back the pre-change live item after the model stops qualifying.
+			this.refreshGeneration++;
 			// The session no longer qualifies as a list item (e.g. it has no requests
 			// yet, or its requests were removed). Drop any stale item we were showing.
 			if (this._items.has(model.sessionResource)) {
@@ -148,15 +177,19 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 			return;
 		}
 
+		this.refreshGeneration++;
 		this._items.set(updated.resource, updated);
 		this._onDidChangeChatSessionItems.fire({ addedOrUpdated: [updated] });
 	}
 
-	private async provideChatSessionItems(token: CancellationToken): Promise<LocalChatSessionItem[]> {
+	private async provideChatSessionItems(token: CancellationToken): Promise<LocalChatSessionItem[] | undefined> {
 		const sessions: LocalChatSessionItem[] = [];
 		const sessionsByResource = new ResourceSet();
 
 		for (const sessionDetail of await this.chatService.getLiveSessionItems()) {
+			if (token.isCancellationRequested) {
+				return undefined;
+			}
 			const editorSession = this.toChatSessionItem(sessionDetail);
 			if (!editorSession) {
 				continue;
@@ -166,22 +199,21 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 			sessions.push(editorSession);
 		}
 
-		if (!token.isCancellationRequested) {
-			const history = await this.getHistoryItems();
-			sessions.push(...history.filter(historyItem => !sessionsByResource.has(historyItem.resource)));
+		if (token.isCancellationRequested) {
+			return undefined;
 		}
+		const history = await this.getHistoryItems();
+		if (token.isCancellationRequested) {
+			return undefined;
+		}
+		sessions.push(...history.filter(historyItem => !sessionsByResource.has(historyItem.resource)));
 
 		return sessions;
 	}
 
 	private async getHistoryItems(): Promise<LocalChatSessionItem[]> {
-		try {
-			const historyItems = await this.chatService.getHistorySessionItems();
-
-			return coalesce(historyItems.map(history => this.toChatSessionItem(history)));
-		} catch (error) {
-			return [];
-		}
+		const historyItems = await this.chatService.getHistorySessionItems();
+		return coalesce(historyItems.map(history => this.toChatSessionItem(history)));
 	}
 
 	private toChatSessionItem(chat: IChatDetail): LocalChatSessionItem | undefined {

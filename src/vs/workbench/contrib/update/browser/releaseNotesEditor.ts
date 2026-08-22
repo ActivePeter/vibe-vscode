@@ -42,6 +42,7 @@ export class ReleaseNotesManager extends Disposable {
 	private readonly _releaseNotesCache = new Map<string, Promise<string>>();
 
 	private _currentReleaseNotes: WebviewInput | undefined = undefined;
+	private _pendingReleaseNotes: Promise<WebviewInput> | undefined;
 	private _lastMeta: { text: string; base: URI } | undefined;
 
 	constructor(
@@ -93,17 +94,29 @@ export class ReleaseNotesManager extends Disposable {
 	public async show(version: string, useCurrentFile: boolean): Promise<boolean> {
 		const releaseNoteText = await this.loadReleaseNotes(version, useCurrentFile);
 		const base = await this.getBase(useCurrentFile);
-		this._lastMeta = { text: releaseNoteText, base };
-		const html = await this.renderBody(this._lastMeta);
+		const meta = { text: releaseNoteText, base };
+		this._lastMeta = meta;
+		const html = await this.renderBody(meta);
 		const title = nls.localize('releaseNotesInputName', "Release Notes: {0}", version);
 
+		const releaseNotes = await this.getOrCreateReleaseNotesWebview(title, base, useCurrentFile);
+		releaseNotes.setWebviewTitle(title);
+		releaseNotes.webview.setHtml(html);
 		const activeEditorPane = this._editorService.activeEditorPane;
+		this._webviewWorkbenchService.revealWebview(releaseNotes, {
+			group: activeEditorPane ? activeEditorPane.group : this._editorGroupService.activeGroup,
+			preserveFocus: false,
+		});
+
+		return true;
+	}
+
+	private getOrCreateReleaseNotesWebview(title: string, base: URI, useCurrentFile: boolean): Promise<WebviewInput> {
 		if (this._currentReleaseNotes) {
-			this._currentReleaseNotes.setWebviewTitle(title);
-			this._currentReleaseNotes.webview.setHtml(html);
-			this._webviewWorkbenchService.revealWebview(this._currentReleaseNotes, activeEditorPane ? activeEditorPane.group : this._editorGroupService.activeGroup, false);
-		} else {
-			this._currentReleaseNotes = this._webviewWorkbenchService.openWebview(
+			return Promise.resolve(this._currentReleaseNotes);
+		}
+		if (!this._pendingReleaseNotes) {
+			const creation = this._webviewWorkbenchService.openWebview(
 				{
 					title,
 					options: {
@@ -121,30 +134,31 @@ export class ReleaseNotesManager extends Disposable {
 				title,
 				Codicon.vscode,
 				{ group: ACTIVE_GROUP, preserveFocus: false });
-
-			const disposables = new DisposableStore();
-
-			disposables.add(this._currentReleaseNotes.webview.onDidClickLink(uri => this.onDidClickLink(URI.parse(uri))));
-
-			disposables.add(this._currentReleaseNotes.webview.onMessage(e => {
-				if (e.message.type === 'showReleaseNotes') {
-					this._configurationService.updateValue('update.showReleaseNotes', e.message.value);
-				} else if (e.message.type === 'clickSetting') {
-					const x = this._currentReleaseNotes?.webview.container.offsetLeft + e.message.value.x;
-					const y = this._currentReleaseNotes?.webview.container.offsetTop + e.message.value.y;
-					this._simpleSettingRenderer.updateSetting(URI.parse(e.message.value.uri), x, y);
-				}
-			}));
-
-			disposables.add(this._currentReleaseNotes.onWillDispose(() => {
-				disposables.dispose();
-				this._currentReleaseNotes = undefined;
-			}));
-
-			this._currentReleaseNotes.webview.setHtml(html);
+			this._pendingReleaseNotes = creation.then(input => {
+				this._currentReleaseNotes = input;
+				const disposables = new DisposableStore();
+				disposables.add(input.webview.onDidClickLink(uri => this.onDidClickLink(URI.parse(uri))));
+				disposables.add(input.webview.onMessage(e => {
+					if (e.message.type === 'showReleaseNotes') {
+						this._configurationService.updateValue('update.showReleaseNotes', e.message.value);
+					} else if (e.message.type === 'clickSetting') {
+						const x = input.webview.container.offsetLeft + e.message.value.x;
+						const y = input.webview.container.offsetTop + e.message.value.y;
+						this._simpleSettingRenderer.updateSetting(URI.parse(e.message.value.uri), x, y);
+					}
+				}));
+				disposables.add(input.onWillDispose(() => {
+					disposables.dispose();
+					if (this._currentReleaseNotes === input) {
+						this._currentReleaseNotes = undefined;
+					}
+				}));
+				return input;
+			}).finally(() => {
+				this._pendingReleaseNotes = undefined;
+			});
 		}
-
-		return true;
+		return this._pendingReleaseNotes;
 	}
 
 	private async loadReleaseNotes(version: string, useCurrentFile: boolean): Promise<string> {

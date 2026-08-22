@@ -27,7 +27,7 @@ import { ITelemetryService } from '../../../../platform/telemetry/common/telemet
 import { ActiveGroupEditorsByMostRecentlyUsedQuickAccess } from './editorQuickAccess.js';
 import { SideBySideEditor } from './sideBySideEditor.js';
 import { TextDiffEditor } from './textDiffEditor.js';
-import { ActiveEditorCanSplitInGroupContext, ActiveEditorGroupEmptyContext, ActiveEditorGroupLockedContext, ActiveEditorStickyContext, EditorPartModalContext, EditorPartModalMaximizedContext, EditorPartModalNavigationContext, EditorPartModalSidebarContext, IsSessionsWindowContext, MultipleEditorGroupsContext, SideBySideEditorActiveContext, TextCompareEditorActiveContext } from '../../../common/contextkeys.js';
+import { ActiveEditorCanSplitInGroupContext, ActiveEditorGroupEmptyContext, ActiveEditorGroupLockedContext, ActiveEditorStickyContext, EditorPartModalContext, EditorPartModalFullscreenContext, EditorPartModalMaximizedContext, EditorPartModalNavigationContext, EditorPartModalSidebarContext, IsSessionsWindowContext, MultipleEditorGroupsContext, SideBySideEditorActiveContext, TextCompareEditorActiveContext } from '../../../common/contextkeys.js';
 import { CloseDirection, EditorInputCapabilities, EditorsOrder, IResourceDiffEditorInput, IUntitledTextResourceEditorInput, isDiffEditorInput, isEditorInputWithOptionsAndGroup } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../../common/editor/sideBySideEditorInput.js';
@@ -1457,7 +1457,7 @@ function registerModalEditorCommands(): void {
 				category: Categories.View,
 				f1: true,
 				icon: Codicon.openInProduct,
-				precondition: EditorPartModalContext,
+				precondition: ContextKeyExpr.and(EditorPartModalContext, EditorPartModalFullscreenContext.negate()),
 				menu: {
 					id: MenuId.ModalEditorTitle,
 					group: 'navigation',
@@ -1486,7 +1486,7 @@ function registerModalEditorCommands(): void {
 				category: Categories.View,
 				f1: true,
 				icon: Codicon.emptyWindow,
-				precondition: EditorPartModalContext,
+				precondition: ContextKeyExpr.and(EditorPartModalContext, EditorPartModalFullscreenContext.negate()),
 				menu: [{
 					id: MenuId.ModalEditorTitleContext,
 					group: '1_window',
@@ -1543,7 +1543,7 @@ function registerModalEditorCommands(): void {
 				title: localize2('toggleModalEditorMaximized', 'Maximize Modal Editor'),
 				category: Categories.View,
 				f1: true,
-				precondition: EditorPartModalContext,
+				precondition: ContextKeyExpr.and(EditorPartModalContext, EditorPartModalFullscreenContext.negate()),
 				icon: Codicon.screenFull,
 				toggled: {
 					condition: EditorPartModalMaximizedContext,

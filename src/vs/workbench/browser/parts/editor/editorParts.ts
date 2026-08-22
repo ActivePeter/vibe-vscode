@@ -223,7 +223,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		this.modalEditorVisibleContext.set(true);
 		let result;
 		try {
-			result = await this.instantiationService.createInstance(ModalEditorPart, this).create({
+			const resolvedOptions: IModalEditorPartOptions = options?.fullscreen ? options : {
 				...options,
 				maximized: options?.maximized ?? this.modalEditorMaximized,
 				size: options?.size ?? this.modalEditorSize,
@@ -233,7 +233,8 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 					sidebarWidth: options.sidebar.sidebarWidth ?? this.modalEditorSidebarWidth,
 					sidebarHidden: options.sidebar.sidebarHidden ?? this.modalEditorSidebarHidden
 				} : undefined
-			});
+			};
+			result = await this.instantiationService.createInstance(ModalEditorPart, this).create(resolvedOptions);
 		} catch (error) {
 			this.modalEditorVisibleContext.set(false);
 			throw error;
@@ -246,12 +247,14 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 		// Remember state on dispose to restore when opening next time
 		disposables.add(toDisposable(() => {
-			this.modalEditorMaximized = part.maximized;
-			this.modalEditorSize = part.size;
-			this.modalEditorPosition = part.position;
-			if (part.hasSidebar) {
-				this.modalEditorSidebarWidth = part.sidebarWidth;
-				this.modalEditorSidebarHidden = part.sidebarHidden || undefined;
+			if (!part.fullscreen) {
+				this.modalEditorMaximized = part.maximized;
+				this.modalEditorSize = part.size;
+				this.modalEditorPosition = part.position;
+				if (part.hasSidebar) {
+					this.modalEditorSidebarWidth = part.sidebarWidth;
+					this.modalEditorSidebarHidden = part.sidebarHidden || undefined;
+				}
 			}
 
 			this.modalPartInstantiationService = undefined;
@@ -479,7 +482,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	private saveModalState(): void {
 
 		// Also capture state from any currently open modal editor part
-		if (this.modalEditorPart) {
+		if (this.modalEditorPart && !this.modalEditorPart.fullscreen) {
 			this.modalEditorMaximized = this.modalEditorPart.maximized;
 			this.modalEditorSize = this.modalEditorPart.size;
 			this.modalEditorPosition = this.modalEditorPart.position;

@@ -22,7 +22,15 @@ import { isActiveElement } from '../../../../base/browser/dom.js';
 export interface IExplorerService {
 	readonly _serviceBrand: undefined;
 	readonly roots: ExplorerItem[];
+	/** Roots currently projected into the Explorer tree. */
+	readonly visibleRoots: ExplorerItem[];
 	readonly sortOrderConfiguration: ISortOrderConfiguration;
+
+	/**
+	 * Restricts the Explorer to the workspace root matching the resource.
+	 * Passing undefined restores the complete workspace root set.
+	 */
+	setActiveRoot(resource: URI | undefined): Promise<void>;
 
 	getContext(respectMultiSelection: boolean, ignoreNestedChildren?: boolean): ExplorerItem[];
 	hasViewFocus(): boolean;

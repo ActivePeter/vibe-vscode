@@ -932,9 +932,9 @@ async function openExplorerAndCreate(accessor: ServicesAccessor, isFolder: boole
 	const stat = stats.length > 0 ? stats[0] : undefined;
 	let folder: ExplorerItem;
 	if (stat) {
-		folder = stat.isDirectory ? stat : (stat.parent || explorerService.roots[0]);
+		folder = stat.isDirectory ? stat : (stat.parent || explorerService.visibleRoots[0]);
 	} else {
-		folder = explorerService.roots[0];
+		folder = explorerService.visibleRoots[0];
 	}
 
 	if (folder.isReadonly) {
@@ -1076,7 +1076,7 @@ const downloadFileHandler = async (accessor: ServicesAccessor) => {
 	const instantiationService = accessor.get(IInstantiationService);
 
 	const context = explorerService.getContext(true);
-	const explorerItems = context.length ? context : explorerService.roots;
+	const explorerItems = context.length ? context : explorerService.visibleRoots;
 
 	const downloadHandler = instantiationService.createInstance(FileDownload);
 
@@ -1100,7 +1100,7 @@ const uploadFileHandler = async (accessor: ServicesAccessor) => {
 	const instantiationService = accessor.get(IInstantiationService);
 
 	const context = explorerService.getContext(false);
-	const element = context.length ? context[0] : explorerService.roots[0];
+	const element = context.length ? context[0] : explorerService.visibleRoots[0];
 
 	try {
 		const files = await triggerUpload();
@@ -1173,7 +1173,7 @@ export const pasteFileHandler = async (accessor: ServicesAccessor, fileList?: Fi
 			await configurationService.updateValue('explorer.confirmPasteNative', false);
 		}
 	}
-	const element = context.length ? context[0] : explorerService.roots[0];
+	const element = context.length ? context[0] : explorerService.visibleRoots[0];
 	const incrementalNaming = configurationService.getValue<IFilesConfiguration>().explorer.incrementalNaming;
 
 	const editableItem = explorerService.getEditable();

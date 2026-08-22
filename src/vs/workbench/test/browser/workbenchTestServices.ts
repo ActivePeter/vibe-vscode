@@ -167,6 +167,9 @@ import { LabelService } from '../../services/label/common/labelService.js';
 import { ILanguageDetectionService } from '../../services/languageDetection/common/languageDetectionWorkerService.js';
 import { IPartVisibilityChangeEvent, IWorkbenchLayoutService, PanelAlignment, Position as PartPosition, Parts, SINGLE_WINDOW_PARTS } from '../../services/layout/browser/layoutService.js';
 import { ILifecycleService, InternalBeforeShutdownEvent, IWillShutdownEventJoiner, ShutdownReason, WillShutdownEvent } from '../../services/lifecycle/common/lifecycle.js';
+import { LogicalWorkspaceService } from '../../services/logicalWorkspace/browser/logicalWorkspaceService.js';
+import { ILogicalWorkspaceStateStore } from '../../services/logicalWorkspace/browser/logicalWorkspaceStateStore.js';
+import { ILogicalWorkspaceService } from '../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { IPaneCompositePartService } from '../../services/panecomposite/browser/panecomposite.js';
 import { IPathService } from '../../services/path/common/pathService.js';
 import { QuickInputService } from '../../services/quickinput/browser/quickInputService.js';
@@ -257,6 +260,20 @@ export class TestWorkingCopyService extends WorkingCopyService {
 	}
 }
 
+class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorkspaceStateStore {
+	declare readonly _serviceBrand: undefined;
+
+	private readonly _onDidChangeSharedState = this._register(new Emitter<void>());
+	readonly onDidChangeSharedState = this._onDidChangeSharedState.event;
+	private readonly activeWorkspaceIds = new Map<string, string>();
+	private sharedState: unknown;
+
+	readSharedState(): unknown { return this.sharedState; }
+	writeSharedState(state: object): void { this.sharedState = state; }
+	readActiveWorkspaceId(physicalWorkspaceId: string): string | undefined { return this.activeWorkspaceIds.get(physicalWorkspaceId); }
+	writeActiveWorkspaceId(physicalWorkspaceId: string, workspaceId: string): void { this.activeWorkspaceIds.set(physicalWorkspaceId, workspaceId); }
+}
+
 export function workbenchInstantiationService(
 	overrides?: {
 		environmentService?: (instantiationService: IInstantiationService) => IEnvironmentService;
@@ -288,6 +305,11 @@ export function workbenchInstantiationService(
 	instantiationService.stub(IProgressService, new TestProgressService());
 	const workspaceContextService = new TestContextService(TestWorkspace);
 	instantiationService.stub(IWorkspaceContextService, workspaceContextService);
+	const storageService = disposables.add(new TestStorageService());
+	instantiationService.stub(IStorageService, storageService);
+	const logicalWorkspaceStateStore = disposables.add(new TestLogicalWorkspaceStateStore());
+	instantiationService.stub(ILogicalWorkspaceStateStore, logicalWorkspaceStateStore);
+	instantiationService.stub(ILogicalWorkspaceService, disposables.add(new LogicalWorkspaceService(storageService, workspaceContextService, logicalWorkspaceStateStore)));
 	const configService = overrides?.configurationService ? overrides.configurationService(instantiationService) : new TestConfigurationService({
 		files: {
 			participants: {
@@ -299,7 +321,6 @@ export function workbenchInstantiationService(
 	const textResourceConfigurationService = new TestTextResourceConfigurationService(configService);
 	instantiationService.stub(ITextResourceConfigurationService, textResourceConfigurationService);
 	instantiationService.stub(IUntitledTextEditorService, disposables.add(instantiationService.createInstance(UntitledTextEditorService)));
-	instantiationService.stub(IStorageService, disposables.add(new TestStorageService()));
 	instantiationService.stub(IRemoteAgentService, new TestRemoteAgentService());
 	instantiationService.stub(ILanguageDetectionService, new TestLanguageDetectionService());
 	instantiationService.stub(IPathService, overrides?.pathService ? overrides.pathService(instantiationService) : new TestPathService());

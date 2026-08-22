@@ -344,6 +344,13 @@ export interface IEditorOptions {
 export interface IModalEditorPartOptions {
 
 	/**
+	 * Whether the modal editor should cover the complete workbench without
+	 * modal chrome. Fullscreen modal editors are exclusive and cannot be
+	 * combined with size, position, maximized, or sidebar options.
+	 */
+	readonly fullscreen?: boolean;
+
+	/**
 	 * Whether the modal editor should be maximized.
 	 */
 	readonly maximized?: boolean;

@@ -1,3 +1,41 @@
+# vibe vscode
+
+[English](README.md) | [简体中文](README_CN.md)
+
+> **Long-term vision:** Keep your development environment running on a personal workstation or in the cloud. Wherever you are, open a browser, pick up where you left off, and start vibe coding.
+
+vibe vscode is built on Code - OSS. It evolves the portable development editor of the pre-Agent era into a long-running workbench that can switch instantly between multiple task contexts. The goal is not to replace VS Code's editing, terminal, or extension capabilities, but to add stable context management so projects, terminals, and Agent sessions remain continuous across context switches and network interruptions.
+
+## Features Roadmap
+
+Status: ✅ Available　🚧 In progress　⬜ Planned
+
+- ✅ **Web-first operation**: vibe vscode is designed for the browser first. We recommend hosting the development environment on an always-on machine or in the cloud, with the workbench always a web page away. Projects, terminals, and Agent tasks run on the server, while the browser handles interaction and state projection—no desktop client required.
+  - 🚧 **Non-blocking remote connectivity**: Replace modal interruption with status-bar reconnect state, immediate retry after network recovery, and uninterrupted access to the current work. This is not yet included in the current implementation.
+
+  After installing dependencies, start the development environment in two terminals:
+
+  ```bash
+  # Terminal 1: continuously compile changes
+  npm run watch
+
+  # Terminal 2: start the web workbench at http://localhost:8080
+  ./scripts/code-web.sh .
+  ```
+
+- ✅ **Logical Workspace**: Create and select logical workspaces from the status bar or Command Palette without reloading the page. Switching saves and restores the visibility, size, and active view of the primary sidebar, panel, and secondary sidebar.
+  - **Terminal isolation and persistence**: A terminal belongs to the logical workspace in which it was created. Switching workspaces moves terminals between foreground and background without closing them. A stable logical terminal ID survives local or remote PTYs, persistent-process reconnection, and page restoration.
+  - **Chat / Agent session isolation**: Each session has a single logical-workspace owner, and the Agent Sessions list only shows sessions for the current workspace. Creating, restoring, or deleting a session updates that ownership consistently.
+
+  ![Logical Workspace demo](vibe_vscode_doc/pics/vibe_vscode_workspace.gif)
+
+- ⬜ **Project Context**: Select or add a project folder inside a single multi-root physical Workspace. Switching projects should bring both the matching Explorer root and Git repository into focus while keeping open editors, terminals, and sessions intact. Separate Workspace and Project entries in the status bar will keep the two switching models clear. Git following the selected project is not yet complete.
+- ⬜ **Fullscreen session management panel**: Provide a workbench-wide interface for viewing, creating, switching, and managing Agent sessions in one place.
+- ⬜ **Document-driven development**: Select document content in the editor and create a new Agent session from the context menu, using the selection as context so requirements and design documents can directly drive implementation.
+- ⬜ **Codex Agent-first interaction**: Treat Codex Agent as the primary session experience, with priority given to session creation, interaction, status visibility, and restoration.
+
+---
+
 # Visual Studio Code - Open Source ("Code - OSS")
 [![Feature Requests](https://img.shields.io/github/issues/microsoft/vscode/feature-request.svg)](https://github.com/microsoft/vscode/issues?q=is%3Aopen+is%3Aissue+label%3Afeature-request+sort%3Areactions-%2B1-desc)
 [![Bugs](https://img.shields.io/github/issues/microsoft/vscode/bug.svg)](https://github.com/microsoft/vscode/issues?utf8=✓&q=is%3Aissue+is%3Aopen+label%3Abug)

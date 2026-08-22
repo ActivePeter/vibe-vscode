@@ -171,6 +171,7 @@ suite('Find Provider - ExplorerView', () => {
 		instantiationService = workbenchInstantiationService(undefined, disposables);
 		instantiationService.stub(IExplorerService, {
 			roots: [root],
+			visibleRoots: [root],
 			refresh: () => Promise.resolve(),
 			findClosest: (resource: URI) => {
 				return find(root, basename(resource)) ?? null;

@@ -1,0 +1,136 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+import { Event } from '../../../../base/common/event.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { equals } from '../../../../base/common/objects.js';
+import { URI } from '../../../../base/common/uri.js';
+import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+
+export const PICK_LOGICAL_WORKSPACE_COMMAND_ID = 'workbench.action.pickLogicalWorkspace';
+
+export const enum LogicalWorkspaceActivationActor {
+	Picker = 'picker',
+	SharedState = 'sharedState',
+}
+
+export interface ILogicalWorkspaceShellPartLayout {
+	readonly visible: boolean;
+	readonly width: number;
+	readonly height: number;
+	readonly activeCompositeId: string;
+}
+
+/**
+ * Workspace-owned workbench shell state. Editor groups, open editors and window geometry remain
+ * outside this snapshot because they have independent lifecycle and persistence authorities.
+ */
+export interface ILogicalWorkspaceShellLayout {
+	readonly primarySideBar: ILogicalWorkspaceShellPartLayout;
+	readonly panel: ILogicalWorkspaceShellPartLayout;
+	readonly auxiliaryBar: ILogicalWorkspaceShellPartLayout;
+}
+
+export interface ILogicalWorkspace {
+	readonly id: string;
+	readonly name: string;
+	readonly terminalIds: readonly string[];
+	readonly chatSessionResources: readonly string[];
+	readonly shellLayout: ILogicalWorkspaceShellLayout | undefined;
+}
+
+export interface ILogicalWorkspaceActivationEvent {
+	readonly actor: LogicalWorkspaceActivationActor;
+	readonly sequence: number;
+	readonly previousWorkspaceId: string;
+	readonly workspaceId: string;
+}
+
+/**
+ * Immutable state exposed to projections and state-slice observers.
+ */
+export interface ILogicalWorkspaceStateSnapshot {
+	readonly activeWorkspaceId: string;
+	readonly workspaces: readonly ILogicalWorkspace[];
+}
+
+export const enum LogicalWorkspaceStateChangeKind {
+	None = 0,
+	ActiveWorkspace = 1 << 0,
+	Workspaces = 1 << 1,
+}
+
+export interface ILogicalWorkspaceStateChangeEvent {
+	readonly changed: LogicalWorkspaceStateChangeKind;
+	readonly previousState: ILogicalWorkspaceStateSnapshot;
+	readonly state: ILogicalWorkspaceStateSnapshot;
+}
+
+export const ILogicalWorkspaceService = createDecorator<ILogicalWorkspaceService>('logicalWorkspaceService');
+
+export interface ILogicalWorkspaceTerminalOwnershipLease extends IDisposable {
+	/** Makes this claim durable after the Terminal instance exists. The first successful claim wins. */
+	commit(): void;
+}
+
+/**
+ * Owns the logical workspace registry and its resource membership. Resource lookup methods are
+ * pure reads; membership can only change through the explicit bind and unbind methods.
+ */
+export interface ILogicalWorkspaceService {
+	readonly _serviceBrand: undefined;
+
+	readonly onWillChangeActiveWorkspace: Event<ILogicalWorkspaceActivationEvent>;
+	readonly onDidChangeActiveWorkspace: Event<ILogicalWorkspaceActivationEvent>;
+	readonly onDidChangeWorkspaces: Event<void>;
+	readonly onDidChangeState: Event<ILogicalWorkspaceStateChangeEvent>;
+
+	readonly state: ILogicalWorkspaceStateSnapshot;
+	readonly workspaces: readonly ILogicalWorkspace[];
+	readonly activeWorkspace: ILogicalWorkspace;
+	readonly activationSequence: number;
+
+	createWorkspace(name: string): ILogicalWorkspace;
+	activateWorkspace(workspaceId: string, actor: LogicalWorkspaceActivationActor): void;
+	setShellLayout(workspaceId: string, layout: ILogicalWorkspaceShellLayout): void;
+
+	acquireTerminalOwnership(workspaceId: string, logicalTerminalId: string): ILogicalWorkspaceTerminalOwnershipLease;
+	bindTerminal(workspaceId: string, logicalTerminalId: string): void;
+	unbindTerminal(logicalTerminalId: string): void;
+	workspaceContainsTerminal(workspaceId: string, logicalTerminalId: string): boolean;
+
+	bindChatSession(workspaceId: string, sessionResource: URI): void;
+	bindChatSessions(workspaceId: string, sessionResources: readonly URI[]): void;
+	unbindChatSession(sessionResource: URI): void;
+	unbindChatSessions(sessionResources: readonly URI[]): void;
+	/**
+	 * Atomically applies a provider catalog delta. Removed resources are released before added
+	 * resources are claimed, allowing a delete/re-add of the same URI to move ownership in one
+	 * observable commit.
+	 */
+	updateChatSessionOwnership(workspaceId: string, added: readonly URI[], removed: readonly URI[]): void;
+	workspaceContainsChatSession(workspaceId: string, sessionResource: URI): boolean;
+}
+
+/**
+ * Creates an event for a semantic slice of Logical Workspace state. Consumers select the complete
+ * state they depend on once; unrelated mutations are suppressed by structural equality.
+ */
+export function onDidChangeLogicalWorkspaceStateSlice<T>(
+	service: ILogicalWorkspaceService,
+	selector: (state: ILogicalWorkspaceStateSnapshot) => T,
+	isEqual: (current: T, next: T) => boolean = equals,
+): Event<T> {
+	return (listener, thisArgs, disposables) => {
+		let current = selector(service.state);
+		return service.onDidChangeState(event => {
+			const next = selector(event.state);
+			if (!isEqual(current, next)) {
+				current = next;
+				listener.call(thisArgs, next);
+			}
+		}, undefined, disposables);
+	};
+}

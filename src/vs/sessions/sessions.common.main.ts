@@ -80,6 +80,7 @@ import '../workbench/services/aiEmbeddingVector/common/aiEmbeddingVectorService.
 import '../workbench/services/aiRelatedInformation/common/aiRelatedInformationService.js';
 import '../workbench/services/aiSettingsSearch/common/aiSettingsSearchService.js';
 import '../workbench/services/history/browser/historyService.js';
+import '../workbench/services/logicalWorkspace/browser/logicalWorkspaceService.js';
 import '../workbench/services/activity/browser/activityService.js';
 import '../workbench/services/keybinding/browser/keybindingService.js';
 import '../workbench/services/untitled/common/untitledTextEditorService.js';

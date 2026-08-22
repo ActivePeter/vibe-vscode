@@ -654,7 +654,7 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 
 		const selection = this.tree.getSelection();
 
-		const roots = this.explorerService.roots; // If the click is outside of the elements pass the root resource if there is only one root. If there are multiple roots pass empty object.
+		const roots = this.explorerService.visibleRoots; // If the click is outside of the elements pass the root resource if there is only one root. If there are multiple roots pass empty object.
 		let arg: URI | {};
 		if (stat instanceof ExplorerItem) {
 			const compressedControllers = this.renderer.getCompressedNavigationController(stat);
@@ -774,7 +774,7 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 		if (initialInputSetup) {
 			perf.mark('code/willResolveExplorer');
 		}
-		const roots = this.explorerService.roots;
+		const roots = this.explorerService.visibleRoots;
 		let input: ExplorerItem | ExplorerItem[] = roots[0];
 		if (this.contextService.getWorkbenchState() !== WorkbenchState.FOLDER || roots[0].error) {
 			// Display roots only when multi folder workspace

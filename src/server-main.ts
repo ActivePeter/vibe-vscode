@@ -7,6 +7,7 @@ import './bootstrap-server.js'; // this MUST come before other imports as it cha
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
+import * as https from 'node:https';
 import type { AddressInfo } from 'node:net';
 import * as os from 'node:os';
 import * as readline from 'node:readline';
@@ -26,7 +27,7 @@ perf.mark('code/server/start');
 // Do a quick parse to determine if a server or the cli needs to be started
 const parsedArgs = minimist(process.argv.slice(2), {
 	boolean: ['start-server', 'list-extensions', 'print-ip-address', 'help', 'version', 'accept-server-license-terms', 'update-extensions'],
-	string: ['install-extension', 'install-builtin-extension', 'uninstall-extension', 'locate-extension', 'socket-path', 'host', 'port', 'compatibility', 'agent-host-port', 'agent-host-path'],
+	string: ['install-extension', 'install-builtin-extension', 'uninstall-extension', 'locate-extension', 'socket-path', 'host', 'port', 'compatibility', 'agent-host-port', 'agent-host-path', 'tls-key-path', 'tls-cert-path'],
 	alias: { help: 'h', version: 'v' }
 });
 ['host', 'port', 'accept-server-license-terms'].forEach(e => {
@@ -88,14 +89,22 @@ if (shouldSpawnCli) {
 	let firstWebSocket = true;
 
 	let address: string | AddressInfo | null = null;
-	const server = http.createServer(async (req, res) => {
+	const requestListener: http.RequestListener = async (req, res) => {
 		if (firstRequest) {
 			firstRequest = false;
 			perf.mark('code/server/firstRequest');
 		}
 		const remoteExtensionHostAgentServer = await getRemoteExtensionHostAgentServer();
 		return remoteExtensionHostAgentServer.handleRequest(req, res);
-	});
+	};
+	const tlsKeyPath = sanitizeStringArg(parsedArgs['tls-key-path']);
+	const tlsCertPath = sanitizeStringArg(parsedArgs['tls-cert-path']);
+	if ((tlsKeyPath === undefined) !== (tlsCertPath === undefined)) {
+		throw new Error('--tls-key-path and --tls-cert-path must be provided together');
+	}
+	const server = tlsKeyPath && tlsCertPath
+		? https.createServer({ key: fs.readFileSync(tlsKeyPath), cert: fs.readFileSync(tlsCertPath) }, requestListener)
+		: http.createServer(requestListener);
 	server.on('upgrade', async (req, socket) => {
 		if (firstWebSocket) {
 			firstWebSocket = false;

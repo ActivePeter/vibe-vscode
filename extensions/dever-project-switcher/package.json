@@ -1,0 +1,49 @@
+{
+  "name": "dever-project-switcher",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "0.0.1",
+  "publisher": "dever",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.134.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "browser": "./dist/browser/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
+  "enabledApiProposals": [
+    "deverFullscreenPanel"
+  ],
+  "activationEvents": [
+    "onCommand:dever.openFullscreenPanel",
+    "onCommand:dever.closeFullscreenPanel"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": true,
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "dever.openFullscreenPanel",
+        "title": "%command.openFullscreenPanel%",
+        "category": "vibe vscode"
+      },
+      {
+        "command": "dever.closeFullscreenPanel",
+        "title": "%command.closeFullscreenPanel%",
+        "category": "vibe vscode"
+      }
+    ]
+  },
+  "scripts": {
+    "compile-web": "node ./esbuild.browser.mts",
+    "watch-web": "node ./esbuild.browser.mts --watch"
+  }
+}

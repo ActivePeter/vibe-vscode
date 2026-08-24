@@ -1043,6 +1043,7 @@ export interface IWebviewContentOptions {
 export interface IWebviewPanelOptions {
 	readonly enableFindWidget?: boolean;
 	readonly retainContextWhenHidden?: boolean;
+	readonly deverFullscreen?: boolean;
 }
 
 export interface CustomEditorProviderCapabilities {
@@ -1122,7 +1123,7 @@ export interface MainThreadWebviewPanelsShape extends IDisposable {
 		viewType: string,
 		initData: IWebviewInitData,
 		showOptions: WebviewPanelShowOptions,
-	): void;
+	): Promise<void>;
 	$disposeWebview(handle: WebviewHandle): void;
 	$reveal(handle: WebviewHandle, showOptions: WebviewPanelShowOptions): void;
 	$setTitle(handle: WebviewHandle, value: string): void;

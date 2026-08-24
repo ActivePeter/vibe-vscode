@@ -12,7 +12,7 @@ import { IFilesConfiguration, ExplorerFolderContext, FilesExplorerFocusedContext
 import { FileCopiedContext, NEW_FILE_COMMAND_ID, NEW_FOLDER_COMMAND_ID } from '../fileActions.js';
 import * as DOM from '../../../../../base/browser/dom.js';
 import { IWorkbenchLayoutService } from '../../../../services/layout/browser/layoutService.js';
-import { IWorkspaceContextService, WorkbenchState } from '../../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../../platform/configuration/common/configuration.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -45,7 +45,7 @@ import { IViewsService } from '../../../../services/views/common/viewsService.js
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
 import { EditorResourceAccessor, SideBySideEditor } from '../../../../common/editor.js';
-import { IExplorerService, IExplorerView } from '../files.js';
+import { getExplorerTreeInput, IExplorerService, IExplorerView } from '../files.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IEditorResolverService } from '../../../../services/editor/common/editorResolverService.js';
@@ -608,9 +608,14 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 	}
 
 	private setContextKeys(stat: ExplorerItem | null | undefined): void {
-		const folders = this.contextService.getWorkspace().folders;
-		const resource = stat ? stat.resource : folders[folders.length - 1].uri;
-		stat = stat || this.explorerService.findClosest(resource);
+		// An empty-space focus/context menu belongs to the currently projected Project,
+		// not to an arbitrary folder from the window-wide physical Workspace.
+		const visibleRoots = this.explorerService.visibleRoots;
+		if (stat && !visibleRoots.includes(stat.root)) {
+			stat = undefined;
+		}
+		stat ??= visibleRoots.at(-1);
+		const resource = stat?.resource;
 		this.resourceContext.set(resource);
 		this.folderContext.set(!!stat && stat.isDirectory);
 		this.readonlyContext.set(!!stat && !!stat.isReadonly);
@@ -654,7 +659,7 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 
 		const selection = this.tree.getSelection();
 
-		const roots = this.explorerService.roots; // If the click is outside of the elements pass the root resource if there is only one root. If there are multiple roots pass empty object.
+		const roots = this.explorerService.visibleRoots; // If the click is outside of the elements pass the root resource if there is only one root. If there are multiple roots pass empty object.
 		let arg: URI | {};
 		if (stat instanceof ExplorerItem) {
 			const compressedControllers = this.renderer.getCompressedNavigationController(stat);
@@ -774,12 +779,8 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 		if (initialInputSetup) {
 			perf.mark('code/willResolveExplorer');
 		}
-		const roots = this.explorerService.roots;
-		let input: ExplorerItem | ExplorerItem[] = roots[0];
-		if (this.contextService.getWorkbenchState() !== WorkbenchState.FOLDER || roots[0].error) {
-			// Display roots only when multi folder workspace
-			input = roots;
-		}
+		const roots = this.explorerService.visibleRoots;
+		const input = getExplorerTreeInput(roots, this.contextService.getWorkbenchState());
 
 		let viewState: IAsyncDataTreeViewState | undefined;
 		if (this.tree?.getInput()) {
@@ -834,6 +835,17 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 		await promise;
 	}
 
+	async closeFind(): Promise<void> {
+		if (!this.tree || !this.findProvider) {
+			return;
+		}
+
+		// Closing the widget cancels its in-flight token synchronously. End the provider session
+		// immediately as well so a rapidly reopened widget cannot reuse the previous Project input.
+		this.tree.closeFind();
+		await this.findProvider.endSession();
+	}
+
 	public async selectResource(resource: URI | undefined, reveal = this._autoReveal, retry = 0): Promise<void> {
 		// do no retry more than once to prevent infinite loops in cases of inconsistent model
 		if (retry === 2) {
@@ -850,7 +862,7 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 		}
 
 		// Expand all stats in the parent chain.
-		let item: ExplorerItem | null = this.explorerService.findClosestRoot(resource);
+		let item: ExplorerItem | null = this.explorerService.findClosestVisibleRoot(resource);
 
 		while (item && item.resource.toString() !== resource.toString()) {
 			try {

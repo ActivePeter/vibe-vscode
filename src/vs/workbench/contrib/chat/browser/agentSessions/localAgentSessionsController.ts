@@ -6,13 +6,16 @@
 import { coalesce } from '../../../../../base/common/arrays.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
+import { toErrorMessage } from '../../../../../base/common/errorMessage.js';
+import { isCancellationError } from '../../../../../base/common/errors.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { Disposable, DisposableResourceMap } from '../../../../../base/common/lifecycle.js';
-import { ResourceMap, ResourceSet } from '../../../../../base/common/map.js';
+import { ResourceSet } from '../../../../../base/common/map.js';
 import { equals } from '../../../../../base/common/objects.js';
 import { autorun, observableSignalFromEvent } from '../../../../../base/common/observable.js';
 import { isEqual } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IWorkbenchContribution } from '../../../../common/contributions.js';
 import { convertLegacyChatSessionTiming, IChatDetail, IChatService, IChatSessionTiming } from '../../common/chatService/chatService.js';
 import { chatModelToChatDetail } from '../../common/chatService/chatServiceImpl.js';
@@ -22,6 +25,15 @@ import { getChatSessionType } from '../../common/model/chatUri.js';
 import { getInProgressSessionDescription } from '../chatSessions/chatSessionDescription.js';
 import { chatResponseStateToSessionStatus, getSessionStatusForModel } from '../chatSessions/chatSessions.contribution.js';
 import { Schemas } from '../../../../../base/common/network.js';
+import { AgentSessionCatalog, cancelledCatalogSnapshot, CatalogRefreshFailureAction, CatalogSnapshot, completeCatalogSnapshot, partialCatalogSnapshot } from './agentSessionCatalog.js';
+
+/** Marks failures from the persisted-history read, which is safe to retry independently. */
+class LocalAgentSessionHistoryReadError extends Error {
+	constructor(override readonly cause: unknown) {
+		super(toErrorMessage(cause));
+		this.name = 'LocalAgentSessionHistoryReadError';
+	}
+}
 
 export class LocalAgentsSessionsController extends Disposable implements IChatSessionItemController, IWorkbenchContribution {
 
@@ -33,15 +45,32 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 	readonly onDidChangeChatSessionItems = this._onDidChangeChatSessionItems.event;
 
 	private readonly _modelListeners = this._register(new DisposableResourceMap());
+	private readonly _catalog: AgentSessionCatalog<LocalChatSessionItem>;
 
 	private _isDisposed = false;
 
 	constructor(
 		@IChatService private readonly chatService: IChatService,
 		@IChatSessionsService private readonly chatSessionsService: IChatSessionsService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 
+		this._catalog = this._register(new AgentSessionCatalog<LocalChatSessionItem>({
+			name: 'LocalAgentSessions',
+			keyOf: item => item.resource.toString(),
+			equals: (left, right) => left.isEqual(right),
+			read: token => this.readCatalogSnapshot(token),
+			// Local history is a queued storage read. A transient queue/storage failure can recover
+			// without user action, so it belongs to the catalog-owned retry loop.
+			classifyError: error => error instanceof LocalAgentSessionHistoryReadError
+				? CatalogRefreshFailureAction.Retry
+				: CatalogRefreshFailureAction.Throw,
+		}, this.logService));
+		this._register(this._catalog.onDidChange(delta => this._onDidChangeChatSessionItems.fire({
+			...(delta.addedOrUpdated ? { addedOrUpdated: delta.addedOrUpdated } : undefined),
+			...(delta.removed ? { removed: delta.removed.map(item => item.resource) } : undefined),
+		})));
 		this._register(this.chatSessionsService.registerChatSessionItemController(this.chatSessionType, this));
 
 		this.registerListeners();
@@ -52,40 +81,12 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 		super.dispose();
 	}
 
-	private _items = new ResourceMap<LocalChatSessionItem>();
 	get items(): readonly IChatSessionItem[] {
-		return Array.from(this._items.values());
+		return this._catalog.items;
 	}
 
 	async refresh(token: CancellationToken): Promise<void> {
-		const newItems = await this.provideChatSessionItems(token);
-
-		const newResources = new ResourceSet(newItems.map(i => i.resource));
-		const addedOrUpdated: LocalChatSessionItem[] = [];
-		const removed: URI[] = [];
-
-		for (const item of newItems) {
-			if (!this._items.has(item.resource)) {
-				addedOrUpdated.push(item);
-			}
-		}
-		for (const resource of this._items.keys()) {
-			if (!newResources.has(resource)) {
-				removed.push(resource);
-			}
-		}
-
-		this._items.clear();
-		for (const item of newItems) {
-			this._items.set(item.resource, item);
-		}
-
-		if (addedOrUpdated.length > 0 || removed.length > 0) {
-			this._onDidChangeChatSessionItems.fire({
-				...(addedOrUpdated.length > 0 ? { addedOrUpdated } : undefined),
-				...(removed.length > 0 ? { removed } : undefined),
-			});
-		}
+		await this._catalog.refresh(token);
 	}
 
 	private registerListeners(): void {
@@ -94,12 +95,17 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 				return;
 			}
 
-			await this.refresh(CancellationToken.None);
+			try {
+				await this.refresh(CancellationToken.None);
+			} catch {
+				// Throw-classified catalog failures are already logged. A later model/provider event can retry.
+				return;
+			}
 			if (this._isDisposed) {
 				return;
 			}
 
-			this.tryUpdateLiveSessionItem(model);
+			this.updateLiveSessionItem(model);
 
 			const requestChangeListener = model.lastRequestObs.map(last => last?.response && observableSignalFromEvent('chatSessions.modelRequestChangeListener', last.response.onDidChange));
 			const modelChangeListener = observableSignalFromEvent('chatSessions.modelChangeListener', model.onDidChange);
@@ -107,13 +113,16 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 				requestChangeListener.read(reader)?.read(reader);
 				modelChangeListener.read(reader);
 
-				this.tryUpdateLiveSessionItem(model);
+				this.updateLiveSessionItem(model);
 			}));
 		};
 
-		this._register(this.chatService.onDidCreateModel(model => addModelListeners(model)));
+		const registerModel = (model: IChatModel) => {
+			void addModelListeners(model).catch(error => this.logService.error('[LocalAgentSessions] Failed to register live session model', error));
+		};
+		this._register(this.chatService.onDidCreateModel(registerModel));
 		for (const model of this.chatService.chatModels.get()) {
-			addModelListeners(model);
+			registerModel(model);
 		}
 
 		this._register(this.chatService.onDidDisposeSession(e => {
@@ -121,14 +130,18 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 				this._modelListeners.deleteAndDispose(sessionResource);
 			}
 
-			const removedSessionResources = e.sessionResources.filter(resource => getChatSessionType(resource) === this.chatSessionType);
-			if (removedSessionResources.length) {
-				for (const resource of removedSessionResources) {
-					this._items.delete(resource);
-				}
-				this._onDidChangeChatSessionItems.fire({ removed: removedSessionResources });
+			if (e.sessionResources.some(resource => getChatSessionType(resource) === this.chatSessionType)) {
+				// Disposing a live model is not the same as deleting its persisted session. Reconcile
+				// against live + history so only a complete catalog read can publish a removal.
+				void this.refresh(CancellationToken.None).catch(() => {
+					// Throw-classified failures are logged by AgentSessionCatalog. This is an event boundary.
+				});
 			}
 		}));
+	}
+
+	private updateLiveSessionItem(model: IChatModel): void {
+		void this.tryUpdateLiveSessionItem(model).catch(error => this.logService.error('[LocalAgentSessions] Failed to update live session item', error));
 	}
 
 	private async tryUpdateLiveSessionItem(model: IChatModel): Promise<void> {
@@ -136,23 +149,14 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 		if (!updated) {
 			// The session no longer qualifies as a list item (e.g. it has no requests
 			// yet, or its requests were removed). Drop any stale item we were showing.
-			if (this._items.has(model.sessionResource)) {
-				this._items.delete(model.sessionResource);
-				this._onDidChangeChatSessionItems.fire({ removed: [model.sessionResource] });
-			}
+			this._catalog.delete(model.sessionResource.toString());
 			return;
 		}
 
-		const existing = this._items.get(updated.resource);
-		if (existing?.isEqual(updated)) {
-			return;
-		}
-
-		this._items.set(updated.resource, updated);
-		this._onDidChangeChatSessionItems.fire({ addedOrUpdated: [updated] });
+		this._catalog.upsert(updated);
 	}
 
-	private async provideChatSessionItems(token: CancellationToken): Promise<LocalChatSessionItem[]> {
+	private async readCatalogSnapshot(token: CancellationToken): Promise<CatalogSnapshot<LocalChatSessionItem>> {
 		const sessions: LocalChatSessionItem[] = [];
 		const sessionsByResource = new ResourceSet();
 
@@ -166,22 +170,26 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 			sessions.push(editorSession);
 		}
 
-		if (!token.isCancellationRequested) {
-			const history = await this.getHistoryItems();
-			sessions.push(...history.filter(historyItem => !sessionsByResource.has(historyItem.resource)));
+		if (token.isCancellationRequested) {
+			return cancelledCatalogSnapshot();
 		}
 
-		return sessions;
-	}
-
-	private async getHistoryItems(): Promise<LocalChatSessionItem[]> {
+		let historyItems: IChatDetail[];
 		try {
-			const historyItems = await this.chatService.getHistorySessionItems();
-
-			return coalesce(historyItems.map(history => this.toChatSessionItem(history)));
+			historyItems = await this.chatService.getHistorySessionItems();
 		} catch (error) {
-			return [];
+			if (token.isCancellationRequested || isCancellationError(error)) {
+				return cancelledCatalogSnapshot();
+			}
+			return partialCatalogSnapshot(sessions, new LocalAgentSessionHistoryReadError(error));
 		}
+
+		if (token.isCancellationRequested) {
+			return cancelledCatalogSnapshot();
+		}
+		const history = coalesce(historyItems.map(history => this.toChatSessionItem(history)));
+		sessions.push(...history.filter(historyItem => !sessionsByResource.has(historyItem.resource)));
+		return completeCatalogSnapshot(sessions);
 	}
 
 	private toChatSessionItem(chat: IChatDetail): LocalChatSessionItem | undefined {

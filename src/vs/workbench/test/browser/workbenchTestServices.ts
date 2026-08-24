@@ -167,6 +167,7 @@ import { LabelService } from '../../services/label/common/labelService.js';
 import { ILanguageDetectionService } from '../../services/languageDetection/common/languageDetectionWorkerService.js';
 import { IPartVisibilityChangeEvent, IWorkbenchLayoutService, PanelAlignment, Position as PartPosition, Parts, SINGLE_WINDOW_PARTS } from '../../services/layout/browser/layoutService.js';
 import { ILifecycleService, InternalBeforeShutdownEvent, IWillShutdownEventJoiner, ShutdownReason, WillShutdownEvent } from '../../services/lifecycle/common/lifecycle.js';
+import { ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceStateChangeEvent, ILogicalWorkspaceStateSnapshot, LogicalWorkspaceActivationActor, LogicalWorkspaceStateChangeKind } from '../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { IPaneCompositePartService } from '../../services/panecomposite/browser/panecomposite.js';
 import { IPathService } from '../../services/path/common/pathService.js';
 import { QuickInputService } from '../../services/quickinput/browser/quickInputService.js';
@@ -257,6 +258,116 @@ export class TestWorkingCopyService extends WorkingCopyService {
 	}
 }
 
+export class TestLogicalWorkspaceService extends Disposable implements ILogicalWorkspaceService {
+
+	declare readonly _serviceBrand: undefined;
+
+	private readonly _onWillChangeActiveWorkspace = this._register(new Emitter<ILogicalWorkspaceActivationEvent>());
+	readonly onWillChangeActiveWorkspace = this._onWillChangeActiveWorkspace.event;
+
+	private readonly _onDidChangeActiveWorkspace = this._register(new Emitter<ILogicalWorkspaceActivationEvent>());
+	readonly onDidChangeActiveWorkspace = this._onDidChangeActiveWorkspace.event;
+
+	private readonly _onDidChangeWorkspaces = this._register(new Emitter<void>());
+	readonly onDidChangeWorkspaces = this._onDidChangeWorkspaces.event;
+
+	private readonly _onDidChangeState = this._register(new Emitter<ILogicalWorkspaceStateChangeEvent>());
+	readonly onDidChangeState = this._onDidChangeState.event;
+
+	private workspaceCounter = 1;
+	private workspaceList: ILogicalWorkspace[] = [{
+		id: 'test-logical-workspace-0',
+		name: 'Workspace',
+		terminalIds: [],
+		shellLayout: undefined,
+	}];
+	private activeWorkspaceId = this.workspaceList[0].id;
+	private _activationSequence = 0;
+
+	get state(): ILogicalWorkspaceStateSnapshot { return { activeWorkspaceId: this.activeWorkspaceId, workspaces: this.workspaceList }; }
+	get workspaces(): readonly ILogicalWorkspace[] { return this.workspaceList; }
+	get activeWorkspace(): ILogicalWorkspace { return this.getWorkspace(this.activeWorkspaceId); }
+	get activationSequence(): number { return this._activationSequence; }
+	readonly whenReady = Promise.resolve();
+
+	createWorkspace(name: string): ILogicalWorkspace {
+		const previousState = this.state;
+		const workspace: ILogicalWorkspace = {
+			id: `test-logical-workspace-${this.workspaceCounter++}`,
+			name,
+			terminalIds: [],
+			shellLayout: undefined,
+		};
+		this.workspaceList = [...this.workspaceList, workspace];
+		this.fireStateChange(LogicalWorkspaceStateChangeKind.Workspaces, previousState);
+		this._onDidChangeWorkspaces.fire();
+		return workspace;
+	}
+
+	activateWorkspace(workspaceId: string, actor: LogicalWorkspaceActivationActor): void {
+		this.getWorkspace(workspaceId);
+		const previousWorkspaceId = this.activeWorkspaceId;
+		if (previousWorkspaceId === workspaceId) {
+			return;
+		}
+		const previousState = this.state;
+		const event = { actor, sequence: this._activationSequence + 1, previousWorkspaceId, workspaceId };
+		this._onWillChangeActiveWorkspace.fire(event);
+		this.activeWorkspaceId = workspaceId;
+		this._activationSequence = event.sequence;
+		this.fireStateChange(LogicalWorkspaceStateChangeKind.ActiveWorkspace, previousState);
+		this._onDidChangeActiveWorkspace.fire(event);
+	}
+
+	setShellLayout(workspaceId: string, layout: ILogicalWorkspaceShellLayout): void {
+		this.updateWorkspace(workspaceId, workspace => ({ ...workspace, shellLayout: layout }));
+	}
+
+	setEditorWorkingSet(workspaceId: string, editorWorkingSet: string): void {
+		this.updateWorkspace(workspaceId, workspace => ({ ...workspace, editorWorkingSet }));
+	}
+
+	bindTerminal(workspaceId: string, logicalTerminalId: string): void {
+		this.getWorkspace(workspaceId);
+		if (this.workspaceList.some(workspace => workspace.terminalIds.includes(logicalTerminalId))) {
+			return;
+		}
+		this.updateWorkspace(workspaceId, workspace => ({ ...workspace, terminalIds: [...workspace.terminalIds, logicalTerminalId] }));
+	}
+
+	unbindTerminal(logicalTerminalId: string): void {
+		const owner = this.workspaceList.find(workspace => workspace.terminalIds.includes(logicalTerminalId));
+		if (owner) {
+			this.updateWorkspace(owner.id, workspace => ({ ...workspace, terminalIds: workspace.terminalIds.filter(candidate => candidate !== logicalTerminalId) }));
+		}
+	}
+
+	workspaceContainsTerminal(workspaceId: string, logicalTerminalId: string): boolean {
+		return this.getWorkspace(workspaceId).terminalIds.includes(logicalTerminalId);
+	}
+
+	private updateWorkspace(workspaceId: string, update: (workspace: ILogicalWorkspace) => ILogicalWorkspace): void {
+		this.getWorkspace(workspaceId);
+		const previousState = this.state;
+		this.workspaceList = this.workspaceList.map(workspace => workspace.id === workspaceId ? update(workspace) : workspace);
+		this.fireStateChange(LogicalWorkspaceStateChangeKind.Workspaces, previousState);
+		this._onDidChangeWorkspaces.fire();
+	}
+
+	private fireStateChange(changed: LogicalWorkspaceStateChangeKind, previousState: ILogicalWorkspaceStateSnapshot): void {
+		const state = this.state;
+		this._onDidChangeState.fire({ changed, previousState, state });
+	}
+
+	private getWorkspace(workspaceId: string): ILogicalWorkspace {
+		const workspace = this.workspaceList.find(workspace => workspace.id === workspaceId);
+		if (!workspace) {
+			throw new Error(`Unknown logical workspace: ${workspaceId}`);
+		}
+		return workspace;
+	}
+}
+
 export function workbenchInstantiationService(
 	overrides?: {
 		environmentService?: (instantiationService: IInstantiationService) => IEnvironmentService;
@@ -288,6 +399,7 @@ export function workbenchInstantiationService(
 	instantiationService.stub(IProgressService, new TestProgressService());
 	const workspaceContextService = new TestContextService(TestWorkspace);
 	instantiationService.stub(IWorkspaceContextService, workspaceContextService);
+	instantiationService.stub(ILogicalWorkspaceService, disposables.add(new TestLogicalWorkspaceService()));
 	const configService = overrides?.configurationService ? overrides.configurationService(instantiationService) : new TestConfigurationService({
 		files: {
 			participants: {
@@ -901,6 +1013,8 @@ export class TestEditorGroupsService implements IEditorGroupsService {
 	get count(): number { return this.groups.length; }
 
 	getPart(group: number | IEditorGroup): IEditorPart { return this; }
+	serializeWorkingSet(): string { throw new Error('Method not implemented.'); }
+	applySerializedWorkingSet(workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> { throw new Error('Method not implemented.'); }
 	saveWorkingSet(name: string): IEditorWorkingSet { throw new Error('Method not implemented.'); }
 	getWorkingSets(): IEditorWorkingSet[] { throw new Error('Method not implemented.'); }
 	applyWorkingSet(workingSet: IEditorWorkingSet | 'empty', options?: IEditorWorkingSetOptions): Promise<boolean> { throw new Error('Method not implemented.'); }
@@ -1694,6 +1808,8 @@ export class TestEditorPart extends MainEditorPart implements IEditorGroupsServi
 
 	getPart(group: number | IEditorGroup): IEditorPart { return this; }
 
+	serializeWorkingSet(): string { throw new Error('Method not implemented.'); }
+	applySerializedWorkingSet(workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> { throw new Error('Method not implemented.'); }
 	saveWorkingSet(name: string): IEditorWorkingSet { throw new Error('Method not implemented.'); }
 	getWorkingSets(): IEditorWorkingSet[] { throw new Error('Method not implemented.'); }
 	applyWorkingSet(workingSet: IEditorWorkingSet | 'empty', options?: IEditorWorkingSetOptions): Promise<boolean> { throw new Error('Method not implemented.'); }

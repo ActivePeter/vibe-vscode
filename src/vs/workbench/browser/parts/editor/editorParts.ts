@@ -46,6 +46,11 @@ interface IEditorWorkingSetState extends IEditorWorkingSet {
 	readonly auxiliary: IEditorPartsUIState;
 }
 
+interface ISerializedEditorWorkingSetState {
+	readonly main: IEditorPartUIState;
+	readonly auxiliary: IEditorPartsUIState;
+}
+
 interface IModalEditorPartState {
 	readonly maximized: boolean;
 	readonly size?: { readonly width: number; readonly height: number };
@@ -223,7 +228,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		this.modalEditorVisibleContext.set(true);
 		let result;
 		try {
-			result = await this.instantiationService.createInstance(ModalEditorPart, this).create({
+			const resolvedOptions: IModalEditorPartOptions = options?.fullscreen ? options : {
 				...options,
 				maximized: options?.maximized ?? this.modalEditorMaximized,
 				size: options?.size ?? this.modalEditorSize,
@@ -233,7 +238,8 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 					sidebarWidth: options.sidebar.sidebarWidth ?? this.modalEditorSidebarWidth,
 					sidebarHidden: options.sidebar.sidebarHidden ?? this.modalEditorSidebarHidden
 				} : undefined
-			});
+			};
+			result = await this.instantiationService.createInstance(ModalEditorPart, this).create(resolvedOptions);
 		} catch (error) {
 			this.modalEditorVisibleContext.set(false);
 			throw error;
@@ -246,12 +252,14 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 		// Remember state on dispose to restore when opening next time
 		disposables.add(toDisposable(() => {
-			this.modalEditorMaximized = part.maximized;
-			this.modalEditorSize = part.size;
-			this.modalEditorPosition = part.position;
-			if (part.hasSidebar) {
-				this.modalEditorSidebarWidth = part.sidebarWidth;
-				this.modalEditorSidebarHidden = part.sidebarHidden || undefined;
+			if (!part.fullscreen) {
+				this.modalEditorMaximized = part.maximized;
+				this.modalEditorSize = part.size;
+				this.modalEditorPosition = part.position;
+				if (part.hasSidebar) {
+					this.modalEditorSidebarWidth = part.sidebarWidth;
+					this.modalEditorSidebarHidden = part.sidebarHidden || undefined;
+				}
 			}
 
 			this.modalPartInstantiationService = undefined;
@@ -479,7 +487,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	private saveModalState(): void {
 
 		// Also capture state from any currently open modal editor part
-		if (this.modalEditorPart) {
+		if (this.modalEditorPart && !this.modalEditorPart.fullscreen) {
 			this.modalEditorMaximized = this.modalEditorPart.maximized;
 			this.modalEditorSize = this.modalEditorPart.size;
 			this.modalEditorPosition = this.modalEditorPart.position;
@@ -596,6 +604,32 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 	private editorWorkingSets: IEditorWorkingSetState[];
 
+	serializeWorkingSet(): string {
+		return JSON.stringify({
+			main: this.mainPart.createState(),
+			auxiliary: this.createState(),
+		} satisfies ISerializedEditorWorkingSetState);
+	}
+
+	async applySerializedWorkingSet(serializedWorkingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> {
+		let workingSet: unknown;
+		try {
+			workingSet = JSON.parse(serializedWorkingSet);
+		} catch {
+			return false;
+		}
+
+		if (!workingSet || typeof workingSet !== 'object') {
+			return false;
+		}
+		const candidate = workingSet as Partial<ISerializedEditorWorkingSetState>;
+		if (!candidate.main || typeof candidate.main !== 'object' || !candidate.auxiliary || typeof candidate.auxiliary !== 'object') {
+			return false;
+		}
+
+		return this.doApplyWorkingSet(candidate as ISerializedEditorWorkingSetState, options);
+	}
+
 	saveWorkingSet(name: string): IEditorWorkingSet {
 		const workingSet: IEditorWorkingSetState = {
 			id: generateUuid(),
@@ -639,6 +673,10 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 			return false;
 		}
 
+		return this.doApplyWorkingSet(workingSetState, options);
+	}
+
+	private async doApplyWorkingSet(workingSetState: ISerializedEditorWorkingSetState | 'empty', options?: IEditorWorkingSetOptions): Promise<boolean> {
 		// Apply state: begin with auxiliary windows first because it helps to keep
 		// editors around that need confirmation by moving them into the main part.
 		// Also, in rare cases, the auxiliary part may not be able to apply the state

@@ -53,7 +53,7 @@ import { IEditableData } from '../../../../common/views.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
 import { ResourceFileEdit } from '../../../../../editor/browser/services/bulkEditService.js';
-import { IExplorerService } from '../files.js';
+import { getExplorerTreeInput, IExplorerService } from '../files.js';
 import { BrowserFileUpload, ExternalFileImport, getMultipleFilesOverwriteConfirm } from '../fileImportExport.js';
 import { toErrorMessage } from '../../../../../base/common/errorMessage.js';
 import { WebFileSystemAccess } from '../../../../../platform/files/browser/webFileSystemAccess.js';
@@ -279,7 +279,7 @@ class ExplorerFindHighlightTree implements IExplorerFindHighlightTree {
 export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 
 	private sessionId: number = 0;
-	private filterSessionStartState: { viewState: IAsyncDataTreeViewState; input: ExplorerItem[] | ExplorerItem; rootsWithProviders: Set<ExplorerItem> } | undefined;
+	private filterSessionStartState: { viewState: IAsyncDataTreeViewState; input: ExplorerItem[] | ExplorerItem; visibleRoots: readonly ExplorerItem[]; rootsWithProviders: Set<ExplorerItem> } | undefined;
 	private highlightSessionStartState: { rootsWithProviders: Set<ExplorerItem> } | undefined;
 	private explorerFindActiveContextKey: IContextKey<boolean>;
 	private phantomParents = new Set<ExplorerItem>();
@@ -297,7 +297,8 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 		@IFilesConfigurationService private readonly filesConfigService: IFilesConfigurationService,
 		@IProgressService private readonly progressService: IProgressService,
 		@IExplorerService private readonly explorerService: IExplorerService,
-		@IContextKeyService contextKeyService: IContextKeyService
+		@IContextKeyService contextKeyService: IContextKeyService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		this.explorerFindActiveContextKey = ExplorerFindProviderActive.bindTo(contextKeyService);
 	}
@@ -319,10 +320,11 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 	}
 
 	startSession(): void {
-		this.sessionId++;
+		this.invalidateSession();
 	}
 
 	async endSession(): Promise<void> {
+		this.invalidateSession();
 		// Restore view state
 		if (this.filterSessionStartState) {
 			await this.endFilterSession();
@@ -345,6 +347,7 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 	async doFind(pattern: string, toggles: IAsyncFindToggles, token: CancellationToken): Promise<IAsyncFindResult<ExplorerItem> | undefined> {
 		if (toggles.findMode === TreeFindMode.Highlight) {
 			if (this.filterSessionStartState) {
+				this.invalidateSession();
 				await this.endFilterSession();
 			}
 
@@ -356,6 +359,7 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 		}
 
 		if (this.highlightSessionStartState) {
+			this.invalidateSession();
 			this.endHighlightSession();
 		}
 
@@ -375,8 +379,9 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 			return;
 		}
 
-		const roots = this.explorerService.roots.filter(root => this.searchSupportsScheme(root.resource.scheme));
-		this.filterSessionStartState = { viewState: tree.getViewState(), input, rootsWithProviders: new Set(roots) };
+		const visibleRoots = [...this.explorerService.visibleRoots];
+		const roots = visibleRoots.filter(root => this.searchSupportsScheme(root.resource.scheme));
+		this.filterSessionStartState = { viewState: tree.getViewState(), input, visibleRoots, rootsWithProviders: new Set(roots) };
 
 		this.explorerFindActiveContextKey.set(true);
 	}
@@ -386,10 +391,12 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 			throw new Error('ExplorerFindProvider: no session state');
 		}
 
-		const roots = Array.from(this.filterSessionStartState.rootsWithProviders);
+		const sessionState = this.filterSessionStartState;
+		const sessionId = this.sessionId;
+		const roots = Array.from(sessionState.rootsWithProviders);
 		const searchResults = await this.getSearchResults(pattern, roots, matchType, token);
 
-		if (token.isCancellationRequested) {
+		if (token.isCancellationRequested || sessionId !== this.sessionId) {
 			return undefined;
 		}
 
@@ -399,7 +406,13 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 		}
 
 		const tree = this.treeProvider();
-		await tree.setInput(this.filterSessionStartState.input);
+		await tree.setInput(sessionState.input);
+		if (sessionId !== this.sessionId) {
+			// An invalidated search may have completed its tree mutation after the Project changed.
+			// Re-derive the input from the current authority so the stale session cannot win.
+			await tree.setInput(this.getCurrentTreeInput());
+			return undefined;
+		}
 
 		const hitMaxResults = searchResults.some(({ hitMaxResults }) => hitMaxResults);
 		return {
@@ -468,21 +481,25 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 		return phantomElements;
 	}
 
-	async endFilterSession(): Promise<void> {
+	private async endFilterSession(): Promise<void> {
+		const sessionState = this.filterSessionStartState;
+		if (!sessionState) {
+			return;
+		}
+		this.filterSessionStartState = undefined;
 		this.clearPhantomElements();
 
 		this.explorerFindActiveContextKey.set(false);
 
-		// Restore view state
-		if (!this.filterSessionStartState) {
-			throw new Error('ExplorerFindProvider: no session state to restore');
-		}
-
 		const tree = this.treeProvider();
-		await tree.setInput(this.filterSessionStartState.input, this.filterSessionStartState.viewState);
+		const visibleRoots = this.explorerService.visibleRoots;
+		const projectUnchanged = this.areSameRoots(sessionState.visibleRoots, visibleRoots);
+		await tree.setInput(
+			projectUnchanged ? sessionState.input : this.getCurrentTreeInput(),
+			projectUnchanged ? sessionState.viewState : undefined,
+		);
 
-		this.filterSessionStartState = undefined;
-		this.explorerService.refresh();
+		await this.explorerService.refresh();
 	}
 
 	private clearPhantomElements(): void {
@@ -491,13 +508,15 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 			phantomParent.forgetChildren();
 		}
 		this.phantomParents.clear();
+		// Filter marks mutate the window-wide model. Clear every root, including one that
+		// stopped being visible while this find session was active.
 		this.explorerService.roots.forEach(root => root.unmarkItemAndChildren());
 	}
 
 	// Highlight
 
 	private startHighlightSession(): void {
-		const roots = this.explorerService.roots.filter(root => this.searchSupportsScheme(root.resource.scheme));
+		const roots = this.explorerService.visibleRoots.filter(root => this.searchSupportsScheme(root.resource.scheme));
 		this.highlightSessionStartState = { rootsWithProviders: new Set(roots) };
 	}
 
@@ -506,10 +525,11 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 			throw new Error('ExplorerFindProvider: no highlight session state');
 		}
 
+		const sessionId = this.sessionId;
 		const roots = Array.from(this.highlightSessionStartState.rootsWithProviders);
 		const searchResults = await this.getSearchResults(pattern, roots, matchType, token);
 
-		if (token.isCancellationRequested) {
+		if (token.isCancellationRequested || sessionId !== this.sessionId) {
 			return undefined;
 		}
 
@@ -572,6 +592,18 @@ export class ExplorerFindProvider implements IAsyncFindProvider<ExplorerItem> {
 			}
 		}
 		this.findHighlightTree.clear();
+	}
+
+	private invalidateSession(): void {
+		this.sessionId++;
+	}
+
+	private getCurrentTreeInput(): ExplorerItem | ExplorerItem[] {
+		return getExplorerTreeInput(this.explorerService.visibleRoots, this.workspaceContextService.getWorkbenchState());
+	}
+
+	private areSameRoots(left: readonly ExplorerItem[], right: readonly ExplorerItem[]): boolean {
+		return left.length === right.length && left.every((root, index) => root === right[index]);
 	}
 
 	// Search
@@ -1276,7 +1308,7 @@ export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
 					continue;
 				}
 
-				const stat = this.explorerService.findClosest(e.resource);
+				const stat = this.explorerService.findClosestVisible(e.resource);
 				if (stat?.isExcluded) {
 					// A filtered resource suddenly became visible since user opened an editor
 					shouldFire = true;
@@ -1412,7 +1444,7 @@ export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
 			stat.isExcluded = true;
 			const editors = this.editorService.visibleEditors;
 			const editor = editors.find(e => e.resource && this.uriIdentityService.extUri.isEqualOrParent(e.resource, stat.resource));
-			if (editor && stat.root === this.explorerService.findClosestRoot(stat.resource)) {
+			if (editor && stat.root === this.explorerService.findClosestVisibleRoot(stat.resource)) {
 				this.editorsAffectingFilter.add(editor);
 				return true; // Show all opened files and their parents
 			}
@@ -1794,8 +1826,11 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 
 		// Find parent to add to
 		if (!target) {
-			target = this.explorerService.roots[this.explorerService.roots.length - 1];
+			target = this.explorerService.visibleRoots[this.explorerService.visibleRoots.length - 1];
 			targetSector = ListViewTargetSector.BOTTOM;
+		}
+		if (!target) {
+			return;
 		}
 		if (!target.isDirectory && target.parent) {
 			target = target.parent;
@@ -1804,9 +1839,6 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 			return;
 		}
 		const resolvedTarget = target;
-		if (!resolvedTarget) {
-			return;
-		}
 
 		try {
 

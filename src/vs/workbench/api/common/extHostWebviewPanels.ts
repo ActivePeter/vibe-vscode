@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { onUnexpectedError } from '../../../base/common/errors.js';
 import { Emitter } from '../../../base/common/event.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { URI } from '../../../base/common/uri.js';
@@ -12,6 +13,7 @@ import * as typeConverters from './extHostTypeConverters.js';
 import { serializeWebviewOptions, ExtHostWebview, ExtHostWebviews, toExtensionData, shouldSerializeBuffersForPostMessage } from './extHostWebview.js';
 import { IExtHostWorkspace } from './extHostWorkspace.js';
 import { EditorGroupColumn } from '../../services/editor/common/editorGroupColumn.js';
+import { checkProposedApiEnabled } from '../../services/extensions/common/extensions.js';
 import type * as vscode from 'vscode';
 import * as extHostProtocol from './extHost.protocol.js';
 import * as extHostTypes from './extHostTypes.js';
@@ -214,15 +216,23 @@ export class ExtHostWebviewPanels extends Disposable implements extHostProtocol.
 
 		const serializeBuffersForPostMessage = shouldSerializeBuffersForPostMessage(extension);
 		const handle = ExtHostWebviewPanels.newHandle();
-		this._proxy.$createWebviewPanel(toExtensionData(extension), handle, viewType, {
+		const createWebviewPanel = this._proxy.$createWebviewPanel(toExtensionData(extension), handle, viewType, {
 			title,
-			panelOptions: serializeWebviewPanelOptions(options),
+			panelOptions: serializeWebviewPanelOptions(extension, options),
 			webviewOptions: serializeWebviewOptions(extension, this.workspace, options),
 			serializeBuffersForPostMessage,
 		}, webviewShowOptions);
 
 		const webview = this.webviews.createNewWebview(handle, options, extension);
 		const panel = this.createNewWebviewPanel(handle, viewType, title, viewColumn, options, webview, true);
+		void createWebviewPanel.catch(error => {
+			if (this._webviewPanels.get(handle) === panel) {
+				panel.dispose();
+				this._webviewPanels.delete(handle);
+				this.webviews.deleteWebview(handle);
+			}
+			onUnexpectedError(error);
+		});
 
 		return panel;
 	}
@@ -322,9 +332,14 @@ export class ExtHostWebviewPanels extends Disposable implements extHostProtocol.
 	}
 }
 
-function serializeWebviewPanelOptions(options: vscode.WebviewPanelOptions): extHostProtocol.IWebviewPanelOptions {
+function serializeWebviewPanelOptions(extension: IExtensionDescription, options: vscode.WebviewPanelOptions): extHostProtocol.IWebviewPanelOptions {
+	if (options.deverFullscreen) {
+		checkProposedApiEnabled(extension, 'deverFullscreenPanel');
+	}
+
 	return {
 		enableFindWidget: options.enableFindWidget,
 		retainContextWhenHidden: options.retainContextWhenHidden,
+		deverFullscreen: options.deverFullscreen,
 	};
 }

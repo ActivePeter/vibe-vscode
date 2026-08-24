@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { fail, strictEqual } from 'assert';
+import { deepStrictEqual, fail, strictEqual } from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -11,7 +11,7 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
 import { TerminalLocation, TitleEventSource, type ITerminalBackend, type TerminalIcon } from '../../../../../platform/terminal/common/terminal.js';
-import { ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../browser/terminal.js';
+import { ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../browser/terminal.js';
 import { TerminalService } from '../../browser/terminalService.js';
 import { TERMINAL_CONFIG_SECTION } from '../../common/terminal.js';
 import { IRemoteAgentService } from '../../../../services/remote/common/remoteAgentService.js';
@@ -51,6 +51,51 @@ suite('Workbench - TerminalService', () => {
 	});
 
 	suite('background terminals', () => {
+		test('should keep the panel open while moving its last terminal to the background', async () => {
+			await configurationService.setUserConfiguration(TERMINAL_CONFIG_SECTION, { hideOnLastClosed: true });
+			configurationService.onDidChangeConfigurationEmitter.fire({
+				affectsConfiguration: () => true,
+				affectedKeys: ['terminal.integrated.hideOnLastClosed']
+			} as unknown as IConfigurationChangeEvent);
+
+			const activeInstanceEmitter = store.add(new Emitter<ITerminalInstance | undefined>());
+			instantiationService.stub(ITerminalGroupService, 'onDidChangeActiveInstance', activeInstanceEmitter.event);
+			const hidePanelSpy = instantiationService.stub(ITerminalGroupService, 'hidePanel', () => { });
+			instantiationService.stub(ITerminalGroupService, 'getGroupForInstance', () => ({
+				removeInstance: () => activeInstanceEmitter.fire(undefined),
+			} satisfies Partial<ITerminalGroup> as unknown as ITerminalGroup));
+			const serviceUnderTest = store.add(instantiationService.createInstance(TerminalService));
+
+			const disposalEmitter = store.add(new Emitter<ITerminalInstance>());
+			const visibility: boolean[] = [];
+			let detachCount = 0;
+			const instance = {
+				instanceId: 1,
+				target: TerminalLocation.Panel,
+				onDisposed: disposalEmitter.event,
+				detachFromElement: () => detachCount++,
+				setVisible: visible => visibility.push(visible),
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+
+			serviceUnderTest.moveToBackground(instance);
+			const hidePanelCallsAfterBackgrounding = hidePanelSpy.callCount;
+			activeInstanceEmitter.fire(undefined);
+
+			deepStrictEqual({
+				detachCount,
+				visibility,
+				isTracked: serviceUnderTest.instances.includes(instance),
+				hidePanelCallsAfterBackgrounding,
+				hidePanelCallsAfterClosing: hidePanelSpy.callCount,
+			}, {
+				detachCount: 1,
+				visibility: [false],
+				isTracked: true,
+				hidePanelCallsAfterBackgrounding: 0,
+				hidePanelCallsAfterClosing: 1,
+			});
+		});
+
 		test('should remove disposed hidden terminals and their listeners', async () => {
 			const disposalEmitters = Array.from({ length: 3 }, () => store.add(new Emitter<ITerminalInstance>()));
 			const instances = disposalEmitters.map((emitter, index) => ({

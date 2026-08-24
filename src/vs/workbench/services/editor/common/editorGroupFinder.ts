@@ -141,7 +141,10 @@ function doFindGroup(input: EditorInputWithOptions | IUntypedEditorInput, prefer
 	}
 
 	// Group: Modal (gated behind a setting)
-	else if (preferredGroup === MODAL_GROUP && configurationService.getValue<UseModalEditorMode>(USE_MODAL_EDITOR_SETTING) !== 'off') {
+	else if (
+		preferredGroup === MODAL_GROUP &&
+		(options?.modal?.fullscreen === true || configurationService.getValue<UseModalEditorMode>(USE_MODAL_EDITOR_SETTING) !== 'off')
+	) {
 		group = editorGroupService.createModalEditorPart(options?.modal)
 			.then(part => part.activeGroup);
 	}

@@ -26,6 +26,7 @@ export class PickLogicalWorkspaceAction extends Action2 {
 	override async run(accessor: ServicesAccessor): Promise<void> {
 		const logicalWorkspaceService = accessor.get(ILogicalWorkspaceService);
 		const quickInputService = accessor.get(IQuickInputService);
+		await logicalWorkspaceService.whenReady;
 		const activeWorkspace = logicalWorkspaceService.activeWorkspace;
 		const picks: ILogicalWorkspacePick[] = logicalWorkspaceService.workspaces.map(workspace => ({
 			label: workspace.name,

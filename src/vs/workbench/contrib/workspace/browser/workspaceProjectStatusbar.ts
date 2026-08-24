@@ -27,6 +27,7 @@ export class WorkspaceProjectStatusbar extends Disposable implements IWorkbenchC
 		this.workspaceEntry = this._register(this.statusbarService.addEntry(this.getWorkspaceEntry(), 'status.workspaceContext', StatusbarAlignment.LEFT, Number.MAX_SAFE_INTEGER));
 		this.projectEntry = this._register(this.statusbarService.addEntry(this.getProjectEntry(), 'status.projectContext', StatusbarAlignment.LEFT, Number.MAX_SAFE_INTEGER - 1));
 		this._register(this.logicalWorkspaceService.onDidChangeActiveWorkspace(() => this.workspaceEntry.update(this.getWorkspaceEntry())));
+		this._register(this.logicalWorkspaceService.onDidChangeWorkspaces(() => this.workspaceEntry.update(this.getWorkspaceEntry())));
 		this._register(this.projectContextService.onDidChangeProjectContext(() => this.projectEntry.update(this.getProjectEntry())));
 	}
 

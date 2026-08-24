@@ -6,13 +6,16 @@
 import { coalesce } from '../../../../../base/common/arrays.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
+import { toErrorMessage } from '../../../../../base/common/errorMessage.js';
+import { isCancellationError } from '../../../../../base/common/errors.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { Disposable, DisposableResourceMap } from '../../../../../base/common/lifecycle.js';
-import { ResourceMap, ResourceSet } from '../../../../../base/common/map.js';
+import { ResourceSet } from '../../../../../base/common/map.js';
 import { equals } from '../../../../../base/common/objects.js';
 import { autorun, observableSignalFromEvent } from '../../../../../base/common/observable.js';
 import { isEqual } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IWorkbenchContribution } from '../../../../common/contributions.js';
 import { convertLegacyChatSessionTiming, IChatDetail, IChatService, IChatSessionTiming } from '../../common/chatService/chatService.js';
 import { chatModelToChatDetail } from '../../common/chatService/chatServiceImpl.js';
@@ -22,7 +25,15 @@ import { getChatSessionType } from '../../common/model/chatUri.js';
 import { getInProgressSessionDescription } from '../chatSessions/chatSessionDescription.js';
 import { chatResponseStateToSessionStatus, getSessionStatusForModel } from '../chatSessions/chatSessions.contribution.js';
 import { Schemas } from '../../../../../base/common/network.js';
-import { ILogicalWorkspaceService } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { AgentSessionCatalog, cancelledCatalogSnapshot, CatalogRefreshFailureAction, CatalogSnapshot, completeCatalogSnapshot, partialCatalogSnapshot } from './agentSessionCatalog.js';
+
+/** Marks failures from the persisted-history read, which is safe to retry independently. */
+class LocalAgentSessionHistoryReadError extends Error {
+	constructor(override readonly cause: unknown) {
+		super(toErrorMessage(cause));
+		this.name = 'LocalAgentSessionHistoryReadError';
+	}
+}
 
 export class LocalAgentsSessionsController extends Disposable implements IChatSessionItemController, IWorkbenchContribution {
 
@@ -34,18 +45,32 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 	readonly onDidChangeChatSessionItems = this._onDidChangeChatSessionItems.event;
 
 	private readonly _modelListeners = this._register(new DisposableResourceMap());
-	private readonly modelUpdateGenerations = new ResourceMap<number>();
+	private readonly _catalog: AgentSessionCatalog<LocalChatSessionItem>;
 
 	private _isDisposed = false;
-	private refreshGeneration = 0;
 
 	constructor(
 		@IChatService private readonly chatService: IChatService,
 		@IChatSessionsService private readonly chatSessionsService: IChatSessionsService,
-		@ILogicalWorkspaceService private readonly logicalWorkspaceService: ILogicalWorkspaceService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 
+		this._catalog = this._register(new AgentSessionCatalog<LocalChatSessionItem>({
+			name: 'LocalAgentSessions',
+			keyOf: item => item.resource.toString(),
+			equals: (left, right) => left.isEqual(right),
+			read: token => this.readCatalogSnapshot(token),
+			// Local history is a queued storage read. A transient queue/storage failure can recover
+			// without user action, so it belongs to the catalog-owned retry loop.
+			classifyError: error => error instanceof LocalAgentSessionHistoryReadError
+				? CatalogRefreshFailureAction.Retry
+				: CatalogRefreshFailureAction.Throw,
+		}, this.logService));
+		this._register(this._catalog.onDidChange(delta => this._onDidChangeChatSessionItems.fire({
+			...(delta.addedOrUpdated ? { addedOrUpdated: delta.addedOrUpdated } : undefined),
+			...(delta.removed ? { removed: delta.removed.map(item => item.resource) } : undefined),
+		})));
 		this._register(this.chatSessionsService.registerChatSessionItemController(this.chatSessionType, this));
 
 		this.registerListeners();
@@ -56,50 +81,12 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 		super.dispose();
 	}
 
-	private _items = new ResourceMap<LocalChatSessionItem>();
 	get items(): readonly IChatSessionItem[] {
-		return Array.from(this._items.values());
+		return this._catalog.items;
 	}
 
 	async refresh(token: CancellationToken): Promise<void> {
-		const generation = ++this.refreshGeneration;
-		let newItems: LocalChatSessionItem[] | undefined;
-		try {
-			newItems = await this.provideChatSessionItems(token);
-		} catch {
-			// A failed catalog read is not an authoritative empty snapshot. Keep the last committed set.
-			return;
-		}
-		// A newly created model is not observed until its initial refresh finishes. Revalidate the
-		// eligibility predicate at commit time so a request removal during that window cannot flash a
-		// stale provider row before the model listener performs its first update.
-		newItems = newItems?.filter(item => this.chatService.getSession(item.resource)?.hasRequests !== false);
-		if (!newItems || token.isCancellationRequested || this._isDisposed || generation !== this.refreshGeneration) {
-			return;
-		}
-		const previousItems = new ResourceMap<LocalChatSessionItem>();
-		for (const item of this._items.values()) {
-			previousItems.set(item.resource, item);
-		}
-
-		this._items.clear();
-		for (const item of newItems) {
-			this._items.set(item.resource, item);
-		}
-
-		const currentItems = Array.from(this._items.values());
-		const currentResources = new ResourceSet(currentItems.map(item => item.resource));
-		const addedOrUpdated = currentItems.filter(item => {
-			const previous = previousItems.get(item.resource);
-			return !previous || !previous.isEqual(item);
-		});
-		const removed = Array.from(previousItems.keys()).filter(resource => !currentResources.has(resource));
-		if (addedOrUpdated.length > 0 || removed.length > 0) {
-			this._onDidChangeChatSessionItems.fire({
-				...(addedOrUpdated.length > 0 ? { addedOrUpdated } : undefined),
-				...(removed.length > 0 ? { removed } : undefined),
-			});
-		}
+		await this._catalog.refresh(token);
 	}
 
 	private registerListeners(): void {
@@ -108,13 +95,17 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 				return;
 			}
 
-			this.logicalWorkspaceService.bindChatSession(this.logicalWorkspaceService.activeWorkspace.id, model.sessionResource);
-			await this.refresh(CancellationToken.None);
-			if (this._isDisposed || this.chatService.getSession(model.sessionResource) !== model) {
+			try {
+				await this.refresh(CancellationToken.None);
+			} catch {
+				// Throw-classified catalog failures are already logged. A later model/provider event can retry.
+				return;
+			}
+			if (this._isDisposed) {
 				return;
 			}
 
-			this.tryUpdateLiveSessionItem(model);
+			this.updateLiveSessionItem(model);
 
 			const requestChangeListener = model.lastRequestObs.map(last => last?.response && observableSignalFromEvent('chatSessions.modelRequestChangeListener', last.response.onDidChange));
 			const modelChangeListener = observableSignalFromEvent('chatSessions.modelChangeListener', model.onDidChange);
@@ -122,74 +113,54 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 				requestChangeListener.read(reader)?.read(reader);
 				modelChangeListener.read(reader);
 
-				this.tryUpdateLiveSessionItem(model);
+				this.updateLiveSessionItem(model);
 			}));
 		};
 
-		this._register(this.chatService.onDidCreateModel(model => addModelListeners(model)));
+		const registerModel = (model: IChatModel) => {
+			void addModelListeners(model).catch(error => this.logService.error('[LocalAgentSessions] Failed to register live session model', error));
+		};
+		this._register(this.chatService.onDidCreateModel(registerModel));
 		for (const model of this.chatService.chatModels.get()) {
-			addModelListeners(model);
+			registerModel(model);
 		}
 
 		this._register(this.chatService.onDidDisposeSession(e => {
 			for (const sessionResource of e.sessionResources) {
 				this._modelListeners.deleteAndDispose(sessionResource);
-				this.modelUpdateGenerations.delete(sessionResource);
 			}
 
 			if (e.sessionResources.some(resource => getChatSessionType(resource) === this.chatSessionType)) {
-				// Disposing the live model is not the same as deleting the persisted session. Reconcile
-				// against the authoritative live/history catalog so `removed` is emitted only when the
-				// session was actually deleted (or was never persisted).
-				void this.refresh(CancellationToken.None);
+				// Disposing a live model is not the same as deleting its persisted session. Reconcile
+				// against live + history so only a complete catalog read can publish a removal.
+				void this.refresh(CancellationToken.None).catch(() => {
+					// Throw-classified failures are logged by AgentSessionCatalog. This is an event boundary.
+				});
 			}
 		}));
 	}
 
-	private async tryUpdateLiveSessionItem(model: IChatModel): Promise<void> {
-		// Stats collection can await editing diffs. Keep ordering per resource so a slow earlier model
-		// change cannot overwrite a later title, status, or request transition.
-		const generation = (this.modelUpdateGenerations.get(model.sessionResource) ?? 0) + 1;
-		this.modelUpdateGenerations.set(model.sessionResource, generation);
-		const detail = await chatModelToChatDetail(model);
-		if (this._isDisposed
-			|| this.chatService.getSession(model.sessionResource) !== model
-			|| this.modelUpdateGenerations.get(model.sessionResource) !== generation) {
-			return;
-		}
-
-		const updated = this.toChatSessionItem(detail);
-		if (!updated) {
-			// Invalidate an in-flight catalog even when this resource was not committed yet. Otherwise
-			// an older refresh can add back the pre-change live item after the model stops qualifying.
-			this.refreshGeneration++;
-			// The session no longer qualifies as a list item (e.g. it has no requests
-			// yet, or its requests were removed). Drop any stale item we were showing.
-			if (this._items.has(model.sessionResource)) {
-				this._items.delete(model.sessionResource);
-				this._onDidChangeChatSessionItems.fire({ removed: [model.sessionResource] });
-			}
-			return;
-		}
-
-		const existing = this._items.get(updated.resource);
-		if (existing?.isEqual(updated)) {
-			return;
-		}
-
-		this.refreshGeneration++;
-		this._items.set(updated.resource, updated);
-		this._onDidChangeChatSessionItems.fire({ addedOrUpdated: [updated] });
+	private updateLiveSessionItem(model: IChatModel): void {
+		void this.tryUpdateLiveSessionItem(model).catch(error => this.logService.error('[LocalAgentSessions] Failed to update live session item', error));
 	}
 
-	private async provideChatSessionItems(token: CancellationToken): Promise<LocalChatSessionItem[] | undefined> {
+	private async tryUpdateLiveSessionItem(model: IChatModel): Promise<void> {
+		const updated = this.toChatSessionItem(await chatModelToChatDetail(model));
+		if (!updated) {
+			// The session no longer qualifies as a list item (e.g. it has no requests
+			// yet, or its requests were removed). Drop any stale item we were showing.
+			this._catalog.delete(model.sessionResource.toString());
+			return;
+		}
+
+		this._catalog.upsert(updated);
+	}
+
+	private async readCatalogSnapshot(token: CancellationToken): Promise<CatalogSnapshot<LocalChatSessionItem>> {
 		const sessions: LocalChatSessionItem[] = [];
 		const sessionsByResource = new ResourceSet();
 
 		for (const sessionDetail of await this.chatService.getLiveSessionItems()) {
-			if (token.isCancellationRequested) {
-				return undefined;
-			}
 			const editorSession = this.toChatSessionItem(sessionDetail);
 			if (!editorSession) {
 				continue;
@@ -200,20 +171,25 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 		}
 
 		if (token.isCancellationRequested) {
-			return undefined;
+			return cancelledCatalogSnapshot();
 		}
-		const history = await this.getHistoryItems();
+
+		let historyItems: IChatDetail[];
+		try {
+			historyItems = await this.chatService.getHistorySessionItems();
+		} catch (error) {
+			if (token.isCancellationRequested || isCancellationError(error)) {
+				return cancelledCatalogSnapshot();
+			}
+			return partialCatalogSnapshot(sessions, new LocalAgentSessionHistoryReadError(error));
+		}
+
 		if (token.isCancellationRequested) {
-			return undefined;
+			return cancelledCatalogSnapshot();
 		}
+		const history = coalesce(historyItems.map(history => this.toChatSessionItem(history)));
 		sessions.push(...history.filter(historyItem => !sessionsByResource.has(historyItem.resource)));
-
-		return sessions;
-	}
-
-	private async getHistoryItems(): Promise<LocalChatSessionItem[]> {
-		const historyItems = await this.chatService.getHistorySessionItems();
-		return coalesce(historyItems.map(history => this.toChatSessionItem(history)));
+		return completeCatalogSnapshot(sessions);
 	}
 
 	private toChatSessionItem(chat: IChatDetail): LocalChatSessionItem | undefined {

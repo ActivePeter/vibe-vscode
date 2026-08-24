@@ -127,7 +127,9 @@ export class ExtensionHostConnection extends Disposable {
 		@IConfigurationService private readonly _configurationService: IConfigurationService
 	) {
 		super();
-		this._canSendSocket = (!isWindows || !this._environmentService.args['socket-path']);
+		// A TLSSocket cannot be transferred through child-process IPC. Keep the TLS
+		// endpoint in this process and bridge extension-host traffic over its IPC pipe.
+		this._canSendSocket = !this._environmentService.args['tls-key-path'] && (!isWindows || !this._environmentService.args['socket-path']);
 		this._disposed = false;
 		this._remoteAddress = remoteAddress;
 		this._extensionHostProcess = null;

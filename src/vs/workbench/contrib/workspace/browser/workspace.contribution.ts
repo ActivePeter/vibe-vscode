@@ -51,6 +51,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import './logicalWorkspace.contribution.js';
 import { LogicalWorkspaceLayoutAdapter } from './logicalWorkspaceLayoutAdapter.js';
+import { LogicalWorkspaceEditorAdapter } from './logicalWorkspaceEditorAdapter.js';
 import { LogicalWorkspaceTerminalAdapter } from './logicalWorkspaceTerminalAdapter.js';
 import { WorkspaceProjectStatusbar } from './workspaceProjectStatusbar.js';
 
@@ -711,6 +712,7 @@ Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).regi
 registerWorkbenchContribution2(WorkspaceProjectStatusbar.ID, WorkspaceProjectStatusbar, WorkbenchPhase.BlockRestore);
 registerWorkbenchContribution2(LogicalWorkspaceTerminalAdapter.ID, LogicalWorkspaceTerminalAdapter, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(LogicalWorkspaceLayoutAdapter.ID, LogicalWorkspaceLayoutAdapter, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(LogicalWorkspaceEditorAdapter.ID, LogicalWorkspaceEditorAdapter, WorkbenchPhase.AfterRestored);
 
 
 /**

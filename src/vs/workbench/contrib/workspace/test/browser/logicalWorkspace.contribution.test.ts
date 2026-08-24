@@ -20,8 +20,8 @@ suite('Logical Workspace Contribution', () => {
 		const store = disposables.add(new DisposableStore());
 		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
 		const workspaces = [
-			{ id: 'first', name: 'First', terminalIds: [], chatSessionResources: [], shellLayout: undefined },
-			{ id: 'active', name: 'Active', terminalIds: [], chatSessionResources: [], shellLayout: undefined },
+			{ id: 'first', name: 'First', terminalIds: [], shellLayout: undefined },
+			{ id: 'active', name: 'Active', terminalIds: [], shellLayout: undefined },
 		];
 		instantiationService.stub(ILogicalWorkspaceService, new class extends mock<ILogicalWorkspaceService>() {
 			override readonly workspaces = workspaces;

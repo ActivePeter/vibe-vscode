@@ -928,13 +928,16 @@ async function openExplorerAndCreate(accessor: ServicesAccessor, isFolder: boole
 		return commandService.executeCommand(NEW_UNTITLED_FILE_COMMAND_ID);
 	}
 
-	const stats = explorerService.getContext(false);
-	const stat = stats.length > 0 ? stats[0] : undefined;
-	let folder: ExplorerItem;
-	if (stat) {
-		folder = stat.isDirectory ? stat : (stat.parent || explorerService.visibleRoots[0]);
-	} else {
-		folder = explorerService.visibleRoots[0];
+	const stat = explorerService.getContext(false).at(0);
+	const folder = stat
+		? stat.isDirectory ? stat : (stat.parent ?? explorerService.visibleRoots[0])
+		: explorerService.visibleRoots[0];
+	if (!folder) {
+		if (isFolder) {
+			throw new Error('Open a folder or workspace first.');
+		}
+
+		return commandService.executeCommand(NEW_UNTITLED_FILE_COMMAND_ID);
 	}
 
 	if (folder.isReadonly) {
@@ -1101,6 +1104,9 @@ const uploadFileHandler = async (accessor: ServicesAccessor) => {
 
 	const context = explorerService.getContext(false);
 	const element = context.length ? context[0] : explorerService.visibleRoots[0];
+	if (!element) {
+		return;
+	}
 
 	try {
 		const files = await triggerUpload();
@@ -1174,6 +1180,9 @@ export const pasteFileHandler = async (accessor: ServicesAccessor, fileList?: Fi
 		}
 	}
 	const element = context.length ? context[0] : explorerService.visibleRoots[0];
+	if (!element) {
+		return;
+	}
 	const incrementalNaming = configurationService.getValue<IFilesConfiguration>().explorer.incrementalNaming;
 
 	const editableItem = explorerService.getEditable();
@@ -1270,7 +1279,7 @@ export const pasteFileHandler = async (accessor: ServicesAccessor, fileList?: Fi
 			const firstTarget = targets[0];
 			await explorerService.select(firstTarget);
 			if (targets.length === 1) {
-				const item = explorerService.findClosest(firstTarget);
+				const item = explorerService.findClosestVisible(firstTarget);
 				if (item && !item.isDirectory) {
 					await editorService.openEditor({ resource: item.resource, options: { pinned: true, preserveFocus: true } });
 				}

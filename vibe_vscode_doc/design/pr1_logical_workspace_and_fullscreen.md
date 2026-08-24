@@ -1,0 +1,358 @@
+# PR #1：Logical Workspace 与全屏会话宿主
+
+> - 文档定位：PR #1 的统一设计与验收入口
+> - PR：[feat: add vibe vscode logical workspaces and fullscreen panel](https://github.com/ActivePeter/vibe-vscode/pull/1)
+> - 审查基线（写作时远端 HEAD）：`0af2a705aa10370bfb280f600407c35cc36e2cd9`
+> - 状态：Open；当前工作树已在该基线上撤掉 Session ownership/filtering，尚待提交到 PR
+
+## 1. 这次 PR 要解决什么
+
+vibe vscode 面向常驻个人工作站或云端的 Web 开发环境。PR #1 不重写 VS Code 的编辑器、终端或 Agent 能力，而是在 Physical Workspace 之上增加一层可持久化的任务上下文：用户无需刷新页面，即可切换 Logical Workspace，并让工作台布局、Terminal 和可恢复 editor working set 投影到对应任务。
+
+本 PR 同时提供两个后续能力的基础设施：
+
+- Project Context：在多根 Physical Workspace 内聚焦一个项目；
+- Fullscreen Session Host：承载未来全屏 Agent 会话管理面板。
+
+本 PR 的核心设计判断是：**业务状态由明确的 authority 持有，Workbench 现有组件只负责投影；切换上下文不等于销毁资源。**
+
+## 2. 交付边界
+
+| 能力 | PR #1 当前实现 | 合并状态 |
+| --- | --- | --- |
+| Logical Workspace catalog 与页面内切换 | 创建、选择、页面独立的 active ID、共享 catalog | 核心完成；跨页面首次同步仍有 P1 |
+| Shell 布局 | 保存并恢复主侧栏、Panel、辅助侧栏的显隐、尺寸和 active composite | 可验收 |
+| Terminal 隔离 | 唯一 owner、Logical Terminal ID、前后台迁移、持久化链路 | 核心完成；仍有 2 个 P1、1 个 P2 |
+| Agent Session catalog | 保持 VS Code 原有的全局 catalog 与全局 Agent Sessions 列表 | 已撤掉 Workspace owner/filtering；Session Tab working set 为 Planned |
+| Project Context | Project 选择、Explorer/Find generation、SCM repository 集合投影与聚焦 | 核心完成；真实 Git 扩展验收通过，待托管浏览器验收 |
+| Fullscreen Session Host | 受控 proposed API、Modal Editor 宿主、Webview 生命周期 | 基础设施完成；会话管理 UI 不在本 PR |
+| Web-first 构建 | 内置 Web 扩展接入 compile/watch、typecheck、打包和本地化 | 可验收 |
+
+以下内容明确不属于本 PR 的已交付能力：
+
+- 完整的全屏会话浏览、创建、切换和管理界面；
+- 文档选区右键创建 Agent Session；
+- Codex Agent-first 的完整交互产品；
+- 非阻塞远程断线、状态栏重连和网络恢复策略；
+- 对 Agent Session Tab working set 的专门 capture/restore 与产品验收；
+- 托管 Web 环境中的 Project 与 Git/SCM 产品验收。
+
+## 3. 术语与层级
+
+| 概念 | 含义 | 不能混淆为 |
+| --- | --- | --- |
+| Physical Workspace | VS Code 原生 folder 或 `.code-workspace`，决定文件集合、扩展宿主和服务端进程 | Logical Workspace |
+| Logical Workspace | Physical Workspace 内的长期任务上下文，管理布局、独占 Terminal 和 editor working set | 新窗口、项目目录或 Git branch |
+| Project Context | 当前聚焦的一个 root folder，只改变 Explorer/SCM 的关注点 | Logical Workspace activation |
+| Terminal ownership | 一个 Terminal instance 最多归属一个 Logical Workspace | Terminal 当前是否可见 |
+| Session catalog | provider/history 管理的全局 Session 集合，不归属于 Logical Workspace | 某个 Workspace 当前打开的 tabs |
+| Session Tab working set | 后续由 editor working-set projection 表达的打开 Tab 集合；同一 Session 可同时在多个 Workspace 打开 | Session owner、Session catalog 或删除语义 |
+| Projection | 把 authority 中的目标状态应用到 Workbench UI | 第二份业务状态 |
+| Fullscreen Session Host | 覆盖 Workbench 的受控 Webview 宿主 | 普通 editor tab 或已完成的会话管理产品 |
+
+层级关系如下：
+
+```text
+Physical Workspace
+├── Logical Workspace A
+│   ├── Shell layout snapshot
+│   ├── Terminal owners
+│   └── Serialized editor working set
+├── Logical Workspace B
+│   └── ...
+└── Project Context: 当前聚焦的 root folder
+```
+
+Project Context 与 Logical Workspace 是正交维度：切 Project 不应关闭 editor、terminal 或 session；切 Logical Workspace 也不应隐式改变 Physical Workspace。
+
+## 4. 必须统一遵循的设计契约
+
+这些契约是本 PR 多轮 Review 后形成的实现规约。后续扩展资源类型时应复用它们，而不是再增加一套特化事件、Terminal owner map 或 Session owner graph。
+
+### 4.1 Authority 与 projection 分离
+
+- `LogicalWorkspaceService` 是 Workspace catalog、布局快照、Terminal owner 和 serialized editor working set 的唯一内存 authority。
+- Chat Sessions Service/provider history 是 Session catalog authority；`LogicalWorkspaceService` 不保存 Session owner，不创建、过滤或删除 Session 本体。
+- Terminal、Editor、Explorer 和 Workbench Layout 只投影各自 authority，不保存平行的关系集合。
+- UI 过滤不能改变全局模型查询语义。例如 Project 只限制 Explorer 的 `visibleRoots`，不能删减窗口级 `model.roots`。
+
+### 4.2 Shared、page-local 与 ephemeral 分层
+
+- Shared：Workspace catalog、布局快照、Terminal owner 和 serialized editor working set；跨同一 Physical Workspace 的页面共享。
+- Page-local：`activeWorkspaceId`；写入带 Physical Workspace ID 的 `sessionStorage`。
+- Ephemeral：Quick Pick、hover、pending generation 等页面瞬时状态；不得持久化为共享业务数据。
+
+一个页面切换 Logical Workspace 不得迫使另一个页面跟随。只有当前 active ID 已从共享 catalog 删除时，本页才允许回退到剩余 Workspace。
+
+### 4.3 异步边界前捕获 identity
+
+任何可能跨越 Quick Pick、extension activation、provider、backend、SCM 注册或 editor open 的操作，都必须在发起边界捕获 Workspace ID 与资源 identity。异步完成时不得重新读取“当前 Workspace”，否则 A 发起的资源可能被错误归到后来切入的 B。
+
+### 4.4 Projection 使用 generation，资源创建使用 transaction
+
+- UI projection 通过 `AsyncProjectionCoordinator` 串行化，并以 `context.isCurrent()` 拒绝过期 generation。
+- Projection 自己产生的 change event 必须在 transaction 内合并，不能让一次批量投影每处理一个对象就使自己失效。
+- Terminal 等资源在实例真正创建前使用 ownership lease；成功后 commit，失败或取消只回滚本次 claim。
+- Editor working-set capture/restore 使用统一 projection generation；未来 Session Tab 依赖这一层恢复，不建立 Session owner API。
+
+### 4.5 完整 catalog 与 partial result 必须可区分
+
+Session catalog 的 refresh 只有在取得完整结果后才能发布权威 removed delta。失败、取消或跳过某一数据源不能降级成空数组，否则临时错误会被解释为“删除全部 Session”。该规则属于全局 catalog 正确性，不应通过 Workspace owner 补丁解决。
+
+完整的数据结果协议、失败动作、后台重试与日志规约见 [Agent Session Catalog 的可靠刷新与失败处理](./reliable_agent_session_catalog.md)。
+
+### 4.6 消费者声明 state slice，不猜事件
+
+消费者通过 `onDidChangeLogicalWorkspaceStateSlice(service, selector)` 声明自己读取的完整语义切片，并用结构相等抑制无关变化。Terminal 只监听 terminal ownership slice；全局 Agent Sessions catalog 不订阅任何 Workspace slice。布局或 editor working-set 保存不应触发 Session catalog 刷新或 Terminal 全量扫描。
+
+### 4.7 Event 只广播已提交状态
+
+跨组件的控制流优先使用直接方法和 service transaction。Event 用于通知已经提交的状态，不用于拼接一个跨多个异步阶段的事务。Terminal owner、Editor working set 和全局 Session catalog 分别提交；不得用一个关系事件同时冒充三种状态变化。
+
+## 5. 总体架构
+
+```mermaid
+flowchart LR
+    Shared[Workspace Storage + Cross-page Channel] --> Store[LogicalWorkspaceStateStore]
+    Session[Page sessionStorage] --> Store
+    Store --> Registry[LogicalWorkspaceService]
+
+    Registry --> Projection[Projection Coordinators]
+    Projection --> Layout[Layout Adapter]
+    Projection --> Terminal[Terminal Adapter]
+    Projection --> Editor[Editor Working Set Adapter]
+
+    Layout --> Shell[Sidebar / Panel / Auxiliary Bar]
+    Terminal --> PTY[Foreground / Background PTY]
+    Editor --> Editors[Restorable Open Editors]
+
+    Providers[Provider + History] --> Catalog[Global Session Catalog]
+    Catalog --> AgentList[Global Agent Sessions List]
+
+    Project[ProjectContextService] --> Explorer[Explorer visible root]
+    Project --> SCM[SCM visible repository set + focus]
+
+    Builtin[Built-in Web Extension] --> ExtHost[ExtHost Webview Lifecycle]
+    ExtHost --> MainThread[MainThread Authorization]
+    MainThread --> Modal[Fullscreen Modal Editor Part]
+```
+
+## 6. Logical Workspace 状态
+
+### 6.1 数据模型
+
+共享 schema v2 不包含页面当前选择，也不保存全局 Session catalog 或 Session owner：
+
+```ts
+interface LogicalWorkspaceSharedState {
+  schemaVersion: 2;
+  workspaces: Array<{
+    id: string;
+    name: string;
+    terminalIds: string[];
+    shellLayout?: {
+      primarySideBar: ShellPartLayout;
+      panel: ShellPartLayout;
+      auxiliaryBar: ShellPartLayout;
+    };
+    editorWorkingSet?: string;
+  }>;
+}
+```
+
+`terminalIds` 在全部 Workspace 间保持全局唯一。`editorWorkingSet` 是 Workbench Editor Groups 的序列化结果；它可以包含具备恢复 identity 的 Session editor tab，但 Logical Workspace 不解析其中的 Session，也不据此过滤全局 catalog。
+
+PR 早期版本写入过 `chatSessionResources`。当前 decoder 接受该额外字段以兼容已有开发态快照，但会在规范化时丢弃，不能把旧 owner 数据解释成 Session tabs。共享快照继续写入内部 `WORKSPACE/MACHINE` storage，不经过 Configuration Service，因此不会修改用户的 `.vscode/settings.json` 或 `.code-workspace`。
+
+外部输入始终从 `unknown` 开始逐层校验。schema、Workspace 元素、Terminal ID、shell layout 和 editor working set 任一层畸形时应拒绝该输入，而不是在 Workbench 启动阶段抛出异常。
+
+### 6.2 跨页面同步
+
+State Store 使用按 Physical Workspace ID 隔离的 channel，并为共享状态增加 `{ counter, source }` Lamport revision：
+
+- counter 较大者获胜；
+- counter 相同时用 source UUID 稳定决胜；
+- 接收页只应用更高 revision；
+- 整包采用 last-write-wins，不做字段级 merge。
+
+当前实现包含 `request/state` anti-entropy，但初始化没有 readiness barrier。新页面可能在收到已有页面状态前先创建默认 catalog，并以相同 counter 的较大 source 覆盖真实状态。这是当前 P1，修复前不能把跨页面首次恢复描述为可靠完成。
+
+### 6.3 Activation 生命周期
+
+一次显式切换的顺序为：
+
+1. `onWillChangeActiveWorkspace`：捕获旧 Workspace 的可投影状态；
+2. 更新 page-local active ID 与 activation sequence；
+3. `onDidChangeActiveWorkspace`：请求目标 Workspace projection；
+4. 每个异步投影只允许仍为 current 的 generation 提交。
+
+`onDidChangeState` 携带 previous/current immutable snapshot。`onWill/onDidChangeActiveWorkspace` 只表达 activation，不替代 Terminal ownership、editor working-set 或全局 Session catalog 变更事件。
+
+## 7. Workbench projection
+
+### 7.1 统一协调器
+
+`ILogicalWorkspaceProjection` 定义两个阶段：
+
+- `capture(workspaceId)`：离开当前 Workspace 或保存页面前采集前台状态；
+- `restore(context)`：把目标 snapshot 投影到 UI，并在异步边界检查 `isCurrent()`。
+
+`LogicalWorkspaceProjectionCoordinator` 统一负责初始恢复、切换前 capture、切换后 restore 和页面保存。`AsyncProjectionCoordinator` 合并 pending intent，只允许最新 generation 继续提交；调用方若需要最终稳定状态，应等待自己关心的最新请求，不能假定旧 generation 的 Promise 代表后续所有请求都已完成。
+
+### 7.2 Shell layout
+
+Layout Adapter 保存三个 shell part 的 `visible`、`width`、`height` 与 `activeCompositeId`。恢复时先恢复 composite 和尺寸，再提交最终可见性；目标为隐藏的 part 也必须恢复自己的尺寸，避免以后显示时继承另一个 Workspace 的布局。
+
+### 7.3 Editor working set
+
+`LogicalWorkspaceEditorAdapter` 通过 Editor Groups Service 序列化和恢复 editor working set，并监听 Webview state 更新补充 capture。它只处理 editor input 的通用恢复 identity，不读取 Agent Session catalog，也不建立 Session owner。
+
+具备可恢复 editor identity 的 Session Tab 可以自然包含在 serialized working set 中；但 PR #1 尚未为 Session Tab 单独完成 open/close、多 Workspace 重复打开和恢复正文的产品验收，因此 README 仍标记为 Planned。window geometry、panel split 和 active terminal 不属于 editor working set。
+
+## 8. Terminal ownership 与持久化
+
+### 8.1 已实现主链路
+
+Terminal 创建边界捕获 `ITerminalCreationContext`，其中包含 initiating Workspace ID 和 Logical Terminal ID。该 context 贯穿 direct profile、Agent Host、MainThread/ExtHost contributed profile 与最终 `createTerminal()` 重入。
+
+创建与投影的目标流程为：
+
+1. 预分配 Logical Terminal ID 并取得 ownership lease；
+2. Terminal instance 创建成功后 commit owner；失败则 dispose lease；
+3. 非当前 Workspace 的实例移到 background，不关闭 PTY；
+4. 切回 owner Workspace 时把 background instance 挂回原 panel/editor 位置。
+
+Terminal projection 已把自身触发的 `onDidChangeInstances` 合并到 transaction 尾部，因此一次 reconcile 可以完成整批迁移，而不会每移动一个实例就启动新 generation。
+
+### 8.2 当前未闭环边界
+
+- editor terminal 的 `showBackgroundTerminal()` 尚未真正 await `openEditor()`，快速 A→B 切换可让过期 editor terminal 回流；
+- remote Workbench 可同时存在 local PTY，background 持久化目前没有按 backend/authority 分区；
+- `Shutdown` dispose 不等于实例必然可恢复，不可持久化 PTY 可能留下 ghost owner。
+
+因此“Terminal 隔离基础链路已实现”不等于所有 Terminal 类型和 reload 组合均已通过验收。
+
+## 9. 全局 Agent Session catalog
+
+### 9.1 PR #1 的决定
+
+Session 本体、provider/history catalog 和 Agent Sessions 列表保持 VS Code 原有的全局语义。PR #1 不再让 `AgentSessionsModel` 或 `LocalAgentsSessionsController` 依赖 `ILogicalWorkspaceService`，具体约束为：
+
+- `AgentSessionsModel.sessions` 返回全局 catalog，不按 active Workspace 过滤；
+- model create、provider delta、cache restore 和删除 action 不写 Logical Workspace state；
+- `ILogicalWorkspace` schema 不包含 `chatSessionResources`；
+- `ILogicalWorkspaceService` 不提供 `bind/unbind/workspaceContainsChatSession`；
+- Workspace 切换不触发 provider add/remove，也不触发无意义的 Session list refresh。
+
+这使 Session catalog 与 Logical Workspace 生命周期解耦，也避免在真正定义 Tab 语义前固化错误的 first-owner-wins API。
+
+### 9.2 后续 Session Tab working set
+
+Workspace 未来只关心“哪些 Session Tabs 当前打开”，不拥有 Session。本 PR 已有的通用 `editorWorkingSet` 是承载这一关系的正确层级：同一 Session editor identity 可以分别出现在 A、B 的 serialized working set 中；关闭 A 的 Tab 不删除 Session，也不改变 B。
+
+后续实现应验证 Session editor input 的序列化与恢复闭包，而不是重新添加 Session owner 字段。验收至少覆盖：相同 Session 同时存在于 A/B、切换只恢复目标 tabs、关闭一个 tab 不删除 Session、删除 Session 后旧 editor identity 安全失效。
+
+全局 catalog 自身仍需保证 refresh 失败或取消时不会把 partial `[]` 当成权威删除；这是独立的 provider catalog 正确性问题。
+
+## 10. Project Context
+
+Project Context 以选中 folder URI 为 selection authority，并通过同一个异步 projection 路径驱动 Explorer 和 SCM：
+
+- Quick Pick 使用 `activeItem` 聚焦当前 Project；
+- Add Project Directory 比较命令执行前后的 folders，并选中新增加的项；
+- Explorer `roots`、`findClosest()` 和 `findClosestRoot()` 保持窗口级完整 model；`visibleRoots`、`findClosestVisible()` 和 `findClosestVisibleRoot()` 专门表示当前 Project 投影，UI context、文件操作与过滤不得回退到全局 root；
+- Explorer tree input 只能从当前 `visibleRoots` 派生；Project 切换先结束 Find session 并递增其 generation；
+- Find session 仅在 Project 未变化时恢复原 view state，Project 已变化时从最新 `visibleRoots` 重建 input；晚返回的旧 Find generation 会重新投影当前 input，不能回滚 Project；
+- SCM catalog 保持窗口级全局语义，但 `visibleRepositories` 是 Project projection：multiple 模式原子替换为当前 Project 内的全部 repositories，single 模式只保留离 Project root 最近的一项；其他 Project 的 repositories 必须隐藏；
+- SCM projection 同时监听 repository add/remove、selection mode 和用户可见集合变化。Git 扩展延迟发现任意仓库后都重新从 Project authority 派生完整集合，不能用逐项 `toggleVisibility()` 累加；目标集合提交后再 focus 最近的 repository；
+- 每个异步步骤检查 selection sequence，过期结果不能覆盖新选择。
+
+这里沿用 Workbench 的 Model/Projection 结构，而不是让多个事件监听器分别写 Tree 或 SCM：folder URI 是唯一 authority，Find、Explorer 与 SCM 都只能提交可由当前 authority 重建的 projection。对应回归覆盖正常 Find 结束、Find 中切 Project、旧搜索晚返回、嵌套物理 roots 的 global/visible 查询分离、快速 A→B→A 时旧 projection 不得再 reveal/focus，以及 SCM single/multiple、手动选择、延迟 add/remove 后的集合收敛。
+
+## 11. Fullscreen Session Host
+
+内置扩展 `dever.dever-project-switcher` 通过 proposed API `deverFullscreenPanel` 请求 `dever.projectSwitcher.fullscreen` Webview。MainThread 同时校验：
+
+- extension ID 与 View Type；
+- builtin 身份；
+- extension 实际运行位置；
+- 当前是否存在 modal editor 冲突。
+
+Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `reveal()` 共用同一 presentation identity，不能逃入普通 editor group。
+
+创建 RPC 可等待 MainThread editor open。ExtHost 对同步返回的 `WebviewPanel` 建立 pending operation queue；创建失败时清理 handle、Webview 和 extension 侧引用。Workbench 内部 singleton 调用方使用共享 pending Promise，避免并发打开两个 Webview。
+
+这一层只是安全、可靠的 UI 宿主。扩展当前仍是占位内容，不能称为“全屏会话管理面板已实现”。内部 `dever.*` ID 为兼容暂时保留，用户可见品牌统一为 `vibe vscode`。
+
+## 12. Web-first 构建与运行规约
+
+- 根目录 `npm run compile`/`npm run watch` 包含内置 Web 扩展；
+- 扩展的 `compile-web` 同时执行 bundle 与 typecheck，`watch-web` 同时启动两者；
+- 产品打包和开发 Web server 都能加载该 builtin extension；
+- 开发 Web server 按 locale fallback 链本地化 manifest，而不是固定读取英文 `package.nls.json`。
+
+托管服务遵循仓库级运行规约：
+
+- `/mnt/ceph/vibe-vscode` 是端口 `18080`、`18081` 唯一允许的构建源；
+- `18080` 运行当前 checkout 的可变开发输出；`18081` 可运行不可变 package，但 package 也必须由本 checkout 构建；
+- 两个服务都监听 `0.0.0.0`；
+- 服务 state 继续保存在 `/mnt/ceph/dever_for_dev/.dever/vscode-services`，源码 authority 与用户状态目录相互独立。
+
+本地通用 quick start 可以使用默认端口；它不覆盖上述托管端口和监听地址规约。
+
+## 13. 代码责任地图
+
+| 责任 | 主要入口 |
+| --- | --- |
+| Logical Workspace API 与 slice selector | [`logicalWorkspace.ts`](../../src/vs/workbench/services/logicalWorkspace/common/logicalWorkspace.ts) |
+| Registry、schema、Terminal ownership 与投影快照 | [`logicalWorkspaceService.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceService.ts) |
+| Shared/page-local storage 与跨页面同步 | [`logicalWorkspaceStateStore.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceStateStore.ts) |
+| 通用异步 projection 协议 | [`logicalWorkspaceProjection.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceProjection.ts) |
+| Workspace picker 与贡献注册 | [`logicalWorkspace.contribution.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspace.contribution.ts) |
+| Shell layout projection | [`logicalWorkspaceLayoutAdapter.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspaceLayoutAdapter.ts) |
+| Terminal projection | [`logicalWorkspaceTerminalAdapter.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspaceTerminalAdapter.ts) |
+| Editor working-set projection | [`logicalWorkspaceEditorAdapter.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspaceEditorAdapter.ts) |
+| Terminal identity、creation lease 与持久化入口 | [`terminalService.ts`](../../src/vs/workbench/contrib/terminal/browser/terminalService.ts) |
+| 全局 Agent Session catalog | [`localAgentSessionsController.ts`](../../src/vs/workbench/contrib/chat/browser/agentSessions/localAgentSessionsController.ts)、[`agentSessionsModel.ts`](../../src/vs/workbench/contrib/chat/browser/agentSessions/agentSessionsModel.ts) |
+| Project selection 与 Explorer/SCM projection | [`projectContext.ts`](../../src/vs/workbench/contrib/workspace/browser/projectContext.ts) |
+| Fullscreen Webview authorization/lifecycle | [`mainThreadWebviewPanels.ts`](../../src/vs/workbench/api/browser/mainThreadWebviewPanels.ts) |
+| Fullscreen Modal Editor 宿主 | [`modalEditorPart.ts`](../../src/vs/workbench/browser/parts/editor/modalEditorPart.ts) |
+| Built-in Web extension | [`extension.ts`](../../extensions/dever-project-switcher/src/extension.ts) |
+
+## 14. 当前未解决的合并 gate
+
+本次调整通过删除 Session owner state，结构性关闭了“空 ChatModel 遗留 ghost owner”和“Session 应否独占”的问题；Project/Explorer projection P2 也已由 generation-aware Find 恢复关闭。以下 5 条仍需单独处理：
+
+| 优先级 | 问题 | 违反的契约 |
+| --- | --- | --- |
+| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298195) | 新页面初始化时，同 revision 的默认 catalog 可能覆盖已有页面状态 | 初始同步必须 ready 后才允许写默认值 |
+| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298229) | Editor Terminal 恢复未真正等待 editor open | 异步 projection 完成语义 |
+| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298253) | Remote Workbench 中的 local PTY 被错误交给 remote backend 持久化 | 持久化 authority 必须按 backend 分区 |
+| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3826935558) | history 读取失败/取消会被当作空的权威 catalog | 完整 catalog 与 partial result 必须区分 |
+| [P2](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298296) | 不可恢复 Terminal 在 Shutdown dispose 后留下 ghost owner | ownership transaction 必须有真实 commit/rollback 边界 |
+
+## 15. 验证矩阵
+
+| 领域 | 已有覆盖重点 | 合并前必须补齐 |
+| --- | --- | --- |
+| State Store | schema 迁移、畸形输入、revision、跨页面 request/state、丢弃旧 `chatSessionResources` | 空持久层 + peer counter=1 + 新页立即初始化 |
+| Layout | 初始恢复、显隐、active composite、隐藏 part 尺寸 | 保持现有覆盖通过 |
+| Terminal | creation context、lease、批量 projection、本地/远程 background | editor A→B 快切、remote+local PTY reload、不可持久化 PTY dispose |
+| Agent Sessions | 全局 provider catalog、Workspace 切换后列表不变、无 Logical Workspace Session API | history error/cancel 不把 partial result 当成权威删除；Session Tab working set 留待后续专项验收 |
+| Project | active item、新增 folder、全局/可见 roots、Find generation、快速切换 stale projection、SCM exact-set、single/multiple、延迟 add/remove；隔离 Workbench 已用两个真实 Git repositories 验收 A/B 双向切换 | 托管 Web 服务中的多根 Project 与 Git 扩展联动 |
+| Fullscreen Host | authorization、创建失败清理、pending 操作、reveal、singleton | 保持现有覆盖通过 |
+| Build/Web | extension bundle+typecheck、产品打包入口、locale fallback | 干净 checkout 的 compile/watch 验证 |
+
+验证应优先运行最小相关测试，再根据改动范围运行 client typecheck、proposed DTS check 和 Web extension compile。PR 描述中的历史“passed”记录不能替代撤掉 Session ownership 并修复其余 5 个 Review gate 后的重新验证。
+
+## 16. PR 完成定义
+
+PR #1 可以进入合并状态的条件是：
+
+1. Session catalog 已恢复全局语义，且上述 5 个 Review gate 均由代码与针对性测试关闭；
+2. README 对 Available、In progress、Planned 的标识与实际边界一致；
+3. Terminal ownership、editor working set、全局 Session catalog、projection transaction 和 state-slice 之间没有语义混用或旁路实现；
+4. Web 开发构建与产品打包都能从干净 checkout 生成并加载 builtin extension；
+5. PR 验证记录更新为最终 HEAD 的结果。
+
+合并后的后续工作按产品能力拆分 PR：Session Tab working set 专项验收、Project Context 浏览器级验收、全屏 Session 管理 UI、文档驱动会话、Codex Agent-first 交互，以及非阻塞远程连接。这样基础设施与产品交互不会再次混在一个无法独立验收的提交中。

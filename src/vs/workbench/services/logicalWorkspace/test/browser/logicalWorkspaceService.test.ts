@@ -7,10 +7,11 @@ import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { WorkbenchState } from '../../../../../platform/workspace/common/workspace.js';
 import { TestContextService, TestStorageService } from '../../../../test/common/workbenchTestServices.js';
 import { AsyncProjectionCoordinator, ILogicalWorkspaceProjection, LogicalWorkspaceProjectionCoordinator } from '../../browser/logicalWorkspaceProjection.js';
 import { LogicalWorkspaceService } from '../../browser/logicalWorkspaceService.js';
@@ -50,21 +51,41 @@ class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorks
 	}
 }
 
+class DeferredWorkspaceContextService extends TestContextService {
+
+	private readonly completeWorkspace = new DeferredPromise<void>();
+
+	override getWorkbenchState(): WorkbenchState {
+		return WorkbenchState.WORKSPACE;
+	}
+
+	override async getCompleteWorkspace() {
+		await this.completeWorkspace.p;
+		return this.getWorkspace();
+	}
+
+	markWorkspaceComplete(): Promise<void> {
+		return this.completeWorkspace.complete();
+	}
+}
+
 suite('LogicalWorkspaceService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
 	let storageService: TestStorageService;
 	let contextService: TestContextService;
 	let stateStore: TestLogicalWorkspaceStateStore;
+	let configurationService: TestConfigurationService;
 
 	setup(() => {
 		storageService = disposables.add(new TestStorageService());
 		contextService = new TestContextService();
 		stateStore = disposables.add(new TestLogicalWorkspaceStateStore());
+		configurationService = new TestConfigurationService();
 	});
 
 	function createService(store = stateStore): LogicalWorkspaceService {
-		return disposables.add(new LogicalWorkspaceService(storageService, contextService, store));
+		return disposables.add(new LogicalWorkspaceService(storageService, contextService, store, configurationService));
 	}
 
 	test('stores shared state internally and broadcasts it to another page', async () => {
@@ -107,30 +128,6 @@ suite('LogicalWorkspaceService', () => {
 		}, {
 			firstState: secondStore.readSharedState(),
 			firstStoredValue: secondStorageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE),
-		});
-	});
-
-	test('recovers a missed broadcast before an older page write can split state', async () => {
-		const firstStorageService = disposables.add(new TestStorageService());
-		const secondStorageService = disposables.add(new TestStorageService());
-		const firstStore = disposables.add(new LogicalWorkspaceStateStore(firstStorageService, contextService));
-		const winner = { schemaVersion: 2, workspaces: [{ id: 'winner' }] };
-		firstStore.writeSharedState({ schemaVersion: 2, workspaces: [{ id: 'superseded' }] });
-		firstStore.writeSharedState(winner);
-
-		const secondStore = disposables.add(new LogicalWorkspaceStateStore(secondStorageService, contextService));
-		const secondPageConverged = Event.toPromise(secondStore.onDidChangeSharedState);
-		secondStore.writeSharedState({ schemaVersion: 2, workspaces: [{ id: 'stale-write' }] });
-		await secondPageConverged;
-
-		assert.deepStrictEqual({
-			firstState: firstStore.readSharedState(),
-			secondState: secondStore.readSharedState(),
-			secondStoredValue: secondStorageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE),
-		}, {
-			firstState: winner,
-			secondState: winner,
-			secondStoredValue: firstStorageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE),
 		});
 	});
 
@@ -196,6 +193,120 @@ suite('LogicalWorkspaceService', () => {
 		});
 	});
 
+	test('migrates the server workspace catalog and editor working set over an empty browser catalog', () => {
+		const browserWorkspace = {
+			id: 'browser-only',
+			name: 'Workspace',
+			terminalIds: [],
+			shellLayout: undefined,
+		};
+		const configuredWorkspace = {
+			id: 'configured',
+			name: 'Configured',
+			terminalIds: [],
+			shellLayout: undefined,
+			editorWorkingSet: '{"main":{},"auxiliary":{}}',
+		};
+		stateStore.setSharedState({ schemaVersion: 2, workspaces: [browserWorkspace] });
+		stateStore.writeActiveWorkspaceId(contextService.getWorkspace().id, browserWorkspace.id);
+		configurationService = new TestConfigurationService({
+			'dever.logicalWorkspaceState': { schemaVersion: 2, workspaces: [configuredWorkspace] },
+		});
+
+		const service = createService();
+
+		assert.deepStrictEqual({
+			activeWorkspaceId: service.activeWorkspace.id,
+			workspaces: service.workspaces,
+			migrationComplete: storageService.getBoolean('workbench.logicalWorkspace.configurationMigration.v1', StorageScope.WORKSPACE),
+		}, {
+			activeWorkspaceId: configuredWorkspace.id,
+			workspaces: [configuredWorkspace, browserWorkspace],
+			migrationComplete: true,
+		});
+	});
+
+	test('waits for complete workspace configuration before initializing shared state', async () => {
+		const deferredContextService = new DeferredWorkspaceContextService();
+		contextService = deferredContextService;
+		const configuredWorkspace = {
+			id: 'configured-after-workspace-load',
+			name: 'Configured',
+			terminalIds: [],
+			shellLayout: undefined,
+			editorWorkingSet: '{"main":{},"auxiliary":{}}',
+		};
+		const service = createService();
+
+		assert.deepStrictEqual({
+			sharedStateWrites: stateStore.writeCount,
+			migrationComplete: storageService.getBoolean('workbench.logicalWorkspace.configurationMigration.v1', StorageScope.WORKSPACE, false),
+		}, {
+			sharedStateWrites: 0,
+			migrationComplete: false,
+		});
+
+		await configurationService.setUserConfiguration('dever.logicalWorkspaceState', { schemaVersion: 2, workspaces: [configuredWorkspace] });
+		await deferredContextService.markWorkspaceComplete();
+		await service.whenReady;
+
+		assert.deepStrictEqual({
+			activeWorkspace: service.activeWorkspace,
+			sharedStateWrites: stateStore.writeCount,
+			migrationComplete: storageService.getBoolean('workbench.logicalWorkspace.configurationMigration.v1', StorageScope.WORKSPACE, false),
+		}, {
+			activeWorkspace: configuredWorkspace,
+			sharedStateWrites: 1,
+			migrationComplete: true,
+		});
+	});
+
+	test('ignores an object default when workspace state is not configured', () => {
+		const sharedWorkspace = {
+			id: 'shared',
+			name: 'Shared',
+			terminalIds: [],
+			shellLayout: undefined,
+		};
+		stateStore.setSharedState({ schemaVersion: 2, workspaces: [sharedWorkspace] });
+		configurationService = new TestConfigurationService({ 'dever.logicalWorkspaceState': {} });
+
+		const service = createService();
+
+		assert.deepStrictEqual({
+			workspaces: service.workspaces,
+			migrationComplete: storageService.getBoolean('workbench.logicalWorkspace.configurationMigration.v1', StorageScope.WORKSPACE, false),
+		}, {
+			workspaces: [sharedWorkspace],
+			migrationComplete: false,
+		});
+	});
+
+	test('backfills a missing editor working set when configuration and shared state have the same Workspace', () => {
+		const sharedWorkspace = {
+			id: 'shared',
+			name: 'Current Name',
+			terminalIds: [],
+			shellLayout: undefined,
+		};
+		const configuredWorkspace = {
+			...sharedWorkspace,
+			name: 'Legacy Name',
+			editorWorkingSet: '{"main":{"serializedGrid":{}},"auxiliary":{}}',
+		};
+		stateStore.setSharedState({ schemaVersion: 2, workspaces: [sharedWorkspace] });
+		configurationService = new TestConfigurationService({
+			'dever.logicalWorkspaceState': { schemaVersion: 2, workspaces: [configuredWorkspace] },
+		});
+
+		const service = createService();
+
+		assert.deepStrictEqual(service.activeWorkspace, {
+			...sharedWorkspace,
+			editorWorkingSet: configuredWorkspace.editorWorkingSet,
+		});
+	});
+
 	test('accepts external shared snapshots with last-write-wins while preserving a valid page selection', () => {
 		const service = createService();
 		const activeWorkspace = service.createWorkspace('Active');
@@ -204,7 +315,6 @@ suite('LogicalWorkspaceService', () => {
 			id: 'incoming',
 			name: 'Incoming',
 			terminalIds: [],
-			chatSessionResources: [],
 			shellLayout: undefined,
 		};
 		const writesBeforeIncomingState = stateStore.writeCount;
@@ -233,7 +343,7 @@ suite('LogicalWorkspaceService', () => {
 			{ schemaVersion: 2, workspaces: ['workspace'] },
 			{
 				schemaVersion: 2,
-				workspaces: [{ id: 'invalid-layout', name: 'Invalid', terminalIds: [], chatSessionResources: [], shellLayout: null }],
+				workspaces: [{ id: 'invalid-layout', name: 'Invalid', terminalIds: [], shellLayout: null }],
 			},
 		];
 		const startupWorkspaceCounts = malformedStates.map(raw => {
@@ -257,26 +367,55 @@ suite('LogicalWorkspaceService', () => {
 		});
 	});
 
-	test('updates an ownership slice across pages without changing the active Workspace', async () => {
+	test('drops obsolete Chat Session ownership data from shared snapshots', () => {
+		stateStore.setSharedState({
+			schemaVersion: 2,
+			workspaces: [{
+				id: 'shared',
+				name: 'Shared',
+				terminalIds: [],
+				chatSessionResources: ['test-session:obsolete-owner'],
+				shellLayout: undefined,
+			}],
+		});
+
+		const service = createService();
+		const expectedWorkspace = {
+			id: 'shared',
+			name: 'Shared',
+			terminalIds: [],
+			shellLayout: undefined,
+		};
+
+		assert.deepStrictEqual({
+			activeWorkspace: service.activeWorkspace,
+			sharedState: stateStore.readSharedState(),
+		}, {
+			activeWorkspace: expectedWorkspace,
+			sharedState: { schemaVersion: 2, workspaces: [expectedWorkspace] },
+		});
+	});
+
+	test('updates a terminal ownership slice across pages without changing the active Workspace', async () => {
 		const firstStorageService = disposables.add(new TestStorageService());
 		const secondStorageService = disposables.add(new TestStorageService());
 		const firstStore = disposables.add(new LogicalWorkspaceStateStore(firstStorageService, contextService));
 		const secondStore = disposables.add(new LogicalWorkspaceStateStore(secondStorageService, contextService));
 		const secondPageReceivedInitialState = Event.toPromise(secondStore.onDidChangeSharedState);
-		const firstService = disposables.add(new LogicalWorkspaceService(firstStorageService, contextService, firstStore));
+		const firstService = disposables.add(new LogicalWorkspaceService(firstStorageService, contextService, firstStore, configurationService));
 		await secondPageReceivedInitialState;
-		const secondService = disposables.add(new LogicalWorkspaceService(secondStorageService, contextService, secondStore));
+		const secondService = disposables.add(new LogicalWorkspaceService(secondStorageService, contextService, secondStore, configurationService));
 		const activeWorkspace = secondService.activeWorkspace;
-		const sessionResource = URI.parse('test-session:external');
+		const logicalTerminalId = 'external-terminal';
 		const observed: object[] = [];
 		const onDidChangeOwnership = onDidChangeLogicalWorkspaceStateSlice(secondService, state => ({
 			activeWorkspaceId: state.activeWorkspaceId,
-			sessionResources: state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.chatSessionResources ?? [],
+			terminalIds: state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.terminalIds ?? [],
 		}));
 		const ownershipChanged = Event.toPromise(onDidChangeOwnership);
 		disposables.add(onDidChangeOwnership(slice => observed.push(slice)));
 
-		firstService.bindChatSession(firstService.activeWorkspace.id, sessionResource);
+		firstService.bindTerminal(firstService.activeWorkspace.id, logicalTerminalId);
 		await ownershipChanged;
 		secondService.setShellLayout(activeWorkspace.id, {
 			primarySideBar: { visible: true, width: 280, height: 800, activeCompositeId: 'workbench.view.explorer' },
@@ -286,86 +425,8 @@ suite('LogicalWorkspaceService', () => {
 
 		assert.deepStrictEqual(observed, [{
 			activeWorkspaceId: activeWorkspace.id,
-			sessionResources: [sessionResource.toString()],
+			terminalIds: [logicalTerminalId],
 		}]);
-	});
-
-	test('moves session ownership with one atomic catalog commit', () => {
-		const service = createService();
-		const firstWorkspaceId = service.activeWorkspace.id;
-		const secondWorkspace = service.createWorkspace('Second');
-		const sessionResource = URI.parse('test-session:atomic-move');
-		service.bindChatSession(firstWorkspaceId, sessionResource);
-		let workspaceChangeCount = 0;
-		disposables.add(service.onDidChangeWorkspaces(() => workspaceChangeCount++));
-
-		service.updateChatSessionOwnership(secondWorkspace.id, [sessionResource], [sessionResource]);
-
-		assert.deepStrictEqual({
-			firstOwnsSession: service.workspaceContainsChatSession(firstWorkspaceId, sessionResource),
-			secondOwnsSession: service.workspaceContainsChatSession(secondWorkspace.id, sessionResource),
-			workspaceChangeCount,
-		}, {
-			firstOwnsSession: false,
-			secondOwnsSession: true,
-			workspaceChangeCount: 1,
-		});
-	});
-
-	test('exposes pending terminal ownership and persists it only on lease commit', () => {
-		const service = createService();
-		const workspaceId = service.activeWorkspace.id;
-		const rolledBackLease = service.acquireTerminalOwnership(workspaceId, 'rolled-back-terminal');
-		assert.deepStrictEqual({
-			visibleWhilePending: service.workspaceContainsTerminal(workspaceId, 'rolled-back-terminal'),
-			persistedWhilePending: service.activeWorkspace.terminalIds.includes('rolled-back-terminal'),
-		}, {
-			visibleWhilePending: true,
-			persistedWhilePending: false,
-		});
-		rolledBackLease.dispose();
-
-		const committedLease = service.acquireTerminalOwnership(workspaceId, 'committed-terminal');
-		committedLease.commit();
-		committedLease.dispose();
-
-		assert.deepStrictEqual({
-			rolledBackOwner: service.workspaceContainsTerminal(workspaceId, 'rolled-back-terminal'),
-			committedOwner: service.workspaceContainsTerminal(workspaceId, 'committed-terminal'),
-			persistedTerminalIds: service.activeWorkspace.terminalIds,
-		}, {
-			rolledBackOwner: false,
-			committedOwner: true,
-			persistedTerminalIds: ['committed-terminal'],
-		});
-	});
-
-	test('assigns a concurrently claimed terminal to the first successful creation', () => {
-		const service = createService();
-		const firstWorkspaceId = service.activeWorkspace.id;
-		const secondWorkspace = service.createWorkspace('Second');
-		const firstLease = service.acquireTerminalOwnership(firstWorkspaceId, 'shared-terminal');
-		const secondLease = service.acquireTerminalOwnership(secondWorkspace.id, 'shared-terminal');
-
-		assert.deepStrictEqual({
-			firstPendingOwner: service.workspaceContainsTerminal(firstWorkspaceId, 'shared-terminal'),
-			secondPendingOwner: service.workspaceContainsTerminal(secondWorkspace.id, 'shared-terminal'),
-		}, {
-			firstPendingOwner: true,
-			secondPendingOwner: false,
-		});
-
-		secondLease.commit();
-		secondLease.dispose();
-		firstLease.dispose();
-
-		assert.deepStrictEqual({
-			firstOwner: service.workspaceContainsTerminal(firstWorkspaceId, 'shared-terminal'),
-			secondOwner: service.workspaceContainsTerminal(secondWorkspace.id, 'shared-terminal'),
-		}, {
-			firstOwner: false,
-			secondOwner: true,
-		});
 	});
 
 	test('falls back with ordered activation events when an external snapshot removes the active workspace', () => {

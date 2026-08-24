@@ -4,9 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Event } from '../../../../base/common/event.js';
-import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { equals } from '../../../../base/common/objects.js';
-import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 
 export const PICK_LOGICAL_WORKSPACE_COMMAND_ID = 'workbench.action.pickLogicalWorkspace';
@@ -24,8 +22,7 @@ export interface ILogicalWorkspaceShellPartLayout {
 }
 
 /**
- * Workspace-owned workbench shell state. Editor groups, open editors and window geometry remain
- * outside this snapshot because they have independent lifecycle and persistence authorities.
+ * Workspace-owned workbench shell state.
  */
 export interface ILogicalWorkspaceShellLayout {
 	readonly primarySideBar: ILogicalWorkspaceShellPartLayout;
@@ -37,8 +34,8 @@ export interface ILogicalWorkspace {
 	readonly id: string;
 	readonly name: string;
 	readonly terminalIds: readonly string[];
-	readonly chatSessionResources: readonly string[];
 	readonly shellLayout: ILogicalWorkspaceShellLayout | undefined;
+	readonly editorWorkingSet?: string;
 }
 
 export interface ILogicalWorkspaceActivationEvent {
@@ -70,14 +67,9 @@ export interface ILogicalWorkspaceStateChangeEvent {
 
 export const ILogicalWorkspaceService = createDecorator<ILogicalWorkspaceService>('logicalWorkspaceService');
 
-export interface ILogicalWorkspaceTerminalOwnershipLease extends IDisposable {
-	/** Makes this claim durable after the Terminal instance exists. The first successful claim wins. */
-	commit(): void;
-}
-
 /**
- * Owns the logical workspace registry and its resource membership. Resource lookup methods are
- * pure reads; membership can only change through the explicit bind and unbind methods.
+ * Owns the logical workspace registry, terminal ownership and projected workbench snapshots.
+ * The global Chat / Agent Session catalog remains outside this service.
  */
 export interface ILogicalWorkspaceService {
 	readonly _serviceBrand: undefined;
@@ -91,27 +83,16 @@ export interface ILogicalWorkspaceService {
 	readonly workspaces: readonly ILogicalWorkspace[];
 	readonly activeWorkspace: ILogicalWorkspace;
 	readonly activationSequence: number;
+	readonly whenReady: Promise<void>;
 
 	createWorkspace(name: string): ILogicalWorkspace;
 	activateWorkspace(workspaceId: string, actor: LogicalWorkspaceActivationActor): void;
 	setShellLayout(workspaceId: string, layout: ILogicalWorkspaceShellLayout): void;
+	setEditorWorkingSet(workspaceId: string, editorWorkingSet: string): void;
 
-	acquireTerminalOwnership(workspaceId: string, logicalTerminalId: string): ILogicalWorkspaceTerminalOwnershipLease;
 	bindTerminal(workspaceId: string, logicalTerminalId: string): void;
 	unbindTerminal(logicalTerminalId: string): void;
 	workspaceContainsTerminal(workspaceId: string, logicalTerminalId: string): boolean;
-
-	bindChatSession(workspaceId: string, sessionResource: URI): void;
-	bindChatSessions(workspaceId: string, sessionResources: readonly URI[]): void;
-	unbindChatSession(sessionResource: URI): void;
-	unbindChatSessions(sessionResources: readonly URI[]): void;
-	/**
-	 * Atomically applies a provider catalog delta. Removed resources are released before added
-	 * resources are claimed, allowing a delete/re-add of the same URI to move ownership in one
-	 * observable commit.
-	 */
-	updateChatSessionOwnership(workspaceId: string, added: readonly URI[], removed: readonly URI[]): void;
-	workspaceContainsChatSession(workspaceId: string, sessionResource: URI): boolean;
 }
 
 /**

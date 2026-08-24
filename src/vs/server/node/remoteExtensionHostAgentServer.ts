@@ -734,7 +734,9 @@ export async function createServer(address: string | net.AddressInfo | null, arg
 	if (hasWebClient && address && typeof address !== 'string') {
 		// ships the web ui!
 		const queryPart = (connectionToken.type !== ServerConnectionTokenType.None ? `?${connectionTokenQueryName}=${connectionToken.value}` : '');
-		console.log(`Web UI available at http://localhost${address.port === 80 ? '' : `:${address.port}`}${serverBasePath ?? ''}${queryPart}`);
+		const protocol = args['tls-key-path'] ? 'https' : 'http';
+		const defaultPort = protocol === 'https' ? 443 : 80;
+		console.log(`Web UI available at ${protocol}://localhost${address.port === defaultPort ? '' : `:${address.port}`}${serverBasePath ?? ''}${queryPart}`);
 	}
 
 	const remoteExtensionHostAgentServer = instantiationService.createInstance(RemoteExtensionHostAgentServer, socketServer, connectionToken, vsdaMod, hasWebClient, serverBasePath);

@@ -11,7 +11,7 @@ import { IMarkdownString } from '../../../../../base/common/htmlContent.js';
 import { Disposable, DisposableMap } from '../../../../../base/common/lifecycle.js';
 import { ResourceMap, ResourceSet } from '../../../../../base/common/map.js';
 import { MarshalledId } from '../../../../../base/common/marshallingIds.js';
-import { equals, safeStringify } from '../../../../../base/common/objects.js';
+import { safeStringify } from '../../../../../base/common/objects.js';
 import { derived, IObservable, observableSignalFromEvent } from '../../../../../base/common/observable.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI, UriComponents } from '../../../../../base/common/uri.js';
@@ -26,7 +26,6 @@ import { IWorkspaceTrustManagementService } from '../../../../../platform/worksp
 import { IChatEntitlementService } from '../../../../services/chat/common/chatEntitlementService.js';
 import { ILifecycleService } from '../../../../services/lifecycle/common/lifecycle.js';
 import { Extensions, IOutputChannelRegistry, IOutputService } from '../../../../services/output/common/output.js';
-import { ILogicalWorkspaceService, onDidChangeLogicalWorkspaceStateSlice } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { ChatSessionStatus as AgentSessionStatus, IChatSessionFileChange, IChatSessionFileChange2, IChatSessionItem, IChatSessionsService, isSessionInProgressStatus, ResolvedChatSessionsExtensionPoint } from '../../common/chatSessionsService.js';
 import { getChatSessionType } from '../../common/model/chatUri.js';
 import { IChatWidgetService } from '../chat.js';
@@ -515,18 +514,12 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 	get resolved(): boolean { return this._resolved; }
 
 	private _sessions: ResourceMap<IInternalAgentSession>;
-	get sessions(): IAgentSession[] {
-		const workspaceId = this.logicalWorkspaceService.activeWorkspace.id;
-		return this._dedupeMigratedCopilotCliSessions(Array.from(this._sessions.values()))
-			.filter(session => this.logicalWorkspaceService.workspaceContainsChatSession(workspaceId, session.resource));
-	}
+	get sessions(): IAgentSession[] { return this._dedupeMigratedCopilotCliSessions(Array.from(this._sessions.values())); }
 
 	private readonly resolvers = this._register(new DisposableMap<string, ThrottledDelayer<void>>());
 
 	private readonly cache: AgentSessionsCache;
 	private readonly logger: AgentSessionsLogger;
-	private sessionOwnershipProjection: readonly string[] = [];
-	private sessionChangeSequence = 0;
 
 	constructor(
 		@IChatSessionsService private readonly chatSessionsService: IChatSessionsService,
@@ -538,21 +531,16 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
 		@IChatEntitlementService private readonly chatEntitlementService: IChatEntitlementService,
-		@ILogicalWorkspaceService private readonly logicalWorkspaceService: ILogicalWorkspaceService,
 	) {
 		super();
 
 		this._sessions = new ResourceMap<IInternalAgentSession>();
 
 		this.cache = this.instantiationService.createInstance(AgentSessionsCache);
-		const initialWorkspaceId = this.logicalWorkspaceService.activeWorkspace.id;
-		const cachedSessionResources: URI[] = [];
 		for (const data of this.cache.loadCachedSessions()) {
 			const session = this.toAgentSession(data);
-			cachedSessionResources.push(session.resource);
 			this._sessions.set(session.resource, session);
 		}
-		this.logicalWorkspaceService.bindChatSessions(initialWorkspaceId, cachedSessionResources);
 		this.sessionStates = this.cache.loadSessionStates();
 
 		this.logger = this._register(this.instantiationService.createInstance(
@@ -566,7 +554,6 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 
 		this.readDateBaseline = this.resolveReadDateBaseline(); // we use this to account for bugfixes in the read/unread tracking
 		this.loadMigratedReadResources();
-		this.sessionOwnershipProjection = this.getSessionOwnershipProjection();
 
 		this.registerListeners();
 	}
@@ -578,37 +565,21 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		this._register(this.chatSessionsService.onDidChangeAvailability(() => this.resolve(undefined)));
 		this._register(this.chatSessionsService.onDidChangeSessionItems((delta) => {
 			const changedChatSessionTypes = new Set<string>();
-			const targetWorkspaceId = this.logicalWorkspaceService.activeWorkspace.id;
-			const addedSessionResources = (delta.addedOrUpdated ?? []).map(session => session.resource);
-			const removedSessionResources = delta.removed ?? [];
-
-			// Ownership is captured at the provider-delta boundary. Applying the complete delta in one
-			// service transaction makes a rapid remove/re-add observable as one committed owner change.
-			this.logicalWorkspaceService.updateChatSessionOwnership(targetWorkspaceId, addedSessionResources, removedSessionResources);
 
 			for (const resource of delta.addedOrUpdated ?? []) {
 				changedChatSessionTypes.add(getChatSessionType(resource.resource));
 			}
 
-			for (const resource of removedSessionResources) {
+			for (const resource of delta.removed ?? []) {
 				changedChatSessionTypes.add(getChatSessionType(resource));
 			}
 
 			for (const chatSessionType of changedChatSessionTypes) {
-				this.resolveProvider(chatSessionType, { refreshProvider: false /* skip because we react on an event already */ }, targetWorkspaceId);
+				this.resolveProvider(chatSessionType, { refreshProvider: false /* skip because we react on an event already */ });
 			}
 		}));
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => this.resolve(undefined)));
 		this._register(this.workspaceTrustManagementService.onDidChangeTrust(() => this.resolve(undefined)));
-		this._register(onDidChangeLogicalWorkspaceStateSlice(this.logicalWorkspaceService, state => ({
-			activeWorkspaceId: state.activeWorkspaceId,
-			sessionResources: state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.chatSessionResources ?? [],
-		}))(() => {
-			const projection = this.getSessionOwnershipProjection();
-			if (!equals(this.sessionOwnershipProjection, projection)) {
-				this.emitSessionsChanged();
-			}
-		}));
 
 		// State
 		this._register(this.storageService.onWillSaveState(() => {
@@ -619,22 +590,6 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 
 	getSession(resource: URI): IAgentSession | undefined {
 		return this._sessions.get(resource);
-	}
-
-	private getSessionOwnershipProjection(): readonly string[] {
-		return this.sessions.map(session => session.resource.toString());
-	}
-
-	private emitSessionsChanged(): void {
-		this.sessionOwnershipProjection = this.getSessionOwnershipProjection();
-		this.sessionChangeSequence++;
-		this._onDidChangeSessions.fire();
-	}
-
-	private resolveOwnershipWorkspaceId(workspaceId: string): string {
-		return this.logicalWorkspaceService.workspaces.some(workspace => workspace.id === workspaceId)
-			? workspaceId
-			: this.logicalWorkspaceService.activeWorkspace.id;
 	}
 
 	/**
@@ -699,17 +654,16 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 	}
 
 	async resolve(provider: string | string[] | undefined): Promise<void> {
-		const targetWorkspaceId = this.logicalWorkspaceService.activeWorkspace.id;
 		const providers = Array.isArray(provider)
 			? provider
 			: provider !== undefined
 				? [provider]
 				: this.chatSessionsService.getRegisteredChatSessionItemProviders();
 
-		await Promise.all(providers.map(provider => this.resolveProvider(provider, { refreshProvider: true }, targetWorkspaceId)));
+		await Promise.all(providers.map(provider => this.resolveProvider(provider, { refreshProvider: true })));
 	}
 
-	private resolveProvider(provider: string, options: { refreshProvider: boolean }, targetWorkspaceId: string): Promise<void> {
+	private resolveProvider(provider: string, options: { refreshProvider: boolean }): Promise<void> {
 		if (this.chatEntitlementService.sentiment.hidden) {
 			return Promise.resolve(); // don't resolve if AI features are disabled
 		}
@@ -727,7 +681,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 
 			try {
 				this._onWillResolve.fire(provider);
-				return await this.doResolveProvider(provider, options, targetWorkspaceId, token);
+				return await this.doResolveProvider(provider, options, token);
 			} catch (error) {
 				this.logger.logIfTrace(`Error resolving sessions for provider ${provider}: ${error instanceof Error ? error.stack : String(error)}`);
 			} finally {
@@ -736,7 +690,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		});
 	}
 
-	private async doResolveProvider(provider: string, options: { refreshProvider: boolean }, targetWorkspaceId: string, token: CancellationToken): Promise<void> {
+	private async doResolveProvider(provider: string, options: { refreshProvider: boolean }, token: CancellationToken): Promise<void> {
 		if (options.refreshProvider) {
 			await this.chatSessionsService.refreshChatSessionItems([provider], token);
 
@@ -817,15 +771,9 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 				}));
 			}
 		}
-		if (token.isCancellationRequested || this.lifecycleService.willShutdown) {
-			return;
-		}
 
 		// Phase 2: Atomically update sessions (sync - reads latest this._sessions
 		// so concurrent updateItems calls for other providers don't lose data)
-		const removedProviderSessionResources = Array.from(this._sessions.values())
-			.filter(session => session.providerType === provider && !sessions.has(session.resource))
-			.map(session => session.resource);
 
 		for (const [, session] of this._sessions) {
 			if (
@@ -860,18 +808,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		for (const session of sessionsWithChangedArchivedState) {
 			this._onDidChangeSessionArchivedState.fire(session);
 		}
-		// Ownership listeners run synchronously. If the owner transaction does not change the current
-		// visible projection (for example, its target Workspace is now inactive), publish the catalog
-		// commit explicitly so observers of getSession() still see this generation.
-		const sessionChangeSequence = this.sessionChangeSequence;
-		this.logicalWorkspaceService.updateChatSessionOwnership(
-			this.resolveOwnershipWorkspaceId(targetWorkspaceId),
-			Array.from(sessions.values()).filter(session => session.providerType === provider).map(session => session.resource),
-			removedProviderSessionResources,
-		);
-		if (this.sessionChangeSequence === sessionChangeSequence) {
-			this.emitSessionsChanged();
-		}
+		this._onDidChangeSessions.fire();
 	}
 
 	private toAgentSession(data: IInternalAgentSessionData): IInternalAgentSession {
@@ -952,7 +889,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 			this._onDidChangeSessionArchivedState.fire(agentSession);
 		}
 
-		this.emitSessionsChanged();
+		this._onDidChangeSessions.fire();
 	}
 
 	private isPinned(session: IInternalAgentSessionData): boolean {
@@ -967,7 +904,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		const state = this.resolveStateEntry(session) ?? {};
 		this.sessionStates.set(session.resource, { ...state, pinned });
 
-		this.emitSessionsChanged();
+		this._onDidChangeSessions.fire();
 	}
 
 	private isMarkedUnread(session: IInternalAgentSessionData): boolean {
@@ -1064,7 +1001,7 @@ export class AgentSessionsModel extends Disposable implements IAgentSessionsMode
 		this.sessionStates.set(session.resource, { ...state, read: newRead });
 
 		if (!skipEvent) {
-			this.emitSessionsChanged();
+			this._onDidChangeSessions.fire();
 		}
 	}
 

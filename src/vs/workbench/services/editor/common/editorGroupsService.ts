@@ -703,6 +703,18 @@ export interface IEditorGroupsService extends IEditorGroupsContainer {
 	getScopedInstantiationService(part: IEditorPart): IInstantiationService;
 
 	/**
+	 * Serializes the currently opened editors and group layout into a portable working set.
+	 */
+	serializeWorkingSet(): string;
+
+	/**
+	 * Applies a working set previously returned by {@link serializeWorkingSet}.
+	 *
+	 * @returns `true` when the working set was applied.
+	 */
+	applySerializedWorkingSet(workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean>;
+
+	/**
 	 * Save a new editor working set from the currently opened
 	 * editors and group layout.
 	 */

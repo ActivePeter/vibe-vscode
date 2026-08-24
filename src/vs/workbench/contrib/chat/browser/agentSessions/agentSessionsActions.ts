@@ -38,7 +38,6 @@ import { toErrorMessage } from '../../../../../base/common/errorMessage.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IPaneCompositePartService } from '../../../../services/panecomposite/browser/panecomposite.js';
 import { ChatSessionArchiveActionWording, getChatSessionArchiveActionPresentation } from '../../../../../platform/chat/common/sessionArchiveActions.js';
-import { ILogicalWorkspaceService } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 
 const AGENT_SESSIONS_CATEGORY = localize2('chatSessions', "Chat Agent Sessions");
 
@@ -777,7 +776,6 @@ export class DeleteAgentSessionAction extends BaseAgentSessionAction {
 		const dialogService = accessor.get(IDialogService);
 		const widgetService = accessor.get(IChatWidgetService);
 		const commandService = accessor.get(ICommandService);
-		const logicalWorkspaceService = accessor.get(ILogicalWorkspaceService);
 
 		const confirmed = await dialogService.confirm({
 			message: sessions.length === 1
@@ -800,7 +798,6 @@ export class DeleteAgentSessionAction extends BaseAgentSessionAction {
 
 				// Remove from storage
 				await chatService.removeHistoryEntry(session.resource);
-				logicalWorkspaceService.unbindChatSession(session.resource);
 
 				// Track session ID for cloud cleanup
 				const sessionId = LocalChatSessionUri.parseLocalSessionId(session.resource);
@@ -814,7 +811,6 @@ export class DeleteAgentSessionAction extends BaseAgentSessionAction {
 				try {
 					await chatSessionsService.deleteChatSessionItem(session.resource, CancellationToken.None);
 					await widgetService.getWidgetBySessionResource(session.resource)?.clear();
-					logicalWorkspaceService.unbindChatSession(session.resource);
 				} catch (err) {
 					dialogService.error(localize('deleteSession.error', "Failed to delete chat session: {0}", toErrorMessage(err)));
 				}
@@ -845,10 +841,8 @@ export class DeleteAllLocalSessionsAction extends Action2 {
 		const widgetService = accessor.get(IChatWidgetService);
 		const dialogService = accessor.get(IDialogService);
 		const agentSessionsService = accessor.get(IAgentSessionsService);
-		const logicalWorkspaceService = accessor.get(ILogicalWorkspaceService);
 
-		const localSessions = agentSessionsService.model.sessions.filter(session => isLocalAgentSessionItem(session));
-		const localSessionsCount = localSessions.length;
+		const localSessionsCount = agentSessionsService.model.sessions.filter(session => isLocalAgentSessionItem(session)).length;
 		if (localSessionsCount === 0) {
 			return;
 		}
@@ -865,11 +859,11 @@ export class DeleteAllLocalSessionsAction extends Action2 {
 			return;
 		}
 
-		for (const session of localSessions) {
-			await widgetService.getWidgetBySessionResource(session.resource)?.clear();
-			await chatService.removeHistoryEntry(session.resource);
-			logicalWorkspaceService.unbindChatSession(session.resource);
-		}
+		// Clear all chat widgets
+		await Promise.all(widgetService.getAllWidgets().map(widget => widget.clear()));
+
+		// Remove from storage
+		await chatService.clearAllHistoryEntries();
 	}
 }
 

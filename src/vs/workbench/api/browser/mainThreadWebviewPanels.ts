@@ -206,7 +206,7 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 
 		const origin = this.webviewOriginStore.getOrigin(viewType, extension.id);
 
-		const webview = await this._webviewWorkbenchService.openWebview({
+		const webview = this._webviewWorkbenchService.openWebview({
 			origin,
 			providedViewType: viewType,
 			title: initData.title,
@@ -222,7 +222,6 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 				{ serializeBuffersForPostMessage: initData.serializeBuffersForPostMessage },
 				fullscreen ? WebviewPanelPresentation.FullscreenModal : WebviewPanelPresentation.Editor,
 			);
-			this.updateWebviewViewStates(this._editorService.activeEditor);
 		} catch (error) {
 			webview.dispose();
 			throw error;

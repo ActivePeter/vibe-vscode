@@ -170,7 +170,11 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 		void this.requestReconcile();
 	}
 
-	requestReconcile(): Promise<void> {
+	async requestReconcile(): Promise<void> {
+		await this.logicalWorkspaceService.whenReady;
+		if (this._store.isDisposed) {
+			return;
+		}
 		const intent: ILogicalWorkspaceProjectionIntent = {
 			workspace: this.logicalWorkspaceService.activeWorkspace,
 			activationSequence: this.logicalWorkspaceService.activationSequence,

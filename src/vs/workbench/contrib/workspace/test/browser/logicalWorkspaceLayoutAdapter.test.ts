@@ -27,7 +27,7 @@ suite('LogicalWorkspaceLayoutAdapter', () => {
 			panel: { visible: true, width: 1200, height: 300, activeCompositeId: 'terminal' },
 			auxiliaryBar: { visible: false, width: 320, height: 800, activeCompositeId: 'chat' },
 		};
-		const workspace = { id: 'workspace', name: 'Workspace', terminalIds: [], chatSessionResources: [], shellLayout: layout };
+		const workspace = { id: 'workspace', name: 'Workspace', terminalIds: [], shellLayout: layout };
 		const logicalWorkspaceService = new class extends mock<ILogicalWorkspaceService>() {
 			override readonly activeWorkspace = workspace;
 			override readonly activationSequence = 0;

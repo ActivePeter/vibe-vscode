@@ -46,6 +46,11 @@ interface IEditorWorkingSetState extends IEditorWorkingSet {
 	readonly auxiliary: IEditorPartsUIState;
 }
 
+interface ISerializedEditorWorkingSetState {
+	readonly main: IEditorPartUIState;
+	readonly auxiliary: IEditorPartsUIState;
+}
+
 interface IModalEditorPartState {
 	readonly maximized: boolean;
 	readonly size?: { readonly width: number; readonly height: number };
@@ -599,6 +604,32 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 	private editorWorkingSets: IEditorWorkingSetState[];
 
+	serializeWorkingSet(): string {
+		return JSON.stringify({
+			main: this.mainPart.createState(),
+			auxiliary: this.createState(),
+		} satisfies ISerializedEditorWorkingSetState);
+	}
+
+	async applySerializedWorkingSet(serializedWorkingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> {
+		let workingSet: unknown;
+		try {
+			workingSet = JSON.parse(serializedWorkingSet);
+		} catch {
+			return false;
+		}
+
+		if (!workingSet || typeof workingSet !== 'object') {
+			return false;
+		}
+		const candidate = workingSet as Partial<ISerializedEditorWorkingSetState>;
+		if (!candidate.main || typeof candidate.main !== 'object' || !candidate.auxiliary || typeof candidate.auxiliary !== 'object') {
+			return false;
+		}
+
+		return this.doApplyWorkingSet(candidate as ISerializedEditorWorkingSetState, options);
+	}
+
 	saveWorkingSet(name: string): IEditorWorkingSet {
 		const workingSet: IEditorWorkingSetState = {
 			id: generateUuid(),
@@ -642,6 +673,10 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 			return false;
 		}
 
+		return this.doApplyWorkingSet(workingSetState, options);
+	}
+
+	private async doApplyWorkingSet(workingSetState: ISerializedEditorWorkingSetState | 'empty', options?: IEditorWorkingSetOptions): Promise<boolean> {
 		// Apply state: begin with auxiliary windows first because it helps to keep
 		// editors around that need confirmation by moving them into the main part.
 		// Also, in rare cases, the auxiliary part may not be able to apply the state

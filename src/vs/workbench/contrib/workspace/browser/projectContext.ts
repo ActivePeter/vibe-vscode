@@ -5,6 +5,7 @@
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { runOnChange } from '../../../../base/common/observable.js';
 import { isEqual, isEqualOrParent } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
@@ -21,7 +22,7 @@ import { AsyncProjectionCoordinator, IAsyncProjectionContext } from '../../../se
 import { IPaneCompositePartService } from '../../../services/panecomposite/browser/panecomposite.js';
 import { IExplorerService } from '../../files/browser/files.js';
 import { VIEWLET_ID } from '../../files/common/files.js';
-import { ISCMRepository, ISCMService, ISCMViewService } from '../../scm/common/scm.js';
+import { ISCMRepository, ISCMRepositorySelectionMode, ISCMService, ISCMViewService } from '../../scm/common/scm.js';
 
 const PROJECT_CONTEXT_STORAGE_KEY = 'workbench.projectContext.selectedFolderUri';
 export const PICK_PROJECT_CONTEXT_COMMAND_ID = 'workbench.action.pickProjectContext';
@@ -38,8 +39,8 @@ interface IProjectContextProjectionIntent {
 export const IProjectContextService = createDecorator<IProjectContextService>('projectContextService');
 
 /**
- * Selects the project that Explorer and Source Control should focus within the current VS Code
- * workbench. It never changes or reloads the VS Code workspace itself.
+ * Selects the project whose Explorer root and Source Control repository set are projected within
+ * the current VS Code workbench. It never changes or reloads the VS Code workspace itself.
  */
 export interface IProjectContextService {
 	readonly _serviceBrand: undefined;
@@ -58,6 +59,7 @@ export class ProjectContextService extends Disposable implements IProjectContext
 	private readonly projectionCoordinator: AsyncProjectionCoordinator<IProjectContextProjectionIntent>;
 	private selectedFolderUri: URI | undefined;
 	private pendingRevealFolderUri: URI | undefined;
+	private applyingSCMProjection = false;
 
 	constructor(
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
@@ -82,10 +84,20 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(updateProjectContext));
 		this._register(this.workspaceContextService.onDidChangeWorkbenchState(updateProjectContext));
 		this._register(this.workspaceContextService.onDidChangeWorkspaceName(() => this._onDidChangeProjectContext.fire()));
-		this._register(this.scmService.onDidAddRepository(repository => {
+		const requestSCMProjection = () => {
 			const folder = this.selectedFolder;
-			if (folder && this.belongsToProject(repository, folder)) {
+			if (folder) {
 				void this.requestProjectContextProjection(folder);
+			}
+		};
+		// SCM adds every newly discovered repository to the visible set in multiple mode.
+		// Reproject for every catalog change, including repositories outside this Project.
+		this._register(this.scmService.onDidAddRepository(requestSCMProjection));
+		this._register(this.scmService.onDidRemoveRepository(requestSCMProjection));
+		this._register(runOnChange(this.scmViewService.selectionModeConfig, requestSCMProjection));
+		this._register(this.scmViewService.onDidChangeVisibleRepositories(() => {
+			if (!this.applyingSCMProjection) {
+				requestSCMProjection();
 			}
 		}));
 		this.synchronizeAvailableFolders();
@@ -191,16 +203,16 @@ export class ProjectContextService extends Disposable implements IProjectContext
 
 	private async applyProjectContext(context: IAsyncProjectionContext<IProjectContextProjectionIntent>): Promise<void> {
 		const folderUri = context.value.folderUri;
-		if (!folderUri) {
-			await this.explorerService.setActiveRoot(undefined);
+		const folder = folderUri ? this.workspace.folders.find(folder => isEqual(folder.uri, folderUri)) : undefined;
+		if (folderUri && !folder) {
 			return;
 		}
-		const folder = this.workspace.folders.find(folder => isEqual(folder.uri, folderUri));
-		if (!folder) {
-			return;
-		}
-		await this.explorerService.setActiveRoot(folder.uri);
+		await this.explorerService.setActiveRoot(folder?.uri);
 		if (!context.isCurrent()) {
+			return;
+		}
+
+		if (!folder) {
 			return;
 		}
 
@@ -216,9 +228,29 @@ export class ProjectContextService extends Disposable implements IProjectContext
 			this.pendingRevealFolderUri = undefined;
 		}
 
-		const repository = Array.from(this.scmService.repositories).find(candidate => this.belongsToProject(candidate, folder));
-		if (repository) {
-			this.scmViewService.focus(repository);
+		this.applySCMProjection(folder);
+	}
+
+	private applySCMProjection(folder: IWorkspaceFolder): void {
+		const projectRepositories = Array.from(this.scmService.repositories)
+			.filter(repository => repository.provider.isHidden !== true && this.belongsToProject(repository, folder));
+		const primaryRepository = [...projectRepositories]
+			.sort((left, right) => left.provider.rootUri!.path.length - right.provider.rootUri!.path.length)[0];
+		const visibleRepositories = this.scmViewService.selectionModeConfig.get() === ISCMRepositorySelectionMode.Single
+			? primaryRepository ? [primaryRepository] : []
+			: projectRepositories;
+
+		// This setter is the SCM selection model's atomic transaction. Using toggleVisibility()
+		// would only add the target in multiple mode and leave other Projects visible.
+		this.applyingSCMProjection = true;
+		try {
+			this.scmViewService.visibleRepositories = visibleRepositories;
+		} finally {
+			this.applyingSCMProjection = false;
+		}
+
+		if (primaryRepository && this.scmViewService.focusedRepository !== primaryRepository) {
+			this.scmViewService.focus(primaryRepository);
 		}
 	}
 

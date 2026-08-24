@@ -711,26 +711,12 @@ export interface ITerminalTabAction {
 
 export type WaitOnExitValue = boolean | string | ((exitCode: number) => string);
 
-/**
- * Immutable context captured when a user initiates terminal creation. Delegated terminal
- * providers must forward the complete context instead of recapturing active workbench state.
- */
-export interface ITerminalCreationContext {
-	readonly logicalWorkspaceId: string;
-	readonly logicalTerminalId?: string;
-}
-
 export interface ICreateContributedTerminalProfileOptions {
 	icon?: URI | string | { light: URI; dark: URI };
 	color?: string;
 	location?: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean };
 	cwd?: string | URI;
 	titleTemplate?: string;
-	/**
-	 * The complete initiating context for this delegated terminal creation.
-	 * @internal
-	 */
-	creationContext: ITerminalCreationContext;
 }
 
 export enum TerminalLocation {

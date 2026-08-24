@@ -79,7 +79,7 @@ export class ExplorerService implements IExplorerService {
 
 			let shouldRefresh = false;
 			// For DELETED and UPDATED events go through the explorer model and check if any of the items got affected
-			this.model.roots.forEach(r => {
+			this.roots.forEach(r => {
 				if (this.view && !shouldRefresh) {
 					shouldRefresh = doesFileEventAffect(r, this.view, events, types);
 				}
@@ -166,6 +166,7 @@ export class ExplorerService implements IExplorerService {
 		}
 
 		this.activeRoot = resource;
+		await this.view?.closeFind();
 		await this.view?.setTreeInput();
 	}
 
@@ -200,7 +201,8 @@ export class ExplorerService implements IExplorerService {
 			return [];
 		}
 
-		const items = new Set<ExplorerItem>(this.view.getContext(respectMultiSelection));
+		const visibleRoots = new Set(this.visibleRoots);
+		const items = new Set<ExplorerItem>(this.view.getContext(respectMultiSelection).filter(item => visibleRoots.has(item.root)));
 		items.forEach(item => {
 			try {
 				if (respectMultiSelection && !ignoreNestedChildren && this.view?.isItemCollapsed(item) && item.nestedChildren) {
@@ -266,6 +268,16 @@ export class ExplorerService implements IExplorerService {
 		return parentRoots.length ? parentRoots[0] : null;
 	}
 
+	findClosestVisible(resource: URI): ExplorerItem | null {
+		return this.findClosestVisibleRoot(resource)?.find(resource) ?? null;
+	}
+
+	findClosestVisibleRoot(resource: URI): ExplorerItem | null {
+		const parentRoots = this.visibleRoots.filter(root => this.uriIdentityService.extUri.isEqualOrParent(resource, root.resource))
+			.sort((first, second) => second.resource.path.length - first.resource.path.length);
+		return parentRoots.length ? parentRoots[0] : null;
+	}
+
 	async setEditable(stat: ExplorerItem, data: IEditableData | null): Promise<void> {
 		if (!this.view) {
 			return;
@@ -320,8 +332,12 @@ export class ExplorerService implements IExplorerService {
 
 		// If file or parent matches exclude patterns, do not reveal unless reveal argument is 'force'
 		const ignoreRevealExcludes = reveal === 'force';
+		const root = this.findClosestVisibleRoot(resource);
+		if (!root) {
+			return;
+		}
 
-		const fileStat = this.findClosest(resource);
+		const fileStat = root.find(resource);
 		if (fileStat) {
 			if (!this.shouldAutoRevealItem(fileStat, ignoreRevealExcludes)) {
 				return;
@@ -332,10 +348,6 @@ export class ExplorerService implements IExplorerService {
 
 		// Stat needs to be resolved first and then revealed
 		const options: IResolveFileOptions = { resolveTo: [resource], resolveMetadata: this.config.sortOrder === SortOrder.Modified };
-		const root = this.findClosestRoot(resource);
-		if (!root) {
-			return undefined;
-		}
 
 		try {
 			const stat = await this.fileService.resolve(root.resource, options);

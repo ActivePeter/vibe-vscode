@@ -15,34 +15,13 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 
 export const LOGICAL_WORKSPACE_SHARED_STATE_KEY = 'workbench.logicalWorkspace.sharedState.v2';
 const LOGICAL_WORKSPACE_ACTIVE_SESSION_KEY = 'vibe.logicalWorkspace.activeWorkspaceId';
+const LEGACY_LOGICAL_WORKSPACE_ACTIVE_SESSION_KEY = 'workbench.logicalWorkspace.activeWorkspace.v1:';
 const LOGICAL_WORKSPACE_SHARED_STATE_CHANNEL = 'vibe.logicalWorkspace.sharedState';
 
-const enum LogicalWorkspaceSharedStateMessageType {
-	Request = 'request',
-	State = 'state',
-}
-
-const enum LogicalWorkspaceRevisionResult {
-	Accepted = 'accepted',
-	Equal = 'equal',
-	Older = 'older',
-}
-
-interface ILogicalWorkspaceSharedStateRequest {
-	readonly type: LogicalWorkspaceSharedStateMessageType.Request;
-	readonly physicalWorkspaceId: string;
-	readonly sourceId: string;
-}
-
 interface ILogicalWorkspaceSharedStateBroadcast {
-	readonly type: LogicalWorkspaceSharedStateMessageType.State;
 	readonly physicalWorkspaceId: string;
-	readonly sourceId: string;
-	readonly targetSourceId?: string;
 	readonly storedState: IStoredLogicalWorkspaceSharedState;
 }
-
-type LogicalWorkspaceSharedStateMessage = ILogicalWorkspaceSharedStateRequest | ILogicalWorkspaceSharedStateBroadcast;
 
 interface ILogicalWorkspaceStateRevision {
 	readonly counter: number;
@@ -97,12 +76,7 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 		this.revisionCounter = storedState?.revision?.counter ?? 0;
 		this.sharedStateChannel = this._register(new BroadcastDataChannel<unknown>(`${LOGICAL_WORKSPACE_SHARED_STATE_CHANNEL}.${this.physicalWorkspaceId}`));
 		this._register(storageService.onDidChangeValue(StorageScope.WORKSPACE, LOGICAL_WORKSPACE_SHARED_STATE_KEY, this._store)(() => this.acceptStorageState()));
-		this._register(this.sharedStateChannel.onDidReceiveData(data => this.acceptBroadcastMessage(data)));
-		this.postSharedStateMessage({
-			type: LogicalWorkspaceSharedStateMessageType.Request,
-			physicalWorkspaceId: this.physicalWorkspaceId,
-			sourceId: this.sourceId,
-		});
+		this._register(this.sharedStateChannel.onDidReceiveData(data => this.acceptBroadcastState(data)));
 	}
 
 	readSharedState(): unknown {
@@ -115,38 +89,20 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 		this.sharedState = state;
 		this.revision = revision;
 		this.storageService.store(LOGICAL_WORKSPACE_SHARED_STATE_KEY, JSON.stringify(storedState), StorageScope.WORKSPACE, StorageTarget.MACHINE);
-		this.broadcastSharedState(storedState);
-	}
-
-	private postSharedStateMessage(message: LogicalWorkspaceSharedStateMessage): void {
+		const broadcast: ILogicalWorkspaceSharedStateBroadcast = { physicalWorkspaceId: this.physicalWorkspaceId, storedState };
 		try {
-			this.sharedStateChannel.postData(message);
+			this.sharedStateChannel.postData(broadcast);
 		} catch {
 			// Workspace storage remains authoritative if browser cross-page messaging is unavailable.
 		}
 	}
 
-	private broadcastSharedState(storedState: IStoredLogicalWorkspaceSharedState, targetSourceId?: string): void {
-		this.postSharedStateMessage({
-			type: LogicalWorkspaceSharedStateMessageType.State,
-			physicalWorkspaceId: this.physicalWorkspaceId,
-			sourceId: this.sourceId,
-			targetSourceId,
-			storedState,
-		});
-	}
-
-	private broadcastCurrentSharedState(targetSourceId?: string): void {
-		if (!this.revision || !this.sharedState || typeof this.sharedState !== 'object') {
-			return;
-		}
-		this.broadcastSharedState({ storageVersion: 1, revision: this.revision, state: this.sharedState }, targetSourceId);
-	}
-
 	readActiveWorkspaceId(physicalWorkspaceId: string): string | undefined {
 		const key = this.activeWorkspaceKey(physicalWorkspaceId);
 		try {
-			return mainWindow.sessionStorage.getItem(key) ?? this.fallbackSessionState.get(key);
+			return mainWindow.sessionStorage.getItem(this.legacyActiveWorkspaceKey(physicalWorkspaceId))
+				?? mainWindow.sessionStorage.getItem(key)
+				?? this.fallbackSessionState.get(key);
 		} catch {
 			return this.fallbackSessionState.get(key);
 		}
@@ -157,6 +113,7 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 		this.fallbackSessionState.set(key, workspaceId);
 		try {
 			mainWindow.sessionStorage.setItem(key, workspaceId);
+			mainWindow.sessionStorage.removeItem(this.legacyActiveWorkspaceKey(physicalWorkspaceId));
 		} catch {
 			// The in-memory fallback keeps this page coherent when browser storage is unavailable.
 		}
@@ -166,22 +123,19 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 		return `${LOGICAL_WORKSPACE_ACTIVE_SESSION_KEY}.${physicalWorkspaceId}`;
 	}
 
-	private acceptBroadcastMessage(data: unknown): void {
+	private legacyActiveWorkspaceKey(physicalWorkspaceId: string): string {
+		return `${LEGACY_LOGICAL_WORKSPACE_ACTIVE_SESSION_KEY}${physicalWorkspaceId}`;
+	}
+
+	private acceptBroadcastState(data: unknown): void {
 		if (!data || typeof data !== 'object') {
 			return;
 		}
-		const message = data as Record<string, unknown>;
-		if (message.physicalWorkspaceId !== this.physicalWorkspaceId || typeof message.sourceId !== 'string' || message.sourceId === this.sourceId) {
+		const broadcast = data as Record<string, unknown>;
+		if (broadcast.physicalWorkspaceId !== this.physicalWorkspaceId) {
 			return;
 		}
-		if (message.type === LogicalWorkspaceSharedStateMessageType.Request) {
-			this.broadcastCurrentSharedState();
-			return;
-		}
-		if (message.type !== LogicalWorkspaceSharedStateMessageType.State || (message.targetSourceId !== undefined && message.targetSourceId !== this.sourceId)) {
-			return;
-		}
-		const storedState = this.parseStoredStateEnvelope(message.storedState);
+		const storedState = this.parseStoredStateEnvelope(broadcast.storedState);
 		if (!storedState) {
 			return;
 		}
@@ -192,14 +146,7 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 		} catch {
 			return;
 		}
-		if (serializedState === undefined) {
-			return;
-		}
-		const revisionResult = this.acceptRevisionedState(storedState);
-		if (revisionResult !== LogicalWorkspaceRevisionResult.Accepted) {
-			if (revisionResult === LogicalWorkspaceRevisionResult.Older) {
-				this.broadcastCurrentSharedState(message.sourceId);
-			}
+		if (serializedState === undefined || !this.acceptRevisionedState(storedState)) {
 			return;
 		}
 
@@ -220,7 +167,7 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 			return;
 		}
 		if (storedState.revision) {
-			if (this.acceptRevisionedState(storedState) !== LogicalWorkspaceRevisionResult.Accepted) {
+			if (!this.acceptRevisionedState(storedState)) {
 				return;
 			}
 		} else if (this.revision) {
@@ -231,17 +178,14 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 		this._onDidChangeSharedState.fire();
 	}
 
-	private acceptRevisionedState(storedState: IStoredLogicalWorkspaceSharedState): LogicalWorkspaceRevisionResult {
+	private acceptRevisionedState(storedState: IStoredLogicalWorkspaceSharedState): boolean {
 		this.revisionCounter = Math.max(this.revisionCounter, storedState.revision.counter);
-		if (this.revision) {
-			const comparison = this.compareRevisions(storedState.revision, this.revision);
-			if (comparison <= 0) {
-				return comparison < 0 ? LogicalWorkspaceRevisionResult.Older : LogicalWorkspaceRevisionResult.Equal;
-			}
+		if (this.revision && this.compareRevisions(storedState.revision, this.revision) <= 0) {
+			return false;
 		}
 		this.revision = storedState.revision;
 		this.sharedState = storedState.state;
-		return LogicalWorkspaceRevisionResult.Accepted;
+		return true;
 	}
 
 	private compareRevisions(first: ILogicalWorkspaceStateRevision, second: ILogicalWorkspaceStateRevision): number {

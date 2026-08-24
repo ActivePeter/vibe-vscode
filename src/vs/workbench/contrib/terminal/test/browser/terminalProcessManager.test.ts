@@ -43,6 +43,7 @@ class TestTerminalChildProcess implements ITerminalChildProcess {
 	onProcessTitleChanged = Event.None;
 	onProcessShellTypeChanged = Event.None;
 	async start(): Promise<undefined> { return undefined; }
+	async detach(): Promise<boolean> { return this.shouldPersist; }
 	shutdown(immediate: boolean): void { }
 	input(data: string): void { }
 	sendSignal(signal: string): void { }
@@ -128,6 +129,20 @@ suite('Workbench - TerminalProcessManager', () => {
 	});
 
 	suite('process persistence', () => {
+		test('detach reports when a persistent backend process was retained', async () => {
+			await manager.createProcess({}, 1, 1, false);
+
+			strictEqual(await manager.detachFromProcess(), true);
+		});
+
+		test('detach reports when a custom PTY was not retained', async () => {
+			await manager.createProcess({
+				customPtyImplementation: () => new TestTerminalChildProcess(false),
+			}, 1, 1, false);
+
+			strictEqual(await manager.detachFromProcess(), false);
+		});
+
 		suite('local', () => {
 			test('regular terminal should persist', async () => {
 				const p = await manager.createProcess({

@@ -6,7 +6,6 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
-import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { ILogicalWorkspaceProjection, ILogicalWorkspaceProjectionContext, LogicalWorkspaceProjectionCoordinator } from '../../../services/logicalWorkspace/browser/logicalWorkspaceProjection.js';
 import { ILogicalWorkspaceService, onDidChangeLogicalWorkspaceStateSlice } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
@@ -44,7 +43,7 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWork
 
 	private handleDisposedTerminal(instance: ITerminalInstance): void {
 		const logicalTerminalId = instance.shellLaunchConfig.logicalTerminalId;
-		if (!logicalTerminalId || instance.exitReason === TerminalExitReason.Shutdown) {
+		if (!logicalTerminalId || instance.processWasDetached) {
 			return;
 		}
 		this.logicalWorkspaceService.unbindTerminal(logicalTerminalId);

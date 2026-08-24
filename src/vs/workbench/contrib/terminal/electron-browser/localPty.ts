@@ -23,7 +23,7 @@ export class LocalPty extends BasePty implements ITerminalChildProcess {
 		return this._proxy.start(this.id);
 	}
 
-	detach(forcePersist?: boolean): Promise<void> {
+	detach(forcePersist?: boolean): Promise<boolean> {
 		return this._proxy.detachFromProcess(this.id, forcePersist);
 	}
 

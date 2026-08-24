@@ -661,4 +661,30 @@ suite('LogicalWorkspaceService', () => {
 			supersededRequestResolved: true,
 		});
 	});
+
+	test('same-target projection feedback queues a refresh without invalidating the active transaction', async () => {
+		const firstStarted = new DeferredPromise<void>();
+		const releaseFirst = new DeferredPromise<void>();
+		const applied: string[] = [];
+		let firstCurrentAfterAsyncBoundary: boolean | undefined;
+		const coordinator = disposables.add(new AsyncProjectionCoordinator<string>('test', async context => {
+			applied.push(context.value);
+			if (applied.length === 1) {
+				await firstStarted.complete();
+				await releaseFirst.p;
+				firstCurrentAfterAsyncBoundary = context.isCurrent();
+			}
+		}, new NullLogService(), (current, next) => current === next));
+
+		const first = coordinator.request('workspace');
+		await firstStarted.p;
+		const refresh = coordinator.request('workspace');
+		await releaseFirst.complete();
+		await Promise.all([first, refresh]);
+
+		assert.deepStrictEqual({ applied, firstCurrentAfterAsyncBoundary }, {
+			applied: ['workspace', 'workspace'],
+			firstCurrentAfterAsyncBoundary: true,
+		});
+	});
 });

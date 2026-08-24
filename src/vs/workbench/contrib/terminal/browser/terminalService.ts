@@ -1377,7 +1377,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 			}
 		} else {
 			const editorOptions = backgroundTerminal.terminalLocationOptions ? this._getEditorOptions(backgroundTerminal.terminalLocationOptions) : this._getEditorOptions(instance.target);
-			this._terminalEditorService.openEditor(instance, editorOptions);
+			await this._terminalEditorService.openEditor(instance, editorOptions);
 		}
 
 		this._onDidChangeInstances.fire();

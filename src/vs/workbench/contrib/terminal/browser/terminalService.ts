@@ -21,7 +21,7 @@ import { IContextKey, IContextKeyService } from '../../../../platform/contextkey
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { ICreateContributedTerminalProfileOptions, IExtensionTerminalProfile, IPtyHostAttachTarget, IRawTerminalInstanceLayoutInfo, IRawTerminalTabLayoutInfo, IShellLaunchConfig, ITerminalBackend, ITerminalLaunchError, ITerminalLogService, ITerminalsLayoutInfo, ITerminalsLayoutInfoById, TerminalExitReason, TerminalLocation, TerminalSettingId, TitleEventSource } from '../../../../platform/terminal/common/terminal.js';
+import { ICreateContributedTerminalProfileOptions, IExtensionTerminalProfile, IPtyHostAttachTarget, IRawTerminalInstanceLayoutInfo, IRawTerminalTabLayoutInfo, IShellLaunchConfig, ITerminalBackend, ITerminalCreationContext, ITerminalLaunchError, ITerminalLogService, ITerminalsLayoutInfo, ITerminalsLayoutInfoById, TerminalExitReason, TerminalLocation, TerminalSettingId, TitleEventSource } from '../../../../platform/terminal/common/terminal.js';
 import { formatMessageForTerminal } from '../../../../platform/terminal/common/terminalStrings.js';
 import { iconForeground } from '../../../../platform/theme/common/colorRegistry.js';
 import { getIconRegistry } from '../../../../platform/theme/common/iconRegistry.js';
@@ -238,6 +238,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async showProfileQuickPick(type: 'setDefault' | 'createInstance', cwd?: string | URI): Promise<ITerminalInstance | undefined> {
+		const creationContext = this._captureTerminalCreationContext();
 		const quickPick = this._instantiationService.createInstance(TerminalProfileQuickpick);
 		const result = await quickPick.showAndGetResult(type);
 		if (!result) {
@@ -258,14 +259,15 @@ export class TerminalService extends Disposable implements ITerminalService {
 					color: result.config.options?.color,
 					location: !!(keyMods?.alt && activeInstance) ? { splitActiveTerminal: true } : defaultLocation,
 					titleTemplate: result.config.titleTemplate,
+					creationContext: this._withLogicalTerminalIdentity(creationContext),
 				});
 				return;
 			} else if (result.config && hasKey(result.config, { profileName: true })) {
 				if (keyMods?.alt && activeInstance) {
 					// create split, only valid if there's an active instance
-					instance = await this.createTerminal({ location: { parentTerminal: activeInstance }, config: result.config, cwd });
+					instance = await this.createTerminal({ location: { parentTerminal: activeInstance }, config: result.config, cwd, creationContext });
 				} else {
-					instance = await this.createTerminal({ location: defaultLocation, config: result.config, cwd });
+					instance = await this.createTerminal({ location: defaultLocation, config: result.config, cwd, creationContext });
 				}
 			}
 
@@ -977,6 +979,8 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async createTerminal(options?: ICreateTerminalOptions): Promise<ITerminalInstance> {
+		const creationContext = this._captureTerminalCreationContext(options?.creationContext);
+
 		// Await the initialization of available profiles as long as this is not a pty terminal or a
 		// local terminal in a remote workspace as profile won't be used in those cases and these
 		// terminals need to be launched before remote connections are established.
@@ -1021,6 +1025,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		// If it's a custom pty implementation, we did not await the profiles ready, so
 		// we cannot launch the contributed profile and doing so would cause an error
 		if (!shellLaunchConfig.customPtyImplementation && contributedProfile) {
+			const delegatedCreationContext = this._withLogicalTerminalIdentity(creationContext);
 			const resolvedLocation = await this.resolveLocation(options?.location);
 			let location: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean } | undefined;
 			if (splitActiveTerminal) {
@@ -1034,6 +1039,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 				location,
 				cwd: shellLaunchConfig.cwd,
 				titleTemplate: contributedProfile.titleTemplate,
+				creationContext: delegatedCreationContext,
 			});
 			const instanceHost = resolvedLocation === TerminalLocation.Editor ? this._terminalEditorService : this._terminalGroupService;
 			// TODO@meganrogge: This returns undefined in the remote & web smoke tests but the function
@@ -1045,6 +1051,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 
 		if (!shellLaunchConfig.customPtyImplementation && !this.isProcessSupportRegistered) {
+			const delegatedCreationContext = this._withLogicalTerminalIdentity(creationContext);
 			const resolvedLocation = await this.resolveLocation(options?.location);
 			let location: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean } | undefined;
 			if (splitActiveTerminal) {
@@ -1061,6 +1068,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 					location,
 					cwd: shellLaunchConfig.cwd,
 					titleTemplate: fallbackProfile.titleTemplate,
+					creationContext: delegatedCreationContext,
 				});
 				const instance = instanceHost.instances[instanceCount];
 				if (!instance) {
@@ -1074,12 +1082,13 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 
 		await this._logicalWorkspaceService.whenReady;
-		this._prepareLogicalWorkspaceTerminal(shellLaunchConfig);
+		const logicalTerminalId = this._prepareLogicalWorkspaceTerminal(shellLaunchConfig, creationContext);
 		this._evaluateLocalCwd(shellLaunchConfig);
 		const location = await this.resolveLocation(options?.location) || this._terminalConfigurationService.defaultLocation;
 
 		if (shellLaunchConfig.hideFromUser) {
 			const instance = this._terminalInstanceService.createInstance(shellLaunchConfig, location);
+			this._commitLogicalWorkspaceTerminal(creationContext, logicalTerminalId);
 			this._backgroundedTerminalInstances.push({ instance, terminalLocationOptions: options?.location });
 			this._backgroundedTerminalDisposables.set(instance.instanceId, instance.onDisposed(instance => this._onBackgroundTerminalDisposed(instance)));
 			this._onDidChangeInstances.fire();
@@ -1095,6 +1104,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		} else {
 			instance = this._createTerminal(shellLaunchConfig, location, options);
 		}
+		this._commitLogicalWorkspaceTerminal(creationContext, logicalTerminalId);
 		if (instance.shellType) {
 			this._extensionService.activateByEvent(`onTerminal:${instance.shellType}`);
 		}
@@ -1102,23 +1112,38 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return instance;
 	}
 
-	private _prepareLogicalWorkspaceTerminal(shellLaunchConfig: IShellLaunchConfig): void {
+	private _captureTerminalCreationContext(context?: ITerminalCreationContext): ITerminalCreationContext {
+		return {
+			logicalWorkspaceId: context?.logicalWorkspaceId ?? this._logicalWorkspaceService.activeWorkspace.id,
+			logicalTerminalId: context?.logicalTerminalId,
+		};
+	}
+
+	private _withLogicalTerminalIdentity(context: ITerminalCreationContext): ITerminalCreationContext {
+		return context.logicalTerminalId ? context : { ...context, logicalTerminalId: generateUuid() };
+	}
+
+	private _prepareLogicalWorkspaceTerminal(shellLaunchConfig: IShellLaunchConfig, context: ITerminalCreationContext): string | undefined {
 		const attachTarget = shellLaunchConfig.attachPersistentProcess;
-		if (!shellLaunchConfig.logicalTerminalId && attachTarget?.logicalTerminalId) {
-			shellLaunchConfig.logicalTerminalId = attachTarget.logicalTerminalId;
-		}
+		shellLaunchConfig.logicalTerminalId ??= attachTarget?.logicalTerminalId ?? context.logicalTerminalId;
 
 		const isExplicitlyManaged = shellLaunchConfig.logicalTerminalId !== undefined;
 		const isRestoredUserTerminal = attachTarget !== undefined && !attachTarget.hideFromUser && !attachTarget.isFeatureTerminal;
 		const isNewUserTerminal = attachTarget === undefined && !shellLaunchConfig.hideFromUser && !shellLaunchConfig.isFeatureTerminal;
 		if (!isExplicitlyManaged && !isRestoredUserTerminal && !isNewUserTerminal) {
-			return;
+			return undefined;
 		}
 
 		const logicalTerminalId = shellLaunchConfig.logicalTerminalId ?? generateUuid();
 		shellLaunchConfig.logicalTerminalId = logicalTerminalId;
 		shellLaunchConfig.forcePersist = true;
-		this._logicalWorkspaceService.bindTerminal(this._logicalWorkspaceService.activeWorkspace.id, logicalTerminalId);
+		return logicalTerminalId;
+	}
+
+	private _commitLogicalWorkspaceTerminal(context: ITerminalCreationContext, logicalTerminalId: string | undefined): void {
+		if (logicalTerminalId) {
+			this._logicalWorkspaceService.bindTerminal(context.logicalWorkspaceId, logicalTerminalId);
+		}
 	}
 
 	async createAndFocusTerminal(options?: ICreateTerminalOptions): Promise<ITerminalInstance> {

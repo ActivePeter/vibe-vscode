@@ -334,7 +334,7 @@ export interface IPtyService {
 		workspaceName: string
 	): Promise<number>;
 	attachToProcess(id: number): Promise<void>;
-	detachFromProcess(id: number, forcePersist?: boolean): Promise<void>;
+	detachFromProcess(id: number, forcePersist?: boolean): Promise<boolean>;
 	shutdownAll(): Promise<void>;
 
 	/**
@@ -837,8 +837,9 @@ export interface ITerminalChildProcess {
 	/**
 	 * Detach the process from the UI and await reconnect.
 	 * @param forcePersist Whether to force the process to persist if it supports persistence.
+	 * @returns Whether the backend retained the process for a later attachment.
 	 */
-	detach?(forcePersist?: boolean): Promise<void>;
+	detach?(forcePersist?: boolean): Promise<boolean>;
 
 	/**
 	 * Frees the port and kills the process

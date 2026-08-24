@@ -167,6 +167,49 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 			completedOpens: ['first', 'second'],
 		});
 	});
+
+	test('retains ownership only when disposal actually detached a revivable process', () => {
+		const store = disposables.add(new DisposableStore());
+		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
+		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		const workspaceId = logicalWorkspaceService.activeWorkspace.id;
+		const changedInstances = store.add(new Emitter<void>());
+		const disposedInstances = store.add(new Emitter<ITerminalInstance>());
+		const terminalService = new class extends mock<ITerminalService>() {
+			override readonly onDidChangeInstances = changedInstances.event;
+			override readonly onDidDisposeInstance = disposedInstances.event;
+			override readonly whenConnected = Promise.resolve();
+			override readonly foregroundInstances = [];
+			override readonly instances = [];
+		};
+		logicalWorkspaceService.bindTerminal(workspaceId, 'detached');
+		logicalWorkspaceService.bindTerminal(workspaceId, 'closed');
+		store.add(new LogicalWorkspaceTerminalAdapter(
+			logicalWorkspaceService,
+			terminalService,
+			store.add(new TestStorageService()),
+			new NullLogService(),
+		));
+
+		disposedInstances.fire({
+			shellLaunchConfig: { logicalTerminalId: 'detached' },
+			exitReason: TerminalExitReason.Shutdown,
+			processWasDetached: true,
+		} satisfies Partial<ITerminalInstance> as ITerminalInstance);
+		disposedInstances.fire({
+			shellLaunchConfig: { logicalTerminalId: 'closed' },
+			exitReason: TerminalExitReason.Shutdown,
+			processWasDetached: false,
+		} satisfies Partial<ITerminalInstance> as ITerminalInstance);
+
+		assert.deepStrictEqual({
+			detached: logicalWorkspaceService.workspaceContainsTerminal(workspaceId, 'detached'),
+			closed: logicalWorkspaceService.workspaceContainsTerminal(workspaceId, 'closed'),
+		}, {
+			detached: true,
+			closed: false,
+		});
+	});
 });
 
 function createShellLayout(): ILogicalWorkspaceShellLayout {

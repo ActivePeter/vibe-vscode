@@ -1085,6 +1085,9 @@ export interface ITerminalInstance extends IBaseTerminalInstance {
 	 */
 	readonly exitReason: TerminalExitReason | undefined;
 
+	/** Whether disposal detached a process that the backend retained for a later attachment. */
+	readonly processWasDetached: boolean;
+
 	/**
 	 * The xterm.js instance for this terminal.
 	 */

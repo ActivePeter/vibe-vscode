@@ -106,6 +106,8 @@ import { IMcpGalleryManifestService } from '../../platform/mcp/common/mcpGallery
 import { McpGalleryManifestIPCService } from '../../platform/mcp/common/mcpGalleryManifestServiceIpc.js';
 import { SANDBOX_HELPER_CHANNEL_NAME, SandboxHelperChannel } from '../../platform/sandbox/common/sandboxHelperIpc.js';
 import { SandboxHelperService } from '../../platform/sandbox/node/sandboxHelper.js';
+import { REMOTE_LOGICAL_WORKSPACE_STATE_CHANNEL_NAME } from '../../workbench/services/logicalWorkspace/common/logicalWorkspaceRemote.js';
+import { RemoteLogicalWorkspaceStateChannel, RemoteLogicalWorkspaceStateStorage } from './logicalWorkspaceStateChannel.js';
 
 const eventPrefix = 'monacoworkbench';
 
@@ -146,6 +148,12 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 	const fileService = disposables.add(new FileService(logService));
 	services.set(IFileService, fileService);
 	fileService.registerProvider(Schemas.file, disposables.add(new DiskFileSystemProvider(logService)));
+
+	const logicalWorkspaceStateStorage = disposables.add(new RemoteLogicalWorkspaceStateStorage(
+		path.join(environmentService.appSettingsHome.with({ scheme: Schemas.file }).fsPath, 'globalStorage', 'vibe-vscode', 'logical-workspaces.vscdb'),
+		logService,
+	));
+	socketServer.registerChannel(REMOTE_LOGICAL_WORKSPACE_STATE_CHANNEL_NAME, new RemoteLogicalWorkspaceStateChannel(logicalWorkspaceStateStorage));
 
 	// URI Identity
 	const uriIdentityService = new UriIdentityService(fileService);

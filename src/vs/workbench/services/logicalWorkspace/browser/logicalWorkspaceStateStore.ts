@@ -3,48 +3,38 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { BroadcastDataChannel } from '../../../../base/browser/broadcast.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { generateUuid } from '../../../../base/common/uuid.js';
+import { equals } from '../../../../base/common/objects.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { PersistentConnectionEventType } from '../../../../platform/remote/common/remoteAgentConnection.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IRemoteAgentService } from '../../remote/common/remoteAgentService.js';
+import { applyLogicalWorkspaceMutation, ILogicalWorkspaceMutation, ILogicalWorkspaceSharedState, parseLogicalWorkspaceSharedState } from '../common/logicalWorkspace.js';
+import { REMOTE_LOGICAL_WORKSPACE_STATE_CHANNEL_NAME } from '../common/logicalWorkspaceRemote.js';
+import { RemoteLogicalWorkspaceStateClient } from './logicalWorkspaceRemoteStateClient.js';
 
 export const LOGICAL_WORKSPACE_SHARED_STATE_KEY = 'workbench.logicalWorkspace.sharedState.v2';
 const LOGICAL_WORKSPACE_ACTIVE_SESSION_KEY = 'vibe.logicalWorkspace.activeWorkspaceId';
 const LEGACY_LOGICAL_WORKSPACE_ACTIVE_SESSION_KEY = 'workbench.logicalWorkspace.activeWorkspace.v1:';
-const LOGICAL_WORKSPACE_SHARED_STATE_CHANNEL = 'vibe.logicalWorkspace.sharedState';
-
-interface ILogicalWorkspaceSharedStateBroadcast {
-	readonly physicalWorkspaceId: string;
-	readonly storedState: IStoredLogicalWorkspaceSharedState;
-}
-
-interface ILogicalWorkspaceStateRevision {
-	readonly counter: number;
-	readonly source: string;
-}
-
-interface IStoredLogicalWorkspaceSharedState {
-	readonly storageVersion: 1;
-	readonly revision: ILogicalWorkspaceStateRevision;
-	readonly state: object;
-}
 
 export const ILogicalWorkspaceStateStore = createDecorator<ILogicalWorkspaceStateStore>('logicalWorkspaceStateStore');
 
 /**
- * Separates shared Workspace state from the current page's active Workspace selection.
+ * Keeps shared Logical Workspace state behind one authoritative backend while the current
+ * Workspace selection remains local to each browser page.
  */
 export interface ILogicalWorkspaceStateStore {
 	readonly _serviceBrand: undefined;
 	readonly onDidChangeSharedState: Event<void>;
 
 	readSharedState(): unknown;
-	writeSharedState(state: object): void;
+	initializeSharedState(state: ILogicalWorkspaceSharedState): Promise<ILogicalWorkspaceSharedState>;
+	applyMutation(mutation: ILogicalWorkspaceMutation): void;
 	readActiveWorkspaceId(physicalWorkspaceId: string): string | undefined;
 	writeActiveWorkspaceId(physicalWorkspaceId: string, workspaceId: string): void;
 }
@@ -58,43 +48,85 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 
 	private readonly fallbackSessionState = new Map<string, string>();
 	private readonly physicalWorkspaceId: string;
-	private readonly sourceId = generateUuid();
-	private readonly sharedStateChannel: BroadcastDataChannel<unknown>;
+	private readonly remoteClient: RemoteLogicalWorkspaceStateClient | undefined;
+	private readonly localPendingMutations: ILogicalWorkspaceMutation[] = [];
 	private sharedState: unknown;
-	private revision: ILogicalWorkspaceStateRevision | undefined;
-	private revisionCounter = 0;
+	private localInitialized = false;
 
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
 		@IWorkspaceContextService workspaceContextService: IWorkspaceContextService,
+		@IRemoteAgentService remoteAgentService: IRemoteAgentService,
+		@ILogService logService: ILogService,
 	) {
 		super();
 		this.physicalWorkspaceId = workspaceContextService.getWorkspace().id;
-		const storedState = this.parseStoredState(storageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE));
-		this.sharedState = storedState?.state;
-		this.revision = storedState?.revision;
-		this.revisionCounter = storedState?.revision?.counter ?? 0;
-		this.sharedStateChannel = this._register(new BroadcastDataChannel<unknown>(`${LOGICAL_WORKSPACE_SHARED_STATE_CHANNEL}.${this.physicalWorkspaceId}`));
-		this._register(storageService.onDidChangeValue(StorageScope.WORKSPACE, LOGICAL_WORKSPACE_SHARED_STATE_KEY, this._store)(() => this.acceptStorageState()));
-		this._register(this.sharedStateChannel.onDidReceiveData(data => this.acceptBroadcastState(data)));
+		this.sharedState = this.readLegacyBrowserState();
+
+		const connection = remoteAgentService.getConnection();
+		if (connection) {
+			this.remoteClient = this._register(new RemoteLogicalWorkspaceStateClient(
+				this.physicalWorkspaceId,
+				connection.getChannel(REMOTE_LOGICAL_WORKSPACE_STATE_CHANNEL_NAME),
+				logService,
+			));
+			this._register(this.remoteClient.onDidChangeState(state => this.acceptSharedState(state)));
+			this._register(connection.onDidStateChange(event => {
+				if (event.type === PersistentConnectionEventType.ConnectionGain) {
+					this.remoteClient?.requestRefresh();
+				}
+			}));
+		}
 	}
 
 	readSharedState(): unknown {
 		return this.sharedState;
 	}
 
-	writeSharedState(state: object): void {
-		const revision = { counter: ++this.revisionCounter, source: this.sourceId };
-		const storedState: IStoredLogicalWorkspaceSharedState = { storageVersion: 1, revision, state };
-		this.sharedState = state;
-		this.revision = revision;
-		this.storageService.store(LOGICAL_WORKSPACE_SHARED_STATE_KEY, JSON.stringify(storedState), StorageScope.WORKSPACE, StorageTarget.MACHINE);
-		const broadcast: ILogicalWorkspaceSharedStateBroadcast = { physicalWorkspaceId: this.physicalWorkspaceId, storedState };
-		try {
-			this.sharedStateChannel.postData(broadcast);
-		} catch {
-			// Workspace storage remains authoritative if browser cross-page messaging is unavailable.
+	async initializeSharedState(state: ILogicalWorkspaceSharedState): Promise<ILogicalWorkspaceSharedState> {
+		if (this.remoteClient) {
+			await this.remoteClient.initialize(state);
+			const remoteState = this.remoteClient.state;
+			if (!remoteState) {
+				throw new Error('The remote Logical Workspace state did not initialize');
+			}
+			this.acceptSharedState(remoteState);
+			this.storageService.remove(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE);
+			return remoteState;
 		}
+
+		let localState = parseLogicalWorkspaceSharedState(this.sharedState) ?? state;
+		for (const mutation of this.localPendingMutations) {
+			localState = applyLogicalWorkspaceMutation(localState, mutation);
+		}
+		this.localPendingMutations.length = 0;
+		this.localInitialized = true;
+		this.sharedState = localState;
+		this.persistLocalState(localState);
+		return localState;
+	}
+
+	applyMutation(mutation: ILogicalWorkspaceMutation): void {
+		if (this.remoteClient) {
+			this.remoteClient.mutate(mutation);
+			const projectedState = this.remoteClient.state;
+			if (projectedState) {
+				this.sharedState = projectedState;
+			}
+			return;
+		}
+
+		const state = parseLogicalWorkspaceSharedState(this.sharedState);
+		if (!this.localInitialized || !state) {
+			this.localPendingMutations.push(mutation);
+			return;
+		}
+		const next = applyLogicalWorkspaceMutation(state, mutation);
+		if (next === state) {
+			return;
+		}
+		this.sharedState = next;
+		this.persistLocalState(next);
 	}
 
 	readActiveWorkspaceId(physicalWorkspaceId: string): string | undefined {
@@ -119,112 +151,40 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 		}
 	}
 
+	private acceptSharedState(state: ILogicalWorkspaceSharedState): void {
+		if (equals(this.sharedState, state)) {
+			return;
+		}
+		this.sharedState = state;
+		this._onDidChangeSharedState.fire();
+	}
+
+	private persistLocalState(state: ILogicalWorkspaceSharedState): void {
+		this.storageService.store(LOGICAL_WORKSPACE_SHARED_STATE_KEY, JSON.stringify(state), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	private readLegacyBrowserState(): unknown {
+		const raw = this.storageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE);
+		if (!raw) {
+			return undefined;
+		}
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			if (parsed && typeof parsed === 'object' && (parsed as Record<string, unknown>).storageVersion === 1) {
+				return (parsed as Record<string, unknown>).state;
+			}
+			return parsed;
+		} catch {
+			return undefined;
+		}
+	}
+
 	private activeWorkspaceKey(physicalWorkspaceId: string): string {
 		return `${LOGICAL_WORKSPACE_ACTIVE_SESSION_KEY}.${physicalWorkspaceId}`;
 	}
 
 	private legacyActiveWorkspaceKey(physicalWorkspaceId: string): string {
 		return `${LEGACY_LOGICAL_WORKSPACE_ACTIVE_SESSION_KEY}${physicalWorkspaceId}`;
-	}
-
-	private acceptBroadcastState(data: unknown): void {
-		if (!data || typeof data !== 'object') {
-			return;
-		}
-		const broadcast = data as Record<string, unknown>;
-		if (broadcast.physicalWorkspaceId !== this.physicalWorkspaceId) {
-			return;
-		}
-		const storedState = this.parseStoredStateEnvelope(broadcast.storedState);
-		if (!storedState) {
-			return;
-		}
-
-		let serializedState: string | undefined;
-		try {
-			serializedState = JSON.stringify(storedState);
-		} catch {
-			return;
-		}
-		if (serializedState === undefined || !this.acceptRevisionedState(storedState)) {
-			return;
-		}
-
-		if (this.storageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE) !== serializedState) {
-			this.storageService.storeAll([{
-				key: LOGICAL_WORKSPACE_SHARED_STATE_KEY,
-				value: serializedState,
-				scope: StorageScope.WORKSPACE,
-				target: StorageTarget.MACHINE,
-			}], true);
-		}
-		this._onDidChangeSharedState.fire();
-	}
-
-	private acceptStorageState(): void {
-		const storedState = this.parseStoredState(this.storageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE));
-		if (!storedState) {
-			return;
-		}
-		if (storedState.revision) {
-			if (!this.acceptRevisionedState(storedState)) {
-				return;
-			}
-		} else if (this.revision) {
-			return;
-		} else {
-			this.sharedState = storedState.state;
-		}
-		this._onDidChangeSharedState.fire();
-	}
-
-	private acceptRevisionedState(storedState: IStoredLogicalWorkspaceSharedState): boolean {
-		this.revisionCounter = Math.max(this.revisionCounter, storedState.revision.counter);
-		if (this.revision && this.compareRevisions(storedState.revision, this.revision) <= 0) {
-			return false;
-		}
-		this.revision = storedState.revision;
-		this.sharedState = storedState.state;
-		return true;
-	}
-
-	private compareRevisions(first: ILogicalWorkspaceStateRevision, second: ILogicalWorkspaceStateRevision): number {
-		const counterDifference = first.counter - second.counter;
-		if (counterDifference !== 0 || first.source === second.source) {
-			return counterDifference;
-		}
-		return first.source < second.source ? -1 : 1;
-	}
-
-	private parseStoredState(raw: string | undefined): { readonly state: unknown; readonly revision?: undefined } | IStoredLogicalWorkspaceSharedState | undefined {
-		if (!raw) {
-			return undefined;
-		}
-		try {
-			const parsed: unknown = JSON.parse(raw);
-			return this.parseStoredStateEnvelope(parsed) ?? { state: parsed };
-		} catch {
-			return undefined;
-		}
-	}
-
-	private parseStoredStateEnvelope(raw: unknown): IStoredLogicalWorkspaceSharedState | undefined {
-		if (!raw || typeof raw !== 'object') {
-			return undefined;
-		}
-		const candidate = raw as Record<string, unknown>;
-		if (candidate.storageVersion !== 1 || !candidate.revision || typeof candidate.revision !== 'object' || !candidate.state || typeof candidate.state !== 'object') {
-			return undefined;
-		}
-		const revision = candidate.revision as Record<string, unknown>;
-		if (typeof revision.counter !== 'number' || !Number.isSafeInteger(revision.counter) || revision.counter < 0 || typeof revision.source !== 'string' || !revision.source) {
-			return undefined;
-		}
-		return {
-			storageVersion: 1,
-			revision: { counter: revision.counter, source: revision.source },
-			state: candidate.state,
-		};
 	}
 }
 

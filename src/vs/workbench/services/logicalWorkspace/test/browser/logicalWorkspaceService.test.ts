@@ -7,16 +7,19 @@ import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { StorageScope } from '../../../../../platform/storage/common/storage.js';
 import { WorkbenchState } from '../../../../../platform/workspace/common/workspace.js';
 import { TestContextService, TestStorageService } from '../../../../test/common/workbenchTestServices.js';
 import { AsyncProjectionCoordinator, ILogicalWorkspaceProjection, LogicalWorkspaceProjectionCoordinator } from '../../browser/logicalWorkspaceProjection.js';
 import { LogicalWorkspaceService } from '../../browser/logicalWorkspaceService.js';
-import { ILogicalWorkspaceStateStore, LogicalWorkspaceStateStore, LOGICAL_WORKSPACE_SHARED_STATE_KEY } from '../../browser/logicalWorkspaceStateStore.js';
-import { ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor, onDidChangeLogicalWorkspaceStateSlice } from '../../common/logicalWorkspace.js';
+import { RemoteLogicalWorkspaceStateClient } from '../../browser/logicalWorkspaceRemoteStateClient.js';
+import { ILogicalWorkspaceStateStore } from '../../browser/logicalWorkspaceStateStore.js';
+import { applyLogicalWorkspaceMutation, ILogicalWorkspaceMutation, ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor, LogicalWorkspaceMutationType, onDidChangeLogicalWorkspaceStateSlice, parseLogicalWorkspaceMutation, parseLogicalWorkspaceSharedState } from '../../common/logicalWorkspace.js';
+import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, RemoteLogicalWorkspaceStateErrorCode, RemoteLogicalWorkspaceStateEvent } from '../../common/logicalWorkspaceRemote.js';
 
 class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorkspaceStateStore {
 	declare readonly _serviceBrand: undefined;
@@ -32,9 +35,20 @@ class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorks
 		return this.sharedState;
 	}
 
-	writeSharedState(state: object): void {
+	async initializeSharedState(state: ILogicalWorkspaceSharedState): Promise<ILogicalWorkspaceSharedState> {
 		this.sharedState = state;
 		this.writeCount++;
+		return state;
+	}
+
+	applyMutation(mutation: ILogicalWorkspaceMutation): void {
+		const state = this.sharedState as ILogicalWorkspaceSharedState | undefined;
+		if (!state) {
+			throw new Error('Test Logical Workspace state was not initialized');
+		}
+		this.sharedState = applyLogicalWorkspaceMutation(state, mutation);
+		this.writeCount++;
+		this._onDidChangeSharedState.fire();
 	}
 
 	readActiveWorkspaceId(physicalWorkspaceId: string): string | undefined {
@@ -69,6 +83,188 @@ class DeferredWorkspaceContextService extends TestContextService {
 	}
 }
 
+class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
+
+	private readonly _onDidChange = this._register(new Emitter<{ readonly physicalWorkspaceId: string; readonly snapshot: IRemoteLogicalWorkspaceStateSnapshot }>());
+	readonly onDidChange = this._onDidChange.event;
+	private snapshots = new Map<string, IRemoteLogicalWorkspaceStateSnapshot>();
+	private nextMutationResponseGate: DeferredPromise<void> | undefined;
+	private failNextMutationRequest = false;
+
+	delayNextMutationResponse(): DeferredPromise<void> {
+		this.nextMutationResponseGate = new DeferredPromise<void>();
+		return this.nextMutationResponseGate;
+	}
+
+	failNextMutation(): void {
+		this.failNextMutationRequest = true;
+	}
+
+	async call<T>(command: string, arg?: unknown): Promise<T> {
+		if (!arg || typeof arg !== 'object') {
+			return this.error('Invalid request') as T;
+		}
+		const request = arg as Record<string, unknown>;
+		const physicalWorkspaceId = request.physicalWorkspaceId;
+		if (typeof physicalWorkspaceId !== 'string' || !physicalWorkspaceId) {
+			return this.error('Invalid physical Workspace ID') as T;
+		}
+
+		switch (command) {
+			case RemoteLogicalWorkspaceStateCommand.Initialize: {
+				const state = parseLogicalWorkspaceSharedState(request.state);
+				if (!state) {
+					return this.error('Invalid initial state') as T;
+				}
+				let snapshot = this.snapshots.get(physicalWorkspaceId);
+				if (!snapshot) {
+					snapshot = { revision: 1, state };
+					this.snapshots.set(physicalWorkspaceId, snapshot);
+					this._onDidChange.fire({ physicalWorkspaceId, snapshot });
+				}
+				return this.ok(snapshot) as T;
+			}
+			case RemoteLogicalWorkspaceStateCommand.Read:
+				return this.ok(this.snapshots.get(physicalWorkspaceId)) as T;
+			case RemoteLogicalWorkspaceStateCommand.Mutate: {
+				if (this.failNextMutationRequest) {
+					this.failNextMutationRequest = false;
+					throw new Error('Transient transport failure');
+				}
+				const mutation = parseLogicalWorkspaceMutation(request.mutation);
+				const current = this.snapshots.get(physicalWorkspaceId);
+				if (!mutation || !current) {
+					return this.error('Invalid mutation') as T;
+				}
+				const state = applyLogicalWorkspaceMutation(current.state, mutation);
+				if (state === current.state) {
+					return this.ok(current) as T;
+				}
+				const snapshot = { revision: current.revision + 1, state };
+				this.snapshots.set(physicalWorkspaceId, snapshot);
+				this._onDidChange.fire({ physicalWorkspaceId, snapshot });
+				if (this.nextMutationResponseGate) {
+					const gate = this.nextMutationResponseGate;
+					this.nextMutationResponseGate = undefined;
+					await gate.p;
+				}
+				return this.ok(snapshot) as T;
+			}
+			default:
+				return this.error('Invalid command') as T;
+		}
+	}
+
+	listen<T>(event: string, arg?: unknown): Event<T> {
+		if (event !== RemoteLogicalWorkspaceStateEvent.DidChange || !arg || typeof arg !== 'object') {
+			return Event.None;
+		}
+		const physicalWorkspaceId = (arg as Record<string, unknown>).physicalWorkspaceId;
+		return Event.map(
+			Event.filter(this.onDidChange, change => change.physicalWorkspaceId === physicalWorkspaceId),
+			change => change.snapshot,
+		) as Event<T>;
+	}
+
+	private ok<T>(value: T): IRemoteLogicalWorkspaceStateResult<T> {
+		return { status: 'ok', value };
+	}
+
+	private error(message: string): IRemoteLogicalWorkspaceStateResult<never> {
+		return { status: 'error', code: RemoteLogicalWorkspaceStateErrorCode.InvalidRequest, message };
+	}
+}
+
+suite('RemoteLogicalWorkspaceStateClient', () => {
+	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	function state(id: string): ILogicalWorkspaceSharedState {
+		return { schemaVersion: 2, workspaces: [{ id, name: id, terminalIds: [], shellLayout: undefined }] };
+	}
+
+	test('keeps a pre-existing revision-one server state during new-page initialization', async () => {
+		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
+		const existing = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService()));
+		await existing.initialize(state('existing'));
+
+		const newPage = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService()));
+		await newPage.initialize(state('new-page-default'));
+
+		assert.deepStrictEqual({ existing: existing.state, newPage: newPage.state }, {
+			existing: state('existing'),
+			newPage: state('existing'),
+		});
+	});
+
+	test('projects concurrent semantic mutations without whole-snapshot loss', async () => {
+		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
+		const first = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService()));
+		const second = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService()));
+		await Promise.all([first.initialize(state('workspace')), second.initialize(state('other-default'))]);
+		const shellLayout: ILogicalWorkspaceShellLayout = {
+			primarySideBar: { visible: true, width: 280, height: 800, activeCompositeId: 'workbench.view.explorer' },
+			panel: { visible: false, width: 1200, height: 260, activeCompositeId: 'workbench.panel.terminal' },
+			auxiliaryBar: { visible: false, width: 300, height: 800, activeCompositeId: '' },
+		};
+		const committed = Event.toPromise(Event.filter(channel.onDidChange, event => event.snapshot.revision === 3));
+
+		first.mutate({ type: LogicalWorkspaceMutationType.BindTerminal, workspaceId: 'workspace', logicalTerminalId: 'terminal' });
+		second.mutate({ type: LogicalWorkspaceMutationType.SetShellLayout, workspaceId: 'workspace', shellLayout });
+		await committed;
+		await timeout(0);
+
+		const expected = {
+			schemaVersion: 2,
+			workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: ['terminal'], shellLayout }],
+		};
+		assert.deepStrictEqual({ first: first.state, second: second.state }, { first: expected, second: expected });
+	});
+
+	test('drops an acknowledged optimistic mutation behind a newer server event', async () => {
+		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
+		const first = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService()));
+		const second = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService()));
+		await Promise.all([first.initialize(state('workspace')), second.initialize(state('workspace'))]);
+		const redLayout: ILogicalWorkspaceShellLayout = {
+			primarySideBar: { visible: true, width: 280, height: 800, activeCompositeId: 'red' },
+			panel: { visible: false, width: 1200, height: 260, activeCompositeId: '' },
+			auxiliaryBar: { visible: false, width: 300, height: 800, activeCompositeId: '' },
+		};
+		const blueLayout: ILogicalWorkspaceShellLayout = {
+			...redLayout,
+			primarySideBar: { ...redLayout.primarySideBar, activeCompositeId: 'blue' },
+		};
+		const delayedResponse = channel.delayNextMutationResponse();
+		const firstCommitted = Event.toPromise(Event.filter(channel.onDidChange, event => event.snapshot.revision === 2));
+		first.mutate({ type: LogicalWorkspaceMutationType.SetShellLayout, workspaceId: 'workspace', shellLayout: redLayout });
+		await firstCommitted;
+		const secondCommitted = Event.toPromise(Event.filter(channel.onDidChange, event => event.snapshot.revision === 3));
+		second.mutate({ type: LogicalWorkspaceMutationType.SetShellLayout, workspaceId: 'workspace', shellLayout: blueLayout });
+		await secondCommitted;
+		await delayedResponse.complete();
+		await timeout(0);
+
+		assert.deepStrictEqual(first.state?.workspaces[0].shellLayout, blueLayout);
+	});
+
+	test('keeps an idempotent mutation queued across a transport retry', async () => {
+		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
+		const client = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService(), [0]));
+		await client.initialize(state('workspace'));
+		channel.failNextMutation();
+		const committed = Event.toPromise(Event.filter(channel.onDidChange, event => event.snapshot.revision === 2));
+
+		client.mutate({ type: LogicalWorkspaceMutationType.BindTerminal, workspaceId: 'workspace', logicalTerminalId: 'terminal' });
+		await committed;
+		await timeout(0);
+
+		assert.deepStrictEqual(client.state, {
+			schemaVersion: 2,
+			workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: ['terminal'], shellLayout: undefined }],
+		});
+	});
+});
+
 suite('LogicalWorkspaceService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -87,49 +283,6 @@ suite('LogicalWorkspaceService', () => {
 	function createService(store = stateStore): LogicalWorkspaceService {
 		return disposables.add(new LogicalWorkspaceService(storageService, contextService, store, configurationService));
 	}
-
-	test('stores shared state internally and broadcasts it to another page', async () => {
-		const receiverStorageService = disposables.add(new TestStorageService());
-		const sourceStore = disposables.add(new LogicalWorkspaceStateStore(storageService, contextService));
-		const receiverStore = disposables.add(new LogicalWorkspaceStateStore(receiverStorageService, contextService));
-		const state = { schemaVersion: 2, workspaces: [{ id: 'shared' }] };
-		const receiverChanged = Event.toPromise(receiverStore.onDidChangeSharedState);
-
-		sourceStore.writeSharedState(state);
-		await receiverChanged;
-
-		assert.deepStrictEqual({
-			sourceKeys: storageService.keys(StorageScope.WORKSPACE, StorageTarget.MACHINE),
-			receiverKeys: receiverStorageService.keys(StorageScope.WORKSPACE, StorageTarget.MACHINE),
-			sourceState: sourceStore.readSharedState(),
-			receiverState: receiverStore.readSharedState(),
-		}, {
-			sourceKeys: [LOGICAL_WORKSPACE_SHARED_STATE_KEY],
-			receiverKeys: [LOGICAL_WORKSPACE_SHARED_STATE_KEY],
-			sourceState: state,
-			receiverState: state,
-		});
-	});
-
-	test('converges concurrent page writes on one revision winner', async () => {
-		const firstStorageService = disposables.add(new TestStorageService());
-		const secondStorageService = disposables.add(new TestStorageService());
-		const firstStore = disposables.add(new LogicalWorkspaceStateStore(firstStorageService, contextService));
-		const secondStore = disposables.add(new LogicalWorkspaceStateStore(secondStorageService, contextService));
-		const converged = Event.toPromise(Event.any(firstStore.onDidChangeSharedState, secondStore.onDidChangeSharedState));
-
-		firstStore.writeSharedState({ schemaVersion: 2, workspaces: [{ id: 'first' }] });
-		secondStore.writeSharedState({ schemaVersion: 2, workspaces: [{ id: 'second' }] });
-		await converged;
-
-		assert.deepStrictEqual({
-			firstState: firstStore.readSharedState(),
-			firstStoredValue: firstStorageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE),
-		}, {
-			firstState: secondStore.readSharedState(),
-			firstStoredValue: secondStorageService.get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE),
-		});
-	});
 
 	test('announces activation before changing the active workspace', () => {
 		const service = createService();
@@ -193,7 +346,7 @@ suite('LogicalWorkspaceService', () => {
 		});
 	});
 
-	test('migrates the server workspace catalog and editor working set over an empty browser catalog', () => {
+	test('migrates the server workspace catalog and editor working set over an empty browser catalog', async () => {
 		const browserWorkspace = {
 			id: 'browser-only',
 			name: 'Workspace',
@@ -214,6 +367,7 @@ suite('LogicalWorkspaceService', () => {
 		});
 
 		const service = createService();
+		await service.whenReady;
 
 		assert.deepStrictEqual({
 			activeWorkspaceId: service.activeWorkspace.id,
@@ -307,7 +461,7 @@ suite('LogicalWorkspaceService', () => {
 		});
 	});
 
-	test('accepts external shared snapshots with last-write-wins while preserving a valid page selection', () => {
+	test('accepts authoritative external snapshots while preserving a valid page selection', () => {
 		const service = createService();
 		const activeWorkspace = service.createWorkspace('Active');
 		service.activateWorkspace(activeWorkspace.id, LogicalWorkspaceActivationActor.Picker);
@@ -397,14 +551,10 @@ suite('LogicalWorkspaceService', () => {
 	});
 
 	test('updates a terminal ownership slice across pages without changing the active Workspace', async () => {
-		const firstStorageService = disposables.add(new TestStorageService());
-		const secondStorageService = disposables.add(new TestStorageService());
-		const firstStore = disposables.add(new LogicalWorkspaceStateStore(firstStorageService, contextService));
-		const secondStore = disposables.add(new LogicalWorkspaceStateStore(secondStorageService, contextService));
-		const secondPageReceivedInitialState = Event.toPromise(secondStore.onDidChangeSharedState);
-		const firstService = disposables.add(new LogicalWorkspaceService(firstStorageService, contextService, firstStore, configurationService));
-		await secondPageReceivedInitialState;
-		const secondService = disposables.add(new LogicalWorkspaceService(secondStorageService, contextService, secondStore, configurationService));
+		const firstService = createService();
+		await firstService.whenReady;
+		const secondService = createService();
+		await secondService.whenReady;
 		const activeWorkspace = secondService.activeWorkspace;
 		const logicalTerminalId = 'external-terminal';
 		const observed: object[] = [];

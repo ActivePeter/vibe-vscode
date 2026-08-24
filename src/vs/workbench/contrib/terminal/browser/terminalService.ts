@@ -1073,6 +1073,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 			throw new Error('Could not create terminal when process support is not registered');
 		}
 
+		await this._logicalWorkspaceService.whenReady;
 		this._prepareLogicalWorkspaceTerminal(shellLaunchConfig);
 		this._evaluateLocalCwd(shellLaunchConfig);
 		const location = await this.resolveLocation(options?.location) || this._terminalConfigurationService.defaultLocation;

@@ -14,7 +14,8 @@ import { ITerminalInstance, ITerminalService } from '../../terminal/browser/term
 
 /**
  * Projects logical workspace membership onto the terminal service's foreground/background split.
- * The registry remains the only ownership authority; this adapter stores no parallel terminal set.
+ * The logical workspace service is the only in-page ownership model and submits mutations to the
+ * remote authority; this adapter stores no parallel terminal set.
  */
 export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWorkbenchContribution, ILogicalWorkspaceProjection {
 

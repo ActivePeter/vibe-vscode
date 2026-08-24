@@ -15,9 +15,8 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { ILogicalWorkspaceStateStore } from './logicalWorkspaceStateStore.js';
-import { ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceShellPartLayout, ILogicalWorkspaceStateChangeEvent, ILogicalWorkspaceStateSnapshot, LogicalWorkspaceActivationActor, LogicalWorkspaceStateChangeKind } from '../common/logicalWorkspace.js';
+import { createLogicalWorkspaceSharedState, ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceMutation, ILogicalWorkspaceService, ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, ILogicalWorkspaceStateChangeEvent, ILogicalWorkspaceStateSnapshot, LogicalWorkspaceActivationActor, LogicalWorkspaceMutationType, LogicalWorkspaceStateChangeKind, parseLogicalWorkspaceSharedState } from '../common/logicalWorkspace.js';
 
-const LOGICAL_WORKSPACE_SHARED_SCHEMA_VERSION = 2;
 const LEGACY_LOGICAL_WORKSPACE_STORAGE_KEY = 'workbench.logicalWorkspace.state.v1';
 const LEGACY_PROJECT_CONTEXT_STORAGE_KEY = 'workbench.projectContext.logicalWorkspaces.v2';
 const LEGACY_LOGICAL_WORKSPACE_CONFIGURATION_KEY = 'dever.logicalWorkspaceState';
@@ -34,11 +33,6 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 	},
 });
-
-interface ILogicalWorkspaceSharedState {
-	readonly schemaVersion: typeof LOGICAL_WORKSPACE_SHARED_SCHEMA_VERSION;
-	readonly workspaces: readonly ILogicalWorkspace[];
-}
 
 interface ILogicalWorkspaceState extends ILogicalWorkspaceSharedState {
 	readonly activeWorkspaceId: string;
@@ -57,7 +51,6 @@ interface ILegacyLogicalWorkspaceStateV1 {
 
 interface ILoadedLogicalWorkspaceState {
 	readonly state: ILogicalWorkspaceState;
-	readonly shouldWriteSharedState: boolean;
 	readonly shouldMarkConfigurationMigrated: boolean;
 }
 
@@ -97,12 +90,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		this._state = loaded.state;
 		this.stateStore.writeActiveWorkspaceId(this.physicalWorkspaceId, this._state.activeWorkspaceId);
 		this._register(stateStore.onDidChangeSharedState(() => this.acceptSharedState()));
-		if (waitForCompleteWorkspace) {
-			this.whenReady = this.initializeFromCompleteWorkspace(loaded);
-		} else {
-			this.persistLoadedState(loaded);
-			this.whenReady = Promise.resolve();
-		}
+		this.whenReady = this.initializeAuthoritativeState(loaded, waitForCompleteWorkspace);
 	}
 
 	get state(): ILogicalWorkspaceStateSnapshot {
@@ -133,7 +121,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			terminalIds: [],
 			shellLayout: undefined,
 		};
-		this.commitWorkspaces([...this._state.workspaces, workspace]);
+		this.commitWorkspaces([...this._state.workspaces, workspace], { type: LogicalWorkspaceMutationType.CreateWorkspace, workspace });
 		return workspace;
 	}
 
@@ -149,7 +137,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		this._onWillChangeActiveWorkspace.fire(event);
 		this.stateStore.writeActiveWorkspaceId(this.physicalWorkspaceId, workspaceId);
 		this._activationSequence = sequence;
-		this.setState({ ...this._state, activeWorkspaceId: workspaceId }, false);
+		this.setState({ ...this._state, activeWorkspaceId: workspaceId });
 		this._onDidChangeActiveWorkspace.fire(event);
 	}
 
@@ -161,7 +149,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 
 		this.commitWorkspaces(this._state.workspaces.map(workspace => workspace.id === workspaceId
 			? { ...workspace, shellLayout: layout }
-			: workspace));
+			: workspace), { type: LogicalWorkspaceMutationType.SetShellLayout, workspaceId, shellLayout: layout });
 	}
 
 	setEditorWorkingSet(workspaceId: string, editorWorkingSet: string): void {
@@ -172,7 +160,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 
 		this.commitWorkspaces(this._state.workspaces.map(workspace => workspace.id === workspaceId
 			? { ...workspace, editorWorkingSet }
-			: workspace));
+			: workspace), { type: LogicalWorkspaceMutationType.SetEditorWorkingSet, workspaceId, editorWorkingSet });
 	}
 
 	bindTerminal(workspaceId: string, logicalTerminalId: string): void {
@@ -183,7 +171,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 
 		this.commitWorkspaces(this._state.workspaces.map(workspace => workspace.id === workspaceId
 			? { ...workspace, terminalIds: [...workspace.terminalIds, logicalTerminalId] }
-			: workspace));
+			: workspace), { type: LogicalWorkspaceMutationType.BindTerminal, workspaceId, logicalTerminalId });
 	}
 
 	unbindTerminal(logicalTerminalId: string): void {
@@ -194,15 +182,16 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 
 		this.commitWorkspaces(this._state.workspaces.map(workspace => workspace.id === owner.id
 			? { ...workspace, terminalIds: workspace.terminalIds.filter(candidate => candidate !== logicalTerminalId) }
-			: workspace));
+			: workspace), { type: LogicalWorkspaceMutationType.UnbindTerminal, logicalTerminalId });
 	}
 
 	workspaceContainsTerminal(workspaceId: string, logicalTerminalId: string): boolean {
 		return this.getWorkspace(workspaceId).terminalIds.includes(logicalTerminalId);
 	}
 
-	private commitWorkspaces(workspaces: readonly ILogicalWorkspace[]): void {
-		this.setState({ ...this._state, workspaces }, true);
+	private commitWorkspaces(workspaces: readonly ILogicalWorkspace[], mutation: ILogicalWorkspaceMutation): void {
+		this.setState({ ...this._state, workspaces });
+		this.stateStore.applyMutation(mutation);
 		this._onDidChangeWorkspaces.fire();
 	}
 
@@ -217,7 +206,6 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 	private loadState(configurationState: ILogicalWorkspaceSharedState | undefined): ILoadedLogicalWorkspaceState {
 		const rawSharedState = this.stateStore.readSharedState();
 		const sharedState = this.parseSharedState(rawSharedState);
-		const sharedStateNeedsNormalization = this.containsObsoleteChatSessionOwnership(rawSharedState);
 		const legacyV1 = this.parseLegacyStateV1(this.storageService.get(LEGACY_LOGICAL_WORKSPACE_STORAGE_KEY, StorageScope.WORKSPACE));
 		if (configurationState) {
 			const migrated = sharedState ? this.mergeSharedStates(configurationState, sharedState) : configurationState;
@@ -229,33 +217,30 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 					?? configurationState.workspaces[0].id;
 				return {
 					state: { ...migrated, activeWorkspaceId },
-					shouldWriteSharedState: true,
 					shouldMarkConfigurationMigrated: true,
 				};
 			}
 			return {
 				state: this.withActiveWorkspace(migrated, legacyV1?.activeWorkspaceId),
-				shouldWriteSharedState: true,
 				shouldMarkConfigurationMigrated: true,
 			};
 		}
 		if (sharedState) {
 			return {
 				state: this.withActiveWorkspace(sharedState, legacyV1?.activeWorkspaceId),
-				shouldWriteSharedState: sharedStateNeedsNormalization,
 				shouldMarkConfigurationMigrated: false,
 			};
 		}
 
 		if (legacyV1) {
 			const migrated = this.createSharedState(legacyV1.workspaces);
-			return { state: this.withActiveWorkspace(migrated, legacyV1.activeWorkspaceId), shouldWriteSharedState: true, shouldMarkConfigurationMigrated: false };
+			return { state: this.withActiveWorkspace(migrated, legacyV1.activeWorkspaceId), shouldMarkConfigurationMigrated: false };
 		}
 
 		const legacy = this.parseLegacyState(this.storageService.get(LEGACY_PROJECT_CONTEXT_STORAGE_KEY, StorageScope.WORKSPACE));
 		if (legacy) {
 			const migrated = this.createSharedState(legacy.workspaces.map(workspace => ({ ...workspace, terminalIds: [], shellLayout: undefined })));
-			return { state: this.withActiveWorkspace(migrated, legacy.activeWorkspaceId), shouldWriteSharedState: true, shouldMarkConfigurationMigrated: false };
+			return { state: this.withActiveWorkspace(migrated, legacy.activeWorkspaceId), shouldMarkConfigurationMigrated: false };
 		}
 
 		const vscodeWorkspace = this.workspaceContextService.getWorkspace();
@@ -266,7 +251,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			shellLayout: undefined,
 		};
 		const initial = this.createSharedState([workspace]);
-		return { state: this.withActiveWorkspace(initial), shouldWriteSharedState: true, shouldMarkConfigurationMigrated: false };
+		return { state: this.withActiveWorkspace(initial), shouldMarkConfigurationMigrated: false };
 	}
 
 	private mergeSharedStates(configurationState: ILogicalWorkspaceSharedState, sharedState: ILogicalWorkspaceSharedState): ILogicalWorkspaceSharedState {
@@ -295,16 +280,26 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		return this.parseSharedState(inspected.workspaceValue ?? inspected.value);
 	}
 
-	private async initializeFromCompleteWorkspace(initial: ILoadedLogicalWorkspaceState): Promise<void> {
-		await this.workspaceContextService.getCompleteWorkspace();
+	private async initializeAuthoritativeState(initial: ILoadedLogicalWorkspaceState, waitForCompleteWorkspace: boolean): Promise<void> {
+		let candidate = initial;
+		if (waitForCompleteWorkspace) {
+			await this.workspaceContextService.getCompleteWorkspace();
+			if (this._store.isDisposed) {
+				return;
+			}
+			const configurationState = this.isConfigurationMigrated() ? undefined : this.readConfigurationState();
+			const sharedState = this.parseSharedState(this.stateStore.readSharedState());
+			candidate = configurationState || sharedState ? this.loadState(configurationState) : initial;
+		}
+
+		const authoritativeState = await this.stateStore.initializeSharedState(this.createSharedState(candidate.state.workspaces));
 		if (this._store.isDisposed) {
 			return;
 		}
-
-		const configurationState = this.isConfigurationMigrated() ? undefined : this.readConfigurationState();
-		const sharedState = this.parseSharedState(this.stateStore.readSharedState());
-		const loaded = configurationState || sharedState ? this.loadState(configurationState) : initial;
-		this.applyLoadedState(loaded);
+		this.applyLoadedState({
+			state: this.withActiveWorkspace(authoritativeState),
+			shouldMarkConfigurationMigrated: candidate.shouldMarkConfigurationMigrated,
+		});
 	}
 
 	private applyLoadedState(loaded: ILoadedLogicalWorkspaceState): void {
@@ -323,22 +318,15 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		}
 
 		this.stateStore.writeActiveWorkspaceId(this.physicalWorkspaceId, loaded.state.activeWorkspaceId);
-		this.setState(loaded.state, false);
-		this.persistLoadedState(loaded);
+		this.setState(loaded.state);
+		if (loaded.shouldMarkConfigurationMigrated) {
+			this.storageService.store(LEGACY_LOGICAL_WORKSPACE_CONFIGURATION_MIGRATION_KEY, true, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		}
 		if (workspacesChanged) {
 			this._onDidChangeWorkspaces.fire();
 		}
 		if (activationEvent) {
 			this._onDidChangeActiveWorkspace.fire(activationEvent);
-		}
-	}
-
-	private persistLoadedState(loaded: ILoadedLogicalWorkspaceState): void {
-		if (loaded.shouldWriteSharedState) {
-			this.saveSharedState();
-		}
-		if (loaded.shouldMarkConfigurationMigrated) {
-			this.storageService.store(LEGACY_LOGICAL_WORKSPACE_CONFIGURATION_MIGRATION_KEY, true, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 		}
 	}
 
@@ -351,16 +339,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 	}
 
 	private createSharedState(workspaces: readonly ILogicalWorkspace[]): ILogicalWorkspaceSharedState {
-		return {
-			schemaVersion: LOGICAL_WORKSPACE_SHARED_SCHEMA_VERSION,
-			workspaces: workspaces.map(workspace => ({
-				id: workspace.id,
-				name: workspace.name,
-				terminalIds: workspace.terminalIds,
-				shellLayout: workspace.shellLayout,
-				...(workspace.editorWorkingSet !== undefined ? { editorWorkingSet: workspace.editorWorkingSet } : undefined),
-			})),
-		};
+		return createLogicalWorkspaceSharedState(workspaces);
 	}
 
 	private acceptSharedState(): void {
@@ -370,9 +349,6 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			return;
 		}
 		if (equals(this._state.workspaces, incoming.workspaces)) {
-			if (this.containsObsoleteChatSessionOwnership(rawSharedState)) {
-				this.saveSharedState();
-			}
 			return;
 		}
 
@@ -386,17 +362,14 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			activationEvent = { actor: LogicalWorkspaceActivationActor.SharedState, sequence, previousWorkspaceId, workspaceId: activeWorkspaceId };
 			this._onWillChangeActiveWorkspace.fire(activationEvent);
 		}
-		// Shared snapshots deliberately use whole-document last-write-wins. The active selection is
-		// page-local and is therefore preserved unless the winning snapshot removed that Workspace.
+		// The remote backend orders semantic mutations. The active selection remains page-local and
+		// is preserved unless the authoritative catalog no longer contains that Workspace.
 		if (activationEvent) {
 			this.stateStore.writeActiveWorkspaceId(this.physicalWorkspaceId, activeWorkspaceId);
 			this._activationSequence = activationEvent.sequence;
 		}
-		this.setState({ ...incoming, activeWorkspaceId }, false);
+		this.setState({ ...incoming, activeWorkspaceId });
 		this._onDidChangeWorkspaces.fire();
-		if (this.containsObsoleteChatSessionOwnership(rawSharedState)) {
-			this.saveSharedState();
-		}
 
 		if (activationEvent) {
 			this._onDidChangeActiveWorkspace.fire(activationEvent);
@@ -404,27 +377,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 	}
 
 	private parseSharedState(raw: unknown): ILogicalWorkspaceSharedState | undefined {
-		if (!raw || typeof raw !== 'object') {
-			return undefined;
-		}
-		const parsed = raw as Record<string, unknown>;
-		if (parsed.schemaVersion !== LOGICAL_WORKSPACE_SHARED_SCHEMA_VERSION || !Array.isArray(parsed.workspaces) || parsed.workspaces.length === 0) {
-			return undefined;
-		}
-		if (!this.areValidWorkspaces(parsed.workspaces)) {
-			return undefined;
-		}
-		return this.createSharedState(parsed.workspaces);
-	}
-
-	private containsObsoleteChatSessionOwnership(raw: unknown): boolean {
-		if (!raw || typeof raw !== 'object') {
-			return false;
-		}
-		const workspaces = (raw as Record<string, unknown>).workspaces;
-		return Array.isArray(workspaces) && workspaces.some(workspace =>
-			!!workspace && typeof workspace === 'object' && 'chatSessionResources' in workspace
-		);
+		return parseLogicalWorkspaceSharedState(raw);
 	}
 
 	private parseLegacyStateV1(raw: string | undefined): ILegacyLogicalWorkspaceStateV1 | undefined {
@@ -437,13 +390,14 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 				return undefined;
 			}
 			const candidate = parsed as Record<string, unknown>;
-			if (candidate.schemaVersion !== 1 || typeof candidate.activeWorkspaceId !== 'string' || !Array.isArray(candidate.workspaces) || !this.areValidWorkspaces(candidate.workspaces) || !candidate.workspaces.some(workspace => workspace.id === candidate.activeWorkspaceId)) {
+			const sharedState = parseLogicalWorkspaceSharedState({ schemaVersion: 2, workspaces: candidate.workspaces });
+			if (candidate.schemaVersion !== 1 || typeof candidate.activeWorkspaceId !== 'string' || !sharedState || !sharedState.workspaces.some(workspace => workspace.id === candidate.activeWorkspaceId)) {
 				return undefined;
 			}
 			return {
 				schemaVersion: 1,
 				activeWorkspaceId: candidate.activeWorkspaceId,
-				workspaces: this.createSharedState(candidate.workspaces).workspaces,
+				workspaces: sharedState.workspaces,
 			};
 		} catch {
 			return undefined;
@@ -485,67 +439,9 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		}
 	}
 
-	private areValidWorkspaces(workspaces: readonly unknown[]): workspaces is readonly ILogicalWorkspace[] {
-		const workspaceIds = new Set<string>();
-		const terminalIds = new Set<string>();
-		const addUniqueTerminalIds = (values: readonly string[]): boolean => {
-			for (const value of values) {
-				if (typeof value !== 'string' || !value || terminalIds.has(value)) {
-					return false;
-				}
-				terminalIds.add(value);
-			}
-			return true;
-		};
-		for (const rawWorkspace of workspaces) {
-			if (!rawWorkspace || typeof rawWorkspace !== 'object') {
-				return false;
-			}
-			const workspace = rawWorkspace as Record<string, unknown>;
-			if (
-				typeof workspace.id !== 'string' || !workspace.id || workspaceIds.has(workspace.id) ||
-				typeof workspace.name !== 'string' || !workspace.name.trim() ||
-				!Array.isArray(workspace.terminalIds) || !addUniqueTerminalIds(workspace.terminalIds) ||
-				!this.isShellLayout(workspace.shellLayout) ||
-				(workspace.editorWorkingSet !== undefined && (typeof workspace.editorWorkingSet !== 'string' || !workspace.editorWorkingSet))
-			) {
-				return false;
-			}
-			workspaceIds.add(workspace.id);
-		}
-		return true;
-	}
-
-	private isShellLayout(layout: unknown): layout is ILogicalWorkspaceShellLayout | undefined {
-		if (layout === undefined) {
-			return true;
-		}
-		if (!layout || typeof layout !== 'object') {
-			return false;
-		}
-		const candidate = layout as Record<string, unknown>;
-		return this.isShellPartLayout(candidate.primarySideBar)
-			&& this.isShellPartLayout(candidate.panel)
-			&& this.isShellPartLayout(candidate.auxiliaryBar);
-	}
-
-	private isShellPartLayout(part: unknown): part is ILogicalWorkspaceShellPartLayout {
-		if (!part || typeof part !== 'object') {
-			return false;
-		}
-		const candidate = part as Record<string, unknown>;
-		return typeof candidate.visible === 'boolean'
-			&& typeof candidate.width === 'number' && Number.isFinite(candidate.width) && candidate.width >= 0
-			&& typeof candidate.height === 'number' && Number.isFinite(candidate.height) && candidate.height >= 0
-			&& typeof candidate.activeCompositeId === 'string';
-	}
-
-	private setState(state: ILogicalWorkspaceState, persistSharedState: boolean): void {
+	private setState(state: ILogicalWorkspaceState): void {
 		const previousState = this._state;
 		this._state = state;
-		if (persistSharedState) {
-			this.saveSharedState();
-		}
 
 		let changed = LogicalWorkspaceStateChangeKind.None;
 		if (previousState.activeWorkspaceId !== state.activeWorkspaceId) {
@@ -559,12 +455,6 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		}
 	}
 
-	private saveSharedState(): void {
-		this.stateStore.writeSharedState({
-			schemaVersion: LOGICAL_WORKSPACE_SHARED_SCHEMA_VERSION,
-			workspaces: this._state.workspaces,
-		});
-	}
 }
 
 registerSingleton(ILogicalWorkspaceService, LogicalWorkspaceService, InstantiationType.Delayed);

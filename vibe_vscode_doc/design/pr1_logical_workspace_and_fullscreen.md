@@ -2,8 +2,8 @@
 
 > - 文档定位：PR #1 的统一设计与验收入口
 > - PR：[feat: add vibe vscode logical workspaces and fullscreen panel](https://github.com/ActivePeter/vibe-vscode/pull/1)
-> - 审查基线（写作时远端 HEAD）：`0af2a705aa10370bfb280f600407c35cc36e2cd9`
-> - 状态：Open；当前工作树已在该基线上撤掉 Session ownership/filtering，尚待提交到 PR
+> - 审查基线：以 PR #1 当前 HEAD 与本仓库工作树为准
+> - 状态：Open；Logical Workspace 共享状态已从浏览器多主收束到远程 Server authority
 
 ## 1. 这次 PR 要解决什么
 
@@ -20,7 +20,7 @@ vibe vscode 面向常驻个人工作站或云端的 Web 开发环境。PR #1 不
 
 | 能力 | PR #1 当前实现 | 合并状态 |
 | --- | --- | --- |
-| Logical Workspace catalog 与页面内切换 | 创建、选择、页面独立的 active ID、共享 catalog | 核心完成；跨页面首次同步仍有 P1 |
+| Logical Workspace catalog 与页面内切换 | 创建、选择、页面独立的 active ID、远程共享 catalog | 远程原子初始化和跨页面同步已实现 |
 | Shell 布局 | 保存并恢复主侧栏、Panel、辅助侧栏的显隐、尺寸和 active composite | 可验收 |
 | Terminal 隔离 | 唯一 owner、Logical Terminal ID、前后台迁移、持久化链路 | 核心完成；仍有 2 个 P1、1 个 P2 |
 | Agent Session catalog | 保持 VS Code 原有的全局 catalog 与全局 Agent Sessions 列表 | 已撤掉 Workspace owner/filtering；Session Tab working set 为 Planned |
@@ -71,14 +71,15 @@ Project Context 与 Logical Workspace 是正交维度：切 Project 不应关闭
 
 ### 4.1 Authority 与 projection 分离
 
-- `LogicalWorkspaceService` 是 Workspace catalog、布局快照、Terminal owner 和 serialized editor working set 的唯一内存 authority。
+- 远程 `RemoteLogicalWorkspaceStateStorage` 是 Workspace catalog、布局快照、Terminal owner 和 serialized editor working set 的唯一持久化 authority。
+- `LogicalWorkspaceService` 持有当前页面的 confirmed/optimistic projection，不生成服务端 revision，也不裁决页面间冲突。
 - Chat Sessions Service/provider history 是 Session catalog authority；`LogicalWorkspaceService` 不保存 Session owner，不创建、过滤或删除 Session 本体。
 - Terminal、Editor、Explorer 和 Workbench Layout 只投影各自 authority，不保存平行的关系集合。
 - UI 过滤不能改变全局模型查询语义。例如 Project 只限制 Explorer 的 `visibleRoots`，不能删减窗口级 `model.roots`。
 
 ### 4.2 Shared、page-local 与 ephemeral 分层
 
-- Shared：Workspace catalog、布局快照、Terminal owner 和 serialized editor working set；跨同一 Physical Workspace 的页面共享。
+- Remote shared：Workspace catalog、布局快照、Terminal owner 和 serialized editor working set；由远程 Server 持久化，并跨同一 Physical Workspace 的页面共享。
 - Page-local：`activeWorkspaceId`；写入带 Physical Workspace ID 的 `sessionStorage`。
 - Ephemeral：Quick Pick、hover、pending generation 等页面瞬时状态；不得持久化为共享业务数据。
 
@@ -109,11 +110,22 @@ Session catalog 的 refresh 只有在取得完整结果后才能发布权威 rem
 
 跨组件的控制流优先使用直接方法和 service transaction。Event 用于通知已经提交的状态，不用于拼接一个跨多个异步阶段的事务。Terminal owner、Editor working set 和全局 Session catalog 分别提交；不得用一个关系事件同时冒充三种状态变化。
 
+### 4.8 远程单主与语义 mutation
+
+- 浏览器 IndexedDB 不是共享业务状态 authority；旧值只允许作为首次远程初始化的 migration candidate。
+- 服务端以 `initialize-if-absent` 原子建立首份状态，并独占 revision 分配。
+- 页面提交 `createWorkspace`、layout/editor 更新和 Terminal bind/unbind 等幂等语义 mutation，不提交旧整包快照覆盖新状态。
+- 服务端按一个 mutation 序列持久化后再广播 committed snapshot；页面 optimistic queue 只负责低延迟投影，可由远程 snapshot 随时重建。
+- transport/storage failure 保留队列并退避重试；损坏记录或畸形协议属于不可容忍失败，禁止降级为默认空状态。
+
+完整协议、迁移与失败边界见 [Logical Workspace 远程权威状态](./remote_logical_workspace_state.md)。
+
 ## 5. 总体架构
 
 ```mermaid
 flowchart LR
-    Shared[Workspace Storage + Cross-page Channel] --> Store[LogicalWorkspaceStateStore]
+    RemoteDB[(Remote SQLite)] --> Server[Remote Logical Workspace State Channel]
+    Server --> Store[LogicalWorkspaceStateStore]
     Session[Page sessionStorage] --> Store
     Store --> Registry[LogicalWorkspaceService]
 
@@ -162,20 +174,22 @@ interface LogicalWorkspaceSharedState {
 
 `terminalIds` 在全部 Workspace 间保持全局唯一。`editorWorkingSet` 是 Workbench Editor Groups 的序列化结果；它可以包含具备恢复 identity 的 Session editor tab，但 Logical Workspace 不解析其中的 Session，也不据此过滤全局 catalog。
 
-PR 早期版本写入过 `chatSessionResources`。当前 decoder 接受该额外字段以兼容已有开发态快照，但会在规范化时丢弃，不能把旧 owner 数据解释成 Session tabs。共享快照继续写入内部 `WORKSPACE/MACHINE` storage，不经过 Configuration Service，因此不会修改用户的 `.vscode/settings.json` 或 `.code-workspace`。
+PR 早期版本写入过 `chatSessionResources`。当前 decoder 接受该额外字段以兼容已有开发态快照，但会在规范化时丢弃，不能把旧 owner 数据解释成 Session tabs。共享快照写入远程 Server 的独立 SQLite，不经过 Configuration Service，因此不会修改用户的 `.vscode/settings.json` 或 `.code-workspace`。浏览器 `WORKSPACE/MACHINE` 旧值只用于一次性迁移候选，远程状态确认后即删除。
 
 外部输入始终从 `unknown` 开始逐层校验。schema、Workspace 元素、Terminal ID、shell layout 和 editor working set 任一层畸形时应拒绝该输入，而不是在 Workbench 启动阶段抛出异常。
 
-### 6.2 跨页面同步
+### 6.2 远程初始化与跨页面同步
 
-State Store 使用按 Physical Workspace ID 隔离的 channel，并为共享状态增加 `{ counter, source }` Lamport revision：
+State Store 通过 Remote Agent IPC 访问按 Physical Workspace ID 隔离的服务端状态：
 
-- counter 较大者获胜；
-- counter 相同时用 source UUID 稳定决胜；
-- 接收页只应用更高 revision；
-- 整包采用 last-write-wins，不做字段级 merge。
+- `initialize` 是服务端原子的 create-if-absent；已有 snapshot 永远优先于页面 candidate；
+- revision 只由服务端单调递增，浏览器不再生成 UUID source；
+- 页面提交幂等语义 mutation，服务端串行应用并等待持久化后广播 snapshot；
+- 页面以“最新 authoritative snapshot + pending mutations”计算 optimistic projection；
+- Remote Agent 重连后主动 `read`，补齐断线期间错过的 event；
+- BroadcastChannel、页面间 Request/State anti-entropy 和整包 last-write-wins 均已移除。
 
-当前实现包含 `request/state` anti-entropy，但初始化没有 readiness barrier。新页面可能在收到已有页面状态前先创建默认 catalog，并以相同 counter 的较大 source 覆盖真实状态。这是当前 P1，修复前不能把跨页面首次恢复描述为可靠完成。
+这从结构上关闭了“空持久层、已有页面持有 revision `1`、新页面立即写默认值”的覆盖窗口。
 
 ### 6.3 Activation 生命周期
 
@@ -304,9 +318,12 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 
 | 责任 | 主要入口 |
 | --- | --- |
-| Logical Workspace API 与 slice selector | [`logicalWorkspace.ts`](../../src/vs/workbench/services/logicalWorkspace/common/logicalWorkspace.ts) |
-| Registry、schema、Terminal ownership 与投影快照 | [`logicalWorkspaceService.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceService.ts) |
-| Shared/page-local storage 与跨页面同步 | [`logicalWorkspaceStateStore.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceStateStore.ts) |
+| Logical Workspace API、slice selector、schema 与 mutation reducer | [`logicalWorkspace.ts`](../../src/vs/workbench/services/logicalWorkspace/common/logicalWorkspace.ts) |
+| Registry、Terminal ownership 与页面投影快照 | [`logicalWorkspaceService.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceService.ts) |
+| Remote IPC protocol | [`logicalWorkspaceRemote.ts`](../../src/vs/workbench/services/logicalWorkspace/common/logicalWorkspaceRemote.ts) |
+| 页面 optimistic mutation queue 与重连 | [`logicalWorkspaceRemoteStateClient.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceRemoteStateClient.ts) |
+| Remote/local backend 选择、旧值迁移与 page-local selection | [`logicalWorkspaceStateStore.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceStateStore.ts) |
+| 远程权威 SQLite、revision 与 mutation serialization | [`logicalWorkspaceStateChannel.ts`](../../src/vs/server/node/logicalWorkspaceStateChannel.ts) |
 | 通用异步 projection 协议 | [`logicalWorkspaceProjection.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceProjection.ts) |
 | Workspace picker 与贡献注册 | [`logicalWorkspace.contribution.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspace.contribution.ts) |
 | Shell layout projection | [`logicalWorkspaceLayoutAdapter.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspaceLayoutAdapter.ts) |
@@ -319,37 +336,42 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 | Fullscreen Modal Editor 宿主 | [`modalEditorPart.ts`](../../src/vs/workbench/browser/parts/editor/modalEditorPart.ts) |
 | Built-in Web extension | [`extension.ts`](../../extensions/dever-project-switcher/src/extension.ts) |
 
-## 14. 当前未解决的合并 gate
+## 14. Review gate 状态
 
-本次调整通过删除 Session owner state，结构性关闭了“空 ChatModel 遗留 ghost owner”和“Session 应否独占”的问题；Project/Explorer projection P2 也已由 generation-aware Find 恢复关闭。以下 5 条仍需单独处理：
+以下问题已经由结构调整关闭：
+
+- 删除 Session owner state，关闭空 ChatModel ghost owner 与错误独占语义；
+- generation-aware Find 恢复关闭 Project/Explorer projection 冲突；
+- `AgentSessionCatalog` 的 complete/partial/cancelled 结果协议关闭 history 失败被当作权威空 catalog；
+- 远程原子初始化、服务端 revision 和语义 mutation 关闭同 revision 默认 catalog 覆盖。
+
+当前仍需单独处理的已知 Terminal gate：
 
 | 优先级 | 问题 | 违反的契约 |
 | --- | --- | --- |
-| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298195) | 新页面初始化时，同 revision 的默认 catalog 可能覆盖已有页面状态 | 初始同步必须 ready 后才允许写默认值 |
 | [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298229) | Editor Terminal 恢复未真正等待 editor open | 异步 projection 完成语义 |
 | [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298253) | Remote Workbench 中的 local PTY 被错误交给 remote backend 持久化 | 持久化 authority 必须按 backend 分区 |
-| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3826935558) | history 读取失败/取消会被当作空的权威 catalog | 完整 catalog 与 partial result 必须区分 |
 | [P2](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298296) | 不可恢复 Terminal 在 Shutdown dispose 后留下 ghost owner | ownership transaction 必须有真实 commit/rollback 边界 |
 
 ## 15. 验证矩阵
 
 | 领域 | 已有覆盖重点 | 合并前必须补齐 |
 | --- | --- | --- |
-| State Store | schema 迁移、畸形输入、revision、跨页面 request/state、丢弃旧 `chatSessionResources` | 空持久层 + peer counter=1 + 新页立即初始化 |
+| State Store | 远程原子初始化、服务端 revision、并发语义 mutation、迟到 response、幂等重试、丢弃旧 `chatSessionResources` | 托管服务双页面与服务重启验收 |
 | Layout | 初始恢复、显隐、active composite、隐藏 part 尺寸 | 保持现有覆盖通过 |
 | Terminal | creation context、lease、批量 projection、本地/远程 background | editor A→B 快切、remote+local PTY reload、不可持久化 PTY dispose |
-| Agent Sessions | 全局 provider catalog、Workspace 切换后列表不变、无 Logical Workspace Session API | history error/cancel 不把 partial result 当成权威删除；Session Tab working set 留待后续专项验收 |
+| Agent Sessions | 全局 provider catalog、complete/partial/cancelled refresh、Workspace 切换后列表不变、无 Logical Workspace Session API | Session Tab working set 留待后续专项验收 |
 | Project | active item、新增 folder、全局/可见 roots、Find generation、快速切换 stale projection、SCM exact-set、single/multiple、延迟 add/remove；隔离 Workbench 已用两个真实 Git repositories 验收 A/B 双向切换 | 托管 Web 服务中的多根 Project 与 Git 扩展联动 |
 | Fullscreen Host | authorization、创建失败清理、pending 操作、reveal、singleton | 保持现有覆盖通过 |
 | Build/Web | extension bundle+typecheck、产品打包入口、locale fallback | 干净 checkout 的 compile/watch 验证 |
 
-验证应优先运行最小相关测试，再根据改动范围运行 client typecheck、proposed DTS check 和 Web extension compile。PR 描述中的历史“passed”记录不能替代撤掉 Session ownership 并修复其余 5 个 Review gate 后的重新验证。
+验证应优先运行最小相关测试，再根据改动范围运行 client typecheck、layer check、proposed DTS check 和 Web extension compile。PR 描述中的历史“passed”记录不能替代最终 HEAD 的重新验证。
 
 ## 16. PR 完成定义
 
 PR #1 可以进入合并状态的条件是：
 
-1. Session catalog 已恢复全局语义，且上述 5 个 Review gate 均由代码与针对性测试关闭；
+1. Session catalog 已恢复全局语义，且全部有效 Review gate 均由代码与针对性测试关闭；
 2. README 对 Available、In progress、Planned 的标识与实际边界一致；
 3. Terminal ownership、editor working set、全局 Session catalog、projection transaction 和 state-slice 之间没有语义混用或旁路实现；
 4. Web 开发构建与产品打包都能从干净 checkout 生成并加载 builtin extension；

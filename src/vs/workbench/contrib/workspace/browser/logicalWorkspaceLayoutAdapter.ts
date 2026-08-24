@@ -23,7 +23,8 @@ interface ILogicalWorkspaceShellPartBinding {
 
 /**
  * Saves the projected workbench shell before a logical workspace switch and restores the target
- * shell afterwards. The logical workspace service remains the only persistence authority.
+ * shell afterwards. Persistence is submitted through the logical workspace service to the remote
+ * authority; this adapter keeps no parallel layout state.
  */
 export class LogicalWorkspaceLayoutAdapter extends Disposable implements IWorkbenchContribution, ILogicalWorkspaceProjection {
 

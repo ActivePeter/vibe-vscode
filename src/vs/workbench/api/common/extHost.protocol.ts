@@ -49,7 +49,7 @@ import { AuthInfo, Credentials } from '../../../platform/request/common/request.
 import { ClassifiedEvent, IGDPRProperty, OmitMetadata, StrictPropertyCheck } from '../../../platform/telemetry/common/gdprTypings.js';
 import { TelemetryLevel } from '../../../platform/telemetry/common/telemetry.js';
 import { ISerializableEnvironmentDescriptionMap, ISerializableEnvironmentVariableCollection } from '../../../platform/terminal/common/environmentVariable.js';
-import { ICreateContributedTerminalProfileOptions, IProcessProperty, IProcessReadyWindowsPty, IShellLaunchConfigDto, ITerminalEnvironment, ITerminalLaunchError, ITerminalProfile, TerminalExitReason, TerminalLocation, TerminalShellType } from '../../../platform/terminal/common/terminal.js';
+import { ICreateContributedTerminalProfileOptions, IProcessProperty, IProcessReadyWindowsPty, IShellLaunchConfigDto, ITerminalCreationContext, ITerminalEnvironment, ITerminalLaunchError, ITerminalProfile, TerminalExitReason, TerminalLocation, TerminalShellType } from '../../../platform/terminal/common/terminal.js';
 import { ProvidedPortAttributes, TunnelCreationOptions, TunnelOptions, TunnelPrivacyId, TunnelProviderFeatures } from '../../../platform/tunnel/common/tunnel.js';
 import { ITunnelProxyInfo } from '../../../platform/tunnel/common/tunnelProxy.js';
 import { EditSessionIdentityMatch } from '../../../platform/workspace/common/editSessions.js';
@@ -670,6 +670,7 @@ export interface TerminalLaunchConfig {
 	isTransient?: boolean;
 	shellIntegrationNonce?: string;
 	titleTemplate?: string;
+	creationContext?: ITerminalCreationContext;
 }
 
 

@@ -11,6 +11,7 @@ import { localize } from '../../../../nls.js';
 import { IAgentConnection } from '../../../../platform/agentHost/common/agentService.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
+import { ITerminalCreationContext } from '../../../../platform/terminal/common/terminal.js';
 import { AgentHostPty } from './agentHostPty.js';
 import { AgentHostOutputChannel } from './agentHostOutputChannel.js';
 import { AhpTerminalCommandSource } from './ahpTerminalCommandSource.js';
@@ -24,6 +25,8 @@ export interface IAgentHostTerminalCreateOptions {
 	readonly cwd?: URI;
 	/** Terminal location (panel, editor, split, etc.). */
 	readonly location?: ITerminalLocationOptions;
+	/** Initiating identity forwarded by a contributed terminal profile. */
+	readonly creationContext?: ITerminalCreationContext;
 }
 
 export interface IAgentHostEntry {
@@ -254,6 +257,7 @@ export class AgentHostTerminalService extends Disposable implements IAgentHostTe
 					name: localize('agentHostTerminal.profileName', "Agent Host ({0})", displayName),
 					cwd: options.cwd ? (typeof options.cwd === 'string' ? URI.file(options.cwd) : options.cwd) : this._defaultCwd,
 					location: options.location,
+					creationContext: options.creationContext,
 				});
 			},
 		};
@@ -314,6 +318,7 @@ export class AgentHostTerminalService extends Disposable implements IAgentHostTe
 				isFeatureTerminal: false,
 			},
 			location: options?.location,
+			creationContext: options?.creationContext,
 		});
 
 		this._register(instance.onDisposed(() => {

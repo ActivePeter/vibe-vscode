@@ -711,12 +711,23 @@ export interface ITerminalTabAction {
 
 export type WaitOnExitValue = boolean | string | ((exitCode: number) => string);
 
+/**
+ * Immutable identity captured when terminal creation begins. Delegated providers must forward
+ * this context instead of reading the active Logical Workspace again.
+ */
+export interface ITerminalCreationContext {
+	readonly logicalWorkspaceId: string;
+	readonly logicalTerminalId?: string;
+}
+
 export interface ICreateContributedTerminalProfileOptions {
 	icon?: URI | string | { light: URI; dark: URI };
 	color?: string;
 	location?: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean };
 	cwd?: string | URI;
 	titleTemplate?: string;
+	/** @internal */
+	creationContext: ITerminalCreationContext;
 }
 
 export enum TerminalLocation {

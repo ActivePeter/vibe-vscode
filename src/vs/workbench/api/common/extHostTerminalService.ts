@@ -18,7 +18,7 @@ import { serializeEnvironmentDescriptionMap, serializeEnvironmentVariableCollect
 import { CancellationTokenSource } from '../../../base/common/cancellation.js';
 import { generateUuid } from '../../../base/common/uuid.js';
 import { IEnvironmentVariableCollectionDescription, IEnvironmentVariableMutator, ISerializableEnvironmentVariableCollection } from '../../../platform/terminal/common/environmentVariable.js';
-import { ICreateContributedTerminalProfileOptions, IProcessReadyEvent, IShellLaunchConfigDto, ITerminalChildProcess, ITerminalLaunchError, ITerminalProfile, TerminalIcon, TerminalLocation, IProcessProperty, ProcessPropertyType, IProcessPropertyMap, TerminalShellType, WindowsShellType } from '../../../platform/terminal/common/terminal.js';
+import { ICreateContributedTerminalProfileOptions, IProcessReadyEvent, IShellLaunchConfigDto, ITerminalChildProcess, ITerminalCreationContext, ITerminalLaunchError, ITerminalProfile, TerminalIcon, TerminalLocation, IProcessProperty, ProcessPropertyType, IProcessPropertyMap, TerminalShellType, WindowsShellType } from '../../../platform/terminal/common/terminal.js';
 import { TerminalDataBufferer } from '../../../platform/terminal/common/terminalDataBuffering.js';
 import { ThemeColor } from '../../../base/common/themables.js';
 import { Promises } from '../../../base/common/async.js';
@@ -73,6 +73,7 @@ export interface ITerminalInternalOptions {
 	isRemoteResolverTerminal?: boolean;
 	forceShellIntegration?: boolean;
 	useShellEnvironment?: boolean;
+	creationContext?: ITerminalCreationContext;
 	resolvedExtHostIdentifier?: ExtHostTerminalIdentifier;
 	/**
 	 * This location is different from the API location because it can include splitActiveTerminal,
@@ -198,6 +199,7 @@ export class ExtHostTerminal extends Disposable {
 			isTransient: options.isTransient ?? undefined,
 			shellIntegrationNonce: options.shellIntegrationNonce ?? undefined,
 			titleTemplate: options.titleTemplate ?? undefined,
+			creationContext: internalOptions?.creationContext,
 		});
 	}
 
@@ -215,6 +217,7 @@ export class ExtHostTerminal extends Disposable {
 			isTransient: true,
 			shellIntegrationNonce: shellIntegrationNonce ?? undefined,
 			titleTemplate: titleTemplate ?? undefined,
+			creationContext: internalOptions?.creationContext,
 		});
 		// At this point, the id has been set via `$acceptTerminalOpened`
 		if (typeof this._id === 'string') {

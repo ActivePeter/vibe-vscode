@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { deepStrictEqual, fail, strictEqual } from 'assert';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -11,7 +12,7 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
 import { TerminalLocation, TitleEventSource, type ITerminalBackend, type TerminalIcon } from '../../../../../platform/terminal/common/terminal.js';
-import { ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../browser/terminal.js';
+import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../browser/terminal.js';
 import { TerminalService } from '../../browser/terminalService.js';
 import { TERMINAL_CONFIG_SECTION } from '../../common/terminal.js';
 import { IRemoteAgentService } from '../../../../services/remote/common/remoteAgentService.js';
@@ -51,6 +52,36 @@ suite('Workbench - TerminalService', () => {
 	});
 
 	suite('background terminals', () => {
+		test('should wait for an editor terminal to finish opening before reporting it foregrounded', async () => {
+			const openStarted = new DeferredPromise<void>();
+			const releaseOpen = new DeferredPromise<void>();
+			instantiationService.stub(ITerminalEditorService, 'detachInstance', () => { });
+			instantiationService.stub(ITerminalEditorService, 'openEditor', async () => {
+				await openStarted.complete();
+				await releaseOpen.p;
+			});
+
+			const disposalEmitter = store.add(new Emitter<ITerminalInstance>());
+			const instance = {
+				instanceId: 1,
+				target: TerminalLocation.Editor,
+				onDisposed: disposalEmitter.event,
+				detachFromElement: () => { },
+				setVisible: () => { },
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			terminalService.moveToBackground(instance);
+
+			let completed = false;
+			const showing = terminalService.showBackgroundTerminal(instance).then(() => completed = true);
+			await openStarted.p;
+			await timeout(0);
+			strictEqual(completed, false);
+
+			await releaseOpen.complete();
+			await showing;
+			strictEqual(completed, true);
+		});
+
 		test('should keep the panel open while moving its last terminal to the background', async () => {
 			await configurationService.setUserConfiguration(TERMINAL_CONFIG_SECTION, { hideOnLastClosed: true });
 			configurationService.onDidChangeConfigurationEmitter.fire({

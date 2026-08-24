@@ -9,7 +9,7 @@ import { IStorageService } from '../../../../platform/storage/common/storage.js'
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { ILogicalWorkspaceProjection, ILogicalWorkspaceProjectionContext, LogicalWorkspaceProjectionCoordinator } from '../../../services/logicalWorkspace/browser/logicalWorkspaceProjection.js';
-import { ILogicalWorkspaceService } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILogicalWorkspaceService, onDidChangeLogicalWorkspaceStateSlice } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { ITerminalInstance, ITerminalService } from '../../terminal/browser/terminal.js';
 
 /**
@@ -34,7 +34,10 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWork
 
 		this.projectionCoordinator = this._register(new LogicalWorkspaceProjectionCoordinator(logicalWorkspaceService, this, storageService, logService));
 		this._register(this.terminalService.onDidChangeInstances(() => void this.projectionCoordinator.requestReconcile()));
-		this._register(this.logicalWorkspaceService.onDidChangeWorkspaces(() => void this.projectionCoordinator.requestReconcile()));
+		this._register(onDidChangeLogicalWorkspaceStateSlice(
+			this.logicalWorkspaceService,
+			state => state.workspaces.map(workspace => ({ id: workspace.id, terminalIds: workspace.terminalIds })),
+		)(() => void this.projectionCoordinator.requestReconcile()));
 		this._register(this.terminalService.onDidDisposeInstance(instance => this.handleDisposedTerminal(instance)));
 		this.terminalService.whenConnected.then(() => this.projectionCoordinator.requestReconcile()).catch(error => this.logService.error('Logical workspace terminal reconciliation could not await terminal connection', error));
 	}
@@ -74,6 +77,9 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWork
 			const logicalTerminalId = instance.shellLaunchConfig.logicalTerminalId;
 			if (logicalTerminalId && this.logicalWorkspaceService.workspaceContainsTerminal(workspaceId, logicalTerminalId)) {
 				await this.terminalService.showBackgroundTerminal(instance, true);
+				if (!context.isCurrent()) {
+					return;
+				}
 			}
 		}
 	}

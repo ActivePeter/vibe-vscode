@@ -17,6 +17,7 @@ export interface IAsyncProjectionContext<T> {
 interface IAsyncProjectionRequest<T> {
 	readonly value: T;
 	readonly sequence: number;
+	readonly generation: number;
 	readonly isStillCurrent: () => boolean;
 }
 
@@ -27,12 +28,17 @@ interface IAsyncProjectionWaiter {
 
 /**
  * Serializes asynchronous UI projections and coalesces pending work to the newest request.
+ * A caller-provided target identity keeps feedback for the in-flight target in the same
+ * generation: the active transaction finishes, then one coalesced refresh observes its effects.
+ * A different target invalidates the active generation immediately.
  * Projection implementations must check `isCurrent` after every asynchronous boundary.
  */
 export class AsyncProjectionCoordinator<T> extends Disposable {
 
 	private requestSequence = 0;
+	private projectionGeneration = 0;
 	private pendingRequest: IAsyncProjectionRequest<T> | undefined;
+	private applyingRequest: IAsyncProjectionRequest<T> | undefined;
 	private running: Promise<void> | undefined;
 	private readonly waiters: IAsyncProjectionWaiter[] = [];
 	private disposed = false;
@@ -41,6 +47,7 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 		private readonly id: string,
 		private readonly apply: (context: IAsyncProjectionContext<T>) => Promise<void>,
 		private readonly logService: ILogService,
+		private readonly isSameTarget: (current: T, next: T) => boolean = () => false,
 	) {
 		super();
 	}
@@ -51,7 +58,11 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 		}
 
 		const sequence = ++this.requestSequence;
-		this.pendingRequest = { value, sequence, isStillCurrent };
+		const latestRequest = this.pendingRequest ?? this.applyingRequest;
+		const generation = latestRequest && this.isSameTarget(latestRequest.value, value)
+			? latestRequest.generation
+			: ++this.projectionGeneration;
+		this.pendingRequest = { value, sequence, generation, isStillCurrent };
 		const completion = new Promise<void>(resolve => this.waiters.push({ sequence, resolve }));
 		this.ensureRunning();
 		return completion;
@@ -73,10 +84,11 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 		while (this.pendingRequest && !this.disposed) {
 			const request = this.pendingRequest;
 			this.pendingRequest = undefined;
+			this.applyingRequest = request;
 			const context: IAsyncProjectionContext<T> = {
 				value: request.value,
 				sequence: request.sequence,
-				isCurrent: () => !this.disposed && request.sequence === this.requestSequence && request.isStillCurrent(),
+				isCurrent: () => !this.disposed && request.generation === this.projectionGeneration && request.isStillCurrent(),
 			};
 
 			try {
@@ -84,6 +96,7 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 			} catch (error) {
 				this.logService.error(`${this.id} projection failed`, error);
 			} finally {
+				this.applyingRequest = undefined;
 				this.resolveWaitersThrough(request.sequence);
 			}
 		}
@@ -100,7 +113,7 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 	override dispose(): void {
 		this.disposed = true;
 		this.pendingRequest = undefined;
-		this.requestSequence++;
+		this.projectionGeneration++;
 		this.resolveWaitersThrough(Number.POSITIVE_INFINITY);
 		super.dispose();
 	}
@@ -149,6 +162,7 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 			projection.id,
 			context => this.restore(context),
 			logService,
+			(current, next) => current.workspace.id === next.workspace.id && current.activationSequence === next.activationSequence,
 		));
 
 		this._register(logicalWorkspaceService.onWillChangeActiveWorkspace(event => {

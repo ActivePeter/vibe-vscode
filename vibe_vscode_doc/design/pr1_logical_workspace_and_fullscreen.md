@@ -22,7 +22,7 @@ vibe vscode 面向常驻个人工作站或云端的 Web 开发环境。PR #1 不
 | --- | --- | --- |
 | Logical Workspace catalog 与页面内切换 | 创建、选择、页面独立的 active ID、远程共享 catalog | 远程原子初始化和跨页面同步已实现 |
 | Shell 布局 | 保存并恢复主侧栏、Panel、辅助侧栏的显隐、尺寸和 active composite | 可验收 |
-| Terminal 隔离 | 唯一 owner、Logical Terminal ID、前后台迁移、持久化链路 | 核心完成；仍有 2 个 P1、1 个 P2 |
+| Terminal 隔离 | 唯一 owner、Logical Terminal ID、前后台迁移、持久化链路 | 批量投影与 editor A→B 快切已闭环；仍有 2 个 P1、1 个 P2 |
 | Agent Session catalog | 保持 VS Code 原有的全局 catalog 与全局 Agent Sessions 列表 | 已撤掉 Workspace owner/filtering；Session Tab working set 为 Planned |
 | Project Context | Project 选择、Explorer/Find generation、SCM repository 集合投影与聚焦 | 核心完成；真实 Git 扩展验收通过，待托管浏览器验收 |
 | Fullscreen Session Host | 受控 proposed API、Modal Editor 宿主、Webview 生命周期 | 基础设施完成；会话管理 UI 不在本 PR |
@@ -92,7 +92,7 @@ Project Context 与 Logical Workspace 是正交维度：切 Project 不应关闭
 ### 4.4 Projection 使用 generation，资源创建使用 transaction
 
 - UI projection 通过 `AsyncProjectionCoordinator` 串行化，并以 `context.isCurrent()` 拒绝过期 generation。
-- Projection 自己产生的 change event 必须在 transaction 内合并，不能让一次批量投影每处理一个对象就使自己失效。
+- Coordinator 以 projection target identity 区分“同一目标刷新”和“目标切换”：同一目标的 change event 合并为 transaction 尾部的一次刷新，不使当前 generation 失效；新的 Workspace activation 才立即 supersede 当前 generation。
 - Terminal 等资源在实例真正创建前使用 ownership lease；成功后 commit，失败或取消只回滚本次 claim。
 - Editor working-set capture/restore 使用统一 projection generation；未来 Session Tab 依赖这一层恢复，不建立 Session owner API。
 
@@ -211,7 +211,7 @@ State Store 通过 Remote Agent IPC 访问按 Physical Workspace ID 隔离的服
 - `capture(workspaceId)`：离开当前 Workspace 或保存页面前采集前台状态；
 - `restore(context)`：把目标 snapshot 投影到 UI，并在异步边界检查 `isCurrent()`。
 
-`LogicalWorkspaceProjectionCoordinator` 统一负责初始恢复、切换前 capture、切换后 restore 和页面保存。`AsyncProjectionCoordinator` 合并 pending intent，只允许最新 generation 继续提交；调用方若需要最终稳定状态，应等待自己关心的最新请求，不能假定旧 generation 的 Promise 代表后续所有请求都已完成。
+`LogicalWorkspaceProjectionCoordinator` 统一负责初始恢复、切换前 capture、切换后 restore 和页面保存。`AsyncProjectionCoordinator` 合并 pending intent；同 target 的反馈保留当前 generation 并在尾部收敛，不同 target 才使旧事务过期。调用方若需要最终稳定状态，应等待自己关心的最新请求，不能假定旧 generation 的 Promise 代表后续所有请求都已完成。所有被投影 Service 的 Promise 必须表达真实 UI commit，例如 editor terminal 的 restore 只有在 `openEditor()` 完成后才能 resolve。
 
 ### 7.2 Shell layout
 
@@ -227,20 +227,18 @@ Layout Adapter 保存三个 shell part 的 `visible`、`width`、`height` 与 `a
 
 ### 8.1 已实现主链路
 
-Terminal 创建边界捕获 `ITerminalCreationContext`，其中包含 initiating Workspace ID 和 Logical Terminal ID。该 context 贯穿 direct profile、Agent Host、MainThread/ExtHost contributed profile 与最终 `createTerminal()` 重入。
-
-创建与投影的目标流程为：
+Terminal 创建与投影遵循以下目标流程：
 
 1. 预分配 Logical Terminal ID 并取得 ownership lease；
 2. Terminal instance 创建成功后 commit owner；失败则 dispose lease；
 3. 非当前 Workspace 的实例移到 background，不关闭 PTY；
 4. 切回 owner Workspace 时把 background instance 挂回原 panel/editor 位置。
 
-Terminal projection 已把自身触发的 `onDidChangeInstances` 合并到 transaction 尾部，因此一次 reconcile 可以完成整批迁移，而不会每移动一个实例就启动新 generation。
+Terminal projection 通过通用 Coordinator 把自身触发的 `onDidChangeInstances` 合并到同 target transaction 尾部，因此一次 reconcile 可以完成整批迁移，而不会每移动一个实例就启动新 generation。`showBackgroundTerminal()` 的完成语义包含 editor `openEditor()`；若期间切换到另一 Workspace，旧恢复完成后会被 generation check 截断，再由新 target transaction 收敛。
 
 ### 8.2 当前未闭环边界
 
-- editor terminal 的 `showBackgroundTerminal()` 尚未真正 await `openEditor()`，快速 A→B 切换可让过期 editor terminal 回流；
+- Terminal 创建路径尚未统一在入口捕获 initiating Workspace 与 Logical Terminal ID，也未恢复完整的 ownership lease commit/rollback；
 - remote Workbench 可同时存在 local PTY，background 持久化目前没有按 backend/authority 分区；
 - `Shutdown` dispose 不等于实例必然可恢复，不可持久化 PTY 可能留下 ghost owner。
 
@@ -349,8 +347,8 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 
 | 优先级 | 问题 | 违反的契约 |
 | --- | --- | --- |
-| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298229) | Editor Terminal 恢复未真正等待 editor open | 异步 projection 完成语义 |
-| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298253) | Remote Workbench 中的 local PTY 被错误交给 remote backend 持久化 | 持久化 authority 必须按 backend 分区 |
+| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3841475801) | Terminal 创建在异步解析后读取 active Workspace，且失败时缺少 ownership rollback | identity 必须在入口捕获，资源创建必须使用 transaction |
+| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3841475808) | Remote Workbench 中的 local PTY 被错误交给 remote backend 持久化 | 持久化 authority 必须按 backend 分区 |
 | [P2](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3836298296) | 不可恢复 Terminal 在 Shutdown dispose 后留下 ghost owner | ownership transaction 必须有真实 commit/rollback 边界 |
 
 ## 15. 验证矩阵
@@ -359,7 +357,7 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 | --- | --- | --- |
 | State Store | 远程原子初始化、服务端 revision、并发语义 mutation、迟到 response、幂等重试、丢弃旧 `chatSessionResources` | 托管服务双页面与服务重启验收 |
 | Layout | 初始恢复、显隐、active composite、隐藏 part 尺寸 | 保持现有覆盖通过 |
-| Terminal | creation context、lease、批量 projection、本地/远程 background | editor A→B 快切、remote+local PTY reload、不可持久化 PTY dispose |
+| Terminal | 批量 projection、同 target 反馈合并、editor open 完成语义、editor A→B 快切 | creation context 与 lease、remote+local PTY reload、不可持久化 PTY dispose |
 | Agent Sessions | 全局 provider catalog、complete/partial/cancelled refresh、Workspace 切换后列表不变、无 Logical Workspace Session API | Session Tab working set 留待后续专项验收 |
 | Project | active item、新增 folder、全局/可见 roots、Find generation、快速切换 stale projection、SCM exact-set、single/multiple、延迟 add/remove；隔离 Workbench 已用两个真实 Git repositories 验收 A/B 双向切换 | 托管 Web 服务中的多根 Project 与 Git 扩展联动 |
 | Fullscreen Host | authorization、创建失败清理、pending 操作、reveal、singleton | 保持现有覆盖通过 |

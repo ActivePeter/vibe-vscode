@@ -585,6 +585,8 @@ export interface ITerminalService extends ITerminalInstanceHost {
 	getActiveOrCreateInstance(options?: { acceptsInput?: boolean }): Promise<ITerminalInstance>;
 	revealTerminal(source: ITerminalInstance, preserveFocus?: boolean): Promise<void>;
 	/**
+	 * Restores a background terminal to its foreground host. The returned promise resolves only
+	 * after an editor terminal has finished opening in the editor service.
 	 * @param instance
 	 * @param suppressSetActive Do not set the active instance when there is only one terminal
 	 * @param forceSaveState Used when the window is shutting down and we need to reveal and save hideFromUser terminals

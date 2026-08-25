@@ -12,6 +12,6 @@ declare module 'vscode' {
 		 *
 		 * This option is restricted to the built-in vibe vscode extension.
 		 */
-		readonly deverFullscreen?: boolean;
+		readonly vibeVscodeFullscreen?: boolean;
 	}
 }

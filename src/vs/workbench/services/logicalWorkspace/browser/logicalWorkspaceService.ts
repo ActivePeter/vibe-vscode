@@ -19,11 +19,12 @@ import { createLogicalWorkspaceSharedState, ILogicalWorkspace, ILogicalWorkspace
 
 const LEGACY_LOGICAL_WORKSPACE_STORAGE_KEY = 'workbench.logicalWorkspace.state.v1';
 const LEGACY_PROJECT_CONTEXT_STORAGE_KEY = 'workbench.projectContext.logicalWorkspaces.v2';
+// Compatibility-only key from builds that predate the vibe-vscode identity. New state must never be written here.
 const LEGACY_LOGICAL_WORKSPACE_CONFIGURATION_KEY = 'dever.logicalWorkspaceState';
 const LEGACY_LOGICAL_WORKSPACE_CONFIGURATION_MIGRATION_KEY = 'workbench.logicalWorkspace.configurationMigration.v1';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
-	id: 'dever',
+	id: 'vibe-vscode',
 	properties: {
 		[LEGACY_LOGICAL_WORKSPACE_CONFIGURATION_KEY]: {
 			type: 'object',

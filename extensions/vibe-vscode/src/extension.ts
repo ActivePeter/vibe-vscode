@@ -5,9 +5,9 @@
 
 import * as vscode from 'vscode';
 
-const OPEN_FULLSCREEN_PANEL_COMMAND = 'dever.openFullscreenPanel';
-const CLOSE_FULLSCREEN_PANEL_COMMAND = 'dever.closeFullscreenPanel';
-const FULLSCREEN_PANEL_VIEW_TYPE = 'dever.projectSwitcher.fullscreen';
+const OPEN_FULLSCREEN_PANEL_COMMAND = 'vibe-vscode.openFullscreenPanel';
+const CLOSE_FULLSCREEN_PANEL_COMMAND = 'vibe-vscode.closeFullscreenPanel';
+const FULLSCREEN_PANEL_VIEW_TYPE = 'vibe-vscode.projectSwitcher.fullscreen';
 
 const enum FullscreenPanelIntent {
 	Open,
@@ -55,7 +55,7 @@ function openFullscreenPanel(context: vscode.ExtensionContext): void {
 		{
 			enableScripts: true,
 			retainContextWhenHidden: true,
-			deverFullscreen: true,
+			vibeVscodeFullscreen: true,
 		},
 	);
 	fullscreenPanel = panel;

@@ -294,7 +294,7 @@ Project Context 以选中 folder URI 为 selection authority，并通过同一�
 
 ## 11. Fullscreen Session Host
 
-内置扩展 `dever.dever-project-switcher` 通过 proposed API `deverFullscreenPanel` 请求 `dever.projectSwitcher.fullscreen` Webview。MainThread 同时校验：
+内置扩展 `vibe-vscode.project-switcher` 通过 proposed API `vibeVscodeFullscreenPanel` 请求 `vibe-vscode.projectSwitcher.fullscreen` Webview。MainThread 同时校验：
 
 - extension ID 与 View Type；
 - builtin 身份；
@@ -305,7 +305,7 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 
 创建 RPC 可等待 MainThread editor open。ExtHost 对同步返回的 `WebviewPanel` 建立 pending operation queue；创建失败时清理 handle、Webview 和 extension 侧引用。Workbench 内部 singleton 调用方使用共享 pending Promise，避免并发打开两个 Webview。
 
-这一层只是安全、可靠的 UI 宿主。扩展当前仍是占位内容，不能称为“全屏会话管理面板已实现”。内部 `dever.*` ID 为兼容暂时保留，用户可见品牌统一为 `vibe vscode`。
+这一层只是安全、可靠的 UI 宿主。扩展当前仍是占位内容，不能称为“全屏会话管理面板已实现”。项目原生 ID 统一使用 `vibe-vscode.*`，用户可见品牌统一为 `vibe vscode`；仅隐藏的旧配置键保留用于一次性数据迁移。
 
 ## 12. Web-first 构建与运行规约
 
@@ -343,7 +343,7 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 | Project selection 与 Explorer/SCM projection | [`projectContext.ts`](../../src/vs/workbench/contrib/workspace/browser/projectContext.ts) |
 | Fullscreen Webview authorization/lifecycle | [`mainThreadWebviewPanels.ts`](../../src/vs/workbench/api/browser/mainThreadWebviewPanels.ts) |
 | Fullscreen Modal Editor 宿主 | [`modalEditorPart.ts`](../../src/vs/workbench/browser/parts/editor/modalEditorPart.ts) |
-| Built-in Web extension | [`extension.ts`](../../extensions/dever-project-switcher/src/extension.ts) |
+| Built-in Web extension | [`extension.ts`](../../extensions/vibe-vscode/src/extension.ts) |
 
 ## 14. Review gate 状态
 

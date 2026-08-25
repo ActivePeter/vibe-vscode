@@ -113,7 +113,7 @@ const APP_ROOT = dirname(FileAccess.asFileUri('').fsPath);
 const STATIC_PATH = `/static`;
 const CALLBACK_PATH = `/callback`;
 const WEB_EXTENSION_PATH = `/web-extension-resource`;
-const DEVER_BUILTIN_WEB_EXTENSION_PATH = 'dever-project-switcher';
+const VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH = 'vibe-vscode';
 
 export class WebClientServer {
 
@@ -414,11 +414,11 @@ export class WebClientServer {
 		}
 
 		if (!this._environmentService.isBuilt) {
-			const deverPackageNLS = JSON.parse((await promises.readFile(FileAccess.asFileUri(`${builtinExtensionsPath}/${DEVER_BUILTIN_WEB_EXTENSION_PATH}/package.nls.json`).fsPath)).toString());
+			const vibeVscodePackageNLS = JSON.parse((await promises.readFile(FileAccess.asFileUri(`${builtinExtensionsPath}/${VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH}/package.nls.json`).fsPath)).toString());
 			const bundledExtensions: { extensionPath: string; packageJSON: IExtensionManifest; packageNLS?: Record<string, string> }[] = [{
-				extensionPath: DEVER_BUILTIN_WEB_EXTENSION_PATH,
-				packageJSON: JSON.parse((await promises.readFile(FileAccess.asFileUri(`${builtinExtensionsPath}/${DEVER_BUILTIN_WEB_EXTENSION_PATH}/package.json`).fsPath)).toString()),
-				packageNLS: deverPackageNLS,
+				extensionPath: VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH,
+				packageJSON: JSON.parse((await promises.readFile(FileAccess.asFileUri(`${builtinExtensionsPath}/${VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH}/package.json`).fsPath)).toString()),
+				packageNLS: vibeVscodePackageNLS,
 			}];
 			for (const extensionPath of useTestResolver ? ['vscode-test-resolver', 'github-authentication'] : []) {
 				const packageJSON = JSON.parse((await promises.readFile(FileAccess.asFileUri(`${builtinExtensionsPath}/${extensionPath}/package.json`).fsPath)).toString());

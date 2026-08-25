@@ -22,7 +22,7 @@ vibe vscode 面向常驻个人工作站或云端的 Web 开发环境。PR #1 不
 | --- | --- | --- |
 | Logical Workspace catalog 与页面内切换 | 创建、选择、页面独立的 active ID、远程共享 catalog | 远程原子初始化和跨页面同步已实现 |
 | Shell 布局 | 保存并恢复主侧栏、Panel、辅助侧栏的显隐、尺寸和 active composite | 可验收 |
-| Terminal 隔离 | 唯一 owner、Logical Terminal ID、前后台迁移、持久化链路 | 创建 identity、真实 detach 生命周期与批量投影已闭环；仍有 1 个 P1 |
+| Terminal 隔离 | 唯一 owner、Logical Terminal ID、前后台迁移、持久化链路 | 创建 identity、真实 detach 生命周期、批量投影与 Remote backend 分区已闭环；可验收 |
 | Agent Session catalog | 保持 VS Code 原有的全局 catalog 与全局 Agent Sessions 列表 | 已撤掉 Workspace owner/filtering；Session Tab working set 为 Planned |
 | Project Context | Project 选择、Explorer/Find generation、SCM repository 集合投影与聚焦 | 核心完成；真实 Git 扩展验收通过，待托管浏览器验收 |
 | Fullscreen Session Host | 受控 proposed API、Modal Editor 宿主、Webview 生命周期 | 基础设施完成；会话管理 UI 不在本 PR |
@@ -75,6 +75,7 @@ Project Context 与 Logical Workspace 是正交维度：切 Project 不应关闭
 - `LogicalWorkspaceService` 持有当前页面的 confirmed/optimistic projection，不生成服务端 revision，也不裁决页面间冲突。
 - Chat Sessions Service/provider history 是 Session catalog authority；`LogicalWorkspaceService` 不保存 Session owner，不创建、过滤或删除 Session 本体。
 - Terminal、Editor、Explorer 和 Workbench Layout 只投影各自 authority，不保存平行的关系集合。
+- PTY process ID 只在所属 backend 内有效；Terminal 持久化直接复用 VS Code 的 `remoteAuthority`/backend 归属，不能根据 process ID 反推或合并不同 backend 的实例。
 - UI 过滤不能改变全局模型查询语义。例如 Project 只限制 Explorer 的 `visibleRoots`，不能删减窗口级 `model.roots`。
 
 ### 4.2 Shared、page-local 与 ephemeral 分层
@@ -241,11 +242,14 @@ Terminal projection 通过通用 Coordinator 把自身触发的 `onDidChangeInst
 
 Terminal ownership 不再根据 `TerminalExitReason.Shutdown` 推测资源是否可恢复。PTY detach 从后端逐层返回 `processWasRetained`：只有后端确认进程进入可重连状态，Terminal instance 才记录 `processWasDetached=true` 并保留 owner；不支持持久化、未满足持久化条件或真正退出的进程都会解绑。`Shutdown` 只描述 UI instance 的退出原因，不再承担资源生命周期语义。
 
-### 8.2 当前未闭环边界
+### 8.2 Remote backend 分区
 
-- remote Workbench 可同时存在 local PTY，background 持久化目前没有按 backend/authority 分区；
+Remote Workbench 的持久化不创建新的 Terminal 分类，而是复用每个 `ITerminalInstance.remoteAuthority` 与既有 backend 的对应关系：
 
-因此“Terminal 隔离基础链路已实现”不等于所有 Terminal 类型和 reload 组合均已通过验收。
+- 写入 Remote primary backend 时，panel group、active process 与 background 列表只序列化 `remoteAuthority` 等于当前 Remote authority 的实例；
+- Remote reload 复用 Local 分支已有的 background revive 流程，恢复 Remote layout 中的隐藏 Terminal；
+- process ID 的相等不代表资源相同；即使 Local 与 Remote backend 分配了相同 ID，也必须按实例的 authority 过滤后再序列化；
+- Remote Workbench 中 authority-less Local PTY 不写入 Remote layout。本 PR 不额外扩展这类 Local PTY 的跨 reload 持久化，保留 VS Code 现有生命周期语义。
 
 ### 8.3 Planned：Closed Terminal Transcript
 
@@ -348,13 +352,8 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 - 删除 Session owner state，关闭空 ChatModel ghost owner 与错误独占语义；
 - generation-aware Find 恢复关闭 Project/Explorer projection 冲突；
 - `AgentSessionCatalog` 的 complete/partial/cancelled 结果协议关闭 history 失败被当作权威空 catalog；
-- 远程原子初始化、服务端 revision 和语义 mutation 关闭同 revision 默认 catalog 覆盖。
-
-当前仍需单独处理的已知 Terminal gate：
-
-| 优先级 | 问题 | 违反的契约 |
-| --- | --- | --- |
-| [P1](https://github.com/ActivePeter/vibe-vscode/pull/1#discussion_r3841475808) | Remote Workbench 中的 local PTY 被错误交给 remote backend 持久化 | 持久化 authority 必须按 backend 分区 |
+- 远程原子初始化、服务端 revision 和语义 mutation 关闭同 revision 默认 catalog 覆盖；
+- Remote layout 按既有 `remoteAuthority` 过滤并恢复 background，关闭 local PTY 串写 Remote backend。
 
 ## 15. 验证矩阵
 
@@ -362,7 +361,7 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 | --- | --- | --- |
 | State Store | 远程原子初始化、服务端 revision、并发语义 mutation、迟到 response、幂等重试、丢弃旧 `chatSessionResources` | 托管服务双页面与服务重启验收 |
 | Layout | 初始恢复、显隐、active composite、隐藏 part 尺寸 | 保持现有覆盖通过 |
-| Terminal | initiating identity、成功后 ownership commit、后端确认的 detach retention、不可持久化 PTY 解绑、批量 projection、editor A→B 快切 | remote+local PTY reload |
+| Terminal | initiating identity、成功后 ownership commit、后端确认的 detach retention、不可持久化 PTY 解绑、批量 projection、editor A→B 快切、Remote background revive、同 process ID 的 authority 分区 | 托管 Remote background reload |
 | Agent Sessions | 全局 provider catalog、complete/partial/cancelled refresh、Workspace 切换后列表不变、无 Logical Workspace Session API | Session Tab working set 留待后续专项验收 |
 | Project | active item、新增 folder、全局/可见 roots、Find generation、快速切换 stale projection、SCM exact-set、single/multiple、延迟 add/remove；隔离 Workbench 已用两个真实 Git repositories 验收 A/B 双向切换 | 托管 Web 服务中的多根 Project 与 Git 扩展联动 |
 | Fullscreen Host | authorization、创建失败清理、pending 操作、reveal、singleton | 保持现有覆盖通过 |

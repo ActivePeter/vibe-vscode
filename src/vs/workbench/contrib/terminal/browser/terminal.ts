@@ -414,7 +414,7 @@ export interface ITerminalGroup {
 	layout(width: number, height: number): void;
 	addDisposable(disposable: IDisposable): void;
 	split(shellLaunchConfig: IShellLaunchConfig): ITerminalInstance;
-	getLayoutInfo(isActive: boolean): ITerminalTabLayoutInfoById;
+	getLayoutInfo(isActive: boolean, instanceFilter?: (instance: ITerminalInstance) => boolean): ITerminalTabLayoutInfoById;
 }
 
 export const enum TerminalConnectionState {

@@ -470,6 +470,8 @@ export class TerminalService extends Disposable implements ITerminalService {
 		backend.reduceConnectionGraceTime();
 		mark('code/terminal/willRecreateTerminalGroups');
 		await this._recreateTerminalGroups(layoutInfo);
+		const revivedInstances = await this._reviveBackgroundTerminalInstances(layoutInfo?.background ?? []);
+		this._backgroundedTerminalInstances = revivedInstances.map(instance => ({ instance }));
 		mark('code/terminal/didRecreateTerminalGroups');
 		// now that terminals have been restored,
 		// attach listeners to update remote when terminals are changed
@@ -735,8 +737,20 @@ export class TerminalService extends Disposable implements ITerminalService {
 		if (!this._terminalConfigurationService.config.enablePersistentSessions) {
 			return;
 		}
-		const tabs = this._terminalGroupService.groups.map(g => g.getLayoutInfo(g === this._terminalGroupService.activeGroup));
-		const state: ITerminalsLayoutInfoById = { tabs, background: this._backgroundedTerminalInstances.map(bg => bg.instance).filter(i => i.shellLaunchConfig.forcePersist).map(i => i.persistentProcessId).filter((e): e is number => e !== undefined) };
+		const remoteAuthority = this._environmentService.remoteAuthority;
+		const instanceFilter = remoteAuthority === undefined ? undefined : (instance: ITerminalInstance) => instance.remoteAuthority === remoteAuthority;
+		let tabs = this._terminalGroupService.groups.map(g => g.getLayoutInfo(g === this._terminalGroupService.activeGroup, instanceFilter));
+		if (instanceFilter) {
+			tabs = tabs.filter(tab => tab.terminals.length > 0);
+		}
+		const state: ITerminalsLayoutInfoById = {
+			tabs,
+			background: this._backgroundedTerminalInstances
+				.map(bg => bg.instance)
+				.filter(instance => instance.shellLaunchConfig.forcePersist && (!instanceFilter || instanceFilter(instance)))
+				.map(instance => instance.persistentProcessId)
+				.filter((id): id is number => id !== undefined)
+		};
 		this._primaryBackend?.setTerminalLayoutInfo(state);
 	}
 

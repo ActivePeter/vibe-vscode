@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { VSBuffer } from '../../../base/common/buffer.js';
+import { onUnexpectedError } from '../../../base/common/errors.js';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { Schemas } from '../../../base/common/network.js';
@@ -19,6 +20,35 @@ import { WebviewRemoteInfo, asWebviewUri, webviewGenericCspSource } from '../../
 import { SerializableObjectWithBuffers } from '../../services/extensions/common/proxyIdentifier.js';
 import type * as vscode from 'vscode';
 import * as extHostProtocol from './extHost.protocol.js';
+
+/**
+ * Preserves Extension API operation ordering while a synchronously returned webview handle is
+ * still being created asynchronously on the main thread.
+ */
+export class ExtHostWebviewOperationQueue {
+	constructor(private readonly whenReady?: Promise<void>) { }
+
+	enqueue(operation: () => void): void {
+		if (!this.whenReady) {
+			operation();
+			return;
+		}
+
+		void this.whenReady.then(operation, () => undefined).catch(onUnexpectedError);
+	}
+
+	async enqueueAsync<T>(operation: () => Promise<T>, creationFailureValue: T): Promise<T> {
+		if (this.whenReady) {
+			try {
+				await this.whenReady;
+			} catch {
+				return creationFailureValue;
+			}
+		}
+
+		return operation();
+	}
+}
 
 export class ExtHostWebview implements vscode.Webview {
 
@@ -46,6 +76,7 @@ export class ExtHostWebview implements vscode.Webview {
 		workspace: IExtHostWorkspace | undefined,
 		extension: IExtensionDescription,
 		deprecationService: IExtHostApiDeprecationService,
+		private readonly operationQueue = new ExtHostWebviewOperationQueue(),
 	) {
 		this.#handle = handle;
 		this.#proxy = proxy;
@@ -107,7 +138,7 @@ export class ExtHostWebview implements vscode.Webview {
 				this.#deprecationService.report('Webview vscode-resource: uris', this.#extension,
 					`Please migrate to use the 'webview.asWebviewUri' api instead: https://aka.ms/vscode-webview-use-aswebviewuri`);
 			}
-			this.#proxy.$setHtml(this.#handle, this.rewriteOldResourceUrlsIfNeeded(value));
+			this.operationQueue.enqueue(() => this.#proxy.$setHtml(this.#handle, this.rewriteOldResourceUrlsIfNeeded(value)));
 		}
 	}
 
@@ -120,7 +151,7 @@ export class ExtHostWebview implements vscode.Webview {
 		this.assertNotDisposed();
 
 		if (!objects.equals(this.#options, newOptions)) {
-			this.#proxy.$setOptions(this.#handle, serializeWebviewOptions(this.#extension, this.#workspace, newOptions));
+			this.operationQueue.enqueue(() => this.#proxy.$setOptions(this.#handle, serializeWebviewOptions(this.#extension, this.#workspace, newOptions)));
 		}
 
 		this.#options = newOptions;
@@ -131,7 +162,7 @@ export class ExtHostWebview implements vscode.Webview {
 			return false;
 		}
 		const serialized = serializeWebviewMessage(message, { serializeBuffersForPostMessage: this.#serializeBuffersForPostMessage });
-		return this.#proxy.$postMessage(this.#handle, serialized.message, ...serialized.buffers);
+		return this.operationQueue.enqueueAsync(() => this.#proxy.$postMessage(this.#handle, serialized.message, ...serialized.buffers), false);
 	}
 
 	private assertNotDisposed() {
@@ -234,8 +265,8 @@ export class ExtHostWebviews extends Disposable implements extHostProtocol.ExtHo
 		this._logService.warn(`${extensionId} created a webview without a content security policy: https://aka.ms/vscode-webview-missing-csp`);
 	}
 
-	public createNewWebview(handle: string, options: extHostProtocol.IWebviewContentOptions, extension: IExtensionDescription): ExtHostWebview {
-		const webview = new ExtHostWebview(handle, this._webviewProxy, reviveOptions(options), this.remoteInfo, this.workspace, extension, this._deprecationService);
+	public createNewWebview(handle: string, options: extHostProtocol.IWebviewContentOptions, extension: IExtensionDescription, operationQueue?: ExtHostWebviewOperationQueue): ExtHostWebview {
+		const webview = new ExtHostWebview(handle, this._webviewProxy, reviveOptions(options), this.remoteInfo, this.workspace, extension, this._deprecationService, operationQueue);
 		this._webviews.set(handle, webview);
 
 		const sub = webview._onDidDispose(() => {

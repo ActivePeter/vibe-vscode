@@ -206,7 +206,7 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 
 		const origin = this.webviewOriginStore.getOrigin(viewType, extension.id);
 
-		const webview = this._webviewWorkbenchService.openWebview({
+		const webview = await this._webviewWorkbenchService.openWebview({
 			origin,
 			providedViewType: viewType,
 			title: initData.title,

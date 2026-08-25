@@ -12,6 +12,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/c
 import { TestConfigurationService } from '../../../../platform/configuration/test/common/testConfigurationService.js';
 import { ExtensionIdentifier, IExtensionDescription } from '../../../../platform/extensions/common/extensions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { TestInstantiationService } from '../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
 import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService, MODAL_GROUP } from '../../../services/editor/common/editorService.js';
@@ -47,6 +48,7 @@ suite('MainThreadWebviewPanels', () => {
 			override readonly onDidAddGroup = Event.None;
 			override readonly onDidRemoveGroup = Event.None;
 			override readonly onDidMoveGroup = Event.None;
+			override readonly groups = [];
 			override registerContextKeyProvider(): IDisposable { return Disposable.None; }
 		}();
 		const webviewDidDispose = disposables.add(new Emitter<void>());
@@ -72,7 +74,7 @@ suite('MainThreadWebviewPanels', () => {
 			override readonly onDidChangeActiveWebview = Event.None;
 		}();
 		const webviewWorkbenchService = disposables.add(new class extends WebviewEditorService {
-			override openWebview(...args: Parameters<IWebviewWorkbenchService['openWebview']>): WebviewInput {
+			override async openWebview(...args: Parameters<IWebviewWorkbenchService['openWebview']>): Promise<WebviewInput> {
 				openOptions = args[4];
 				return input;
 			}
@@ -144,5 +146,87 @@ suite('MainThreadWebviewPanels', () => {
 
 		webviewDidDispose.fire();
 		await Promise.resolve();
+	});
+
+	test('propagates fullscreen editor open failures and disposes the unowned input', async () => {
+		const extensionLocation = URI.file('/builtin/vibe-vscode');
+		const extensionId = new ExtensionIdentifier('dever.dever-project-switcher');
+		const registeredExtension = upcastPartial<IExtensionDescription>({
+			identifier: extensionId,
+			extensionLocation,
+			isBuiltin: true,
+		});
+		const extensionService = new class extends mock<IExtensionService>() {
+			override readonly extensions = [registeredExtension];
+			override async activateByEvent(): Promise<void> { }
+		}();
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly activeModalEditorPart = undefined;
+			override readonly onDidAddGroup = Event.None;
+			override readonly onDidRemoveGroup = Event.None;
+			override readonly onDidMoveGroup = Event.None;
+			override registerContextKeyProvider(): IDisposable { return Disposable.None; }
+		}();
+		const expectedError = new Error('editor open failed');
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidActiveEditorChange = Event.None;
+			override readonly onDidVisibleEditorsChange = Event.None;
+			override async openEditor(): Promise<undefined> { throw expectedError; }
+		}();
+		const webviewDidDispose = disposables.add(new Emitter<void>());
+		const webview = new class extends mock<IOverlayWebview>() {
+			override readonly onDidDispose = webviewDidDispose.event;
+		}();
+		let inputDisposed = false;
+		const input = new class extends mock<WebviewInput>() {
+			override get webview(): IOverlayWebview { return webview; }
+			override dispose(): void { inputDisposed = true; }
+		}();
+		const instantiationService = disposables.add(new TestInstantiationService());
+		instantiationService.stubInstance(WebviewInput, input);
+		const webviewService = new class extends mock<IWebviewService>() {
+			override readonly onDidChangeActiveWebview = Event.None;
+			override createWebviewOverlay(): IOverlayWebview { return webview; }
+		}();
+		const webviewWorkbenchService = disposables.add(new WebviewEditorService(
+			editorGroupsService,
+			editorService,
+			instantiationService,
+			webviewService,
+		));
+		const mainThreadWebviews = new class extends mock<MainThreadWebviews>() {
+			override addWebview(): void { }
+		}();
+		const extHostWebviewPanels = new class extends mock<ExtHostWebviewPanelsShape>() {
+			override async $onDidDisposeWebviewPanel(): Promise<void> { }
+		}();
+		const panels = disposables.add(new MainThreadWebviewPanels(
+			SingleProxyRPCProtocol(extHostWebviewPanels),
+			mainThreadWebviews,
+			new TestConfigurationService(),
+			editorGroupsService,
+			editorService,
+			extensionService,
+			disposables.add(new TestStorageService()),
+			webviewWorkbenchService,
+		));
+		const initData: IWebviewInitData = {
+			title: 'Sessions',
+			webviewOptions: {},
+			panelOptions: { deverFullscreen: true },
+			serializeBuffersForPostMessage: false,
+		};
+
+		await assert.rejects(
+			panels.$createWebviewPanel(
+				{ id: extensionId, location: extensionLocation },
+				'fullscreen-rejected-handle',
+				'dever.projectSwitcher.fullscreen',
+				initData,
+				{ preserveFocus: false },
+			),
+			error => error === expectedError,
+		);
+		assert.strictEqual(inputDisposed, true);
 	});
 });

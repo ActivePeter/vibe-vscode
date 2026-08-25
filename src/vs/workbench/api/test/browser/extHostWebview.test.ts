@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { timeout } from '../../../../base/common/async.js';
+import { DeferredPromise, timeout } from '../../../../base/common/async.js';
 import { errorHandler, setUnexpectedErrorHandler } from '../../../../base/common/errors.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
@@ -93,6 +93,57 @@ suite('ExtHostWebview', () => {
 		} finally {
 			setUnexpectedErrorHandler(originalErrorHandler);
 		}
+	});
+
+	test('queues panel operations until main thread creation completes', async () => {
+		const creation = new DeferredPromise<void>();
+		const calls: { readonly type: string; readonly handle: string; readonly value?: string }[] = [];
+		const shape = new class extends mock<MainThreadWebviewManager>() {
+			async $createWebviewPanel(_extensionData: WebviewExtensionDescription, handle: string): Promise<void> {
+				calls.push({ type: 'create', handle });
+				await creation.p;
+				calls.push({ type: 'created', handle });
+			}
+			$setHtml(handle: string, value: string): void {
+				calls.push({ type: 'html', handle, value });
+			}
+			async $postMessage(handle: string): Promise<boolean> {
+				calls.push({ type: 'message', handle });
+				return true;
+			}
+			$setTitle(handle: string, value: string): void {
+				calls.push({ type: 'title', handle, value });
+			}
+			$disposeWebview(handle: string): void {
+				calls.push({ type: 'dispose', handle });
+			}
+		};
+		const pendingRpc = SingleProxyRPCProtocol(shape);
+		const extHostWebviews = disposables.add(new ExtHostWebviews(pendingRpc, { authority: undefined, isRemote: false }, undefined, new NullLogService(), NullApiDeprecationService));
+		const extHostWebviewPanels = disposables.add(new ExtHostWebviewPanels(pendingRpc, extHostWebviews, undefined));
+		const extension = { extensionLocation: URI.file('/ext/path') } as IExtensionDescription;
+
+		const panel = extHostWebviewPanels.createWebviewPanel(extension, 'type', 'title', 1, {});
+		panel.webview.html = '<html>ready</html>';
+		const postMessage = panel.webview.postMessage({ ready: true });
+		panel.title = 'Updated';
+		panel.dispose();
+		await timeout(0);
+
+		const handle = calls[0].handle;
+		assert.deepStrictEqual(calls, [{ type: 'create', handle }]);
+
+		creation.complete();
+		assert.strictEqual(await postMessage, true);
+		await timeout(0);
+		assert.deepStrictEqual(calls, [
+			{ type: 'create', handle },
+			{ type: 'created', handle },
+			{ type: 'html', handle, value: '<html>ready</html>' },
+			{ type: 'message', handle },
+			{ type: 'title', handle, value: 'Updated' },
+			{ type: 'dispose', handle },
+		]);
 	});
 
 	test('Cannot register multiple serializers for the same view type', async () => {

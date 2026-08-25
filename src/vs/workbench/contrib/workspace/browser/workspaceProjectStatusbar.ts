@@ -37,7 +37,7 @@ export class WorkspaceProjectStatusbar extends Disposable implements IWorkbenchC
 			name: localize('workspaceContextStatusName', "Workspace Context"),
 			text: `$(window) ${localize('workspaceContextStatusLabel', "Workspace: {0}", label)}`,
 			ariaLabel: localize('workspaceContextStatusAria', "Workspace: {0}", label),
-			tooltip: localize('workspaceContextStatusTooltip', "The persistent workbench container. Select it to switch its layout, terminals, and Chat sessions without reloading this workbench."),
+			tooltip: localize('workspaceContextStatusTooltip', "The persistent workbench container. Select it to switch its layout, terminals, and editors without reloading this workbench."),
 			command: PICK_LOGICAL_WORKSPACE_COMMAND_ID,
 		};
 	}

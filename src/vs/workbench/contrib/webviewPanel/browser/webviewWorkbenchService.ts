@@ -52,7 +52,7 @@ export interface IWebviewWorkbenchService {
 		title: string,
 		iconPath: WebviewIconPath | undefined,
 		showOptions: IWebViewShowOptions,
-	): WebviewInput;
+	): Promise<WebviewInput>;
 
 	/**
 	 * Open a webview that is being restored from serialization.
@@ -271,24 +271,29 @@ export class WebviewEditorService extends Disposable implements IWebviewWorkbenc
 		}
 	}
 
-	public openWebview(
+	public async openWebview(
 		webviewInitInfo: WebviewInitInfo,
 		viewType: string,
 		title: string,
 		iconPath: WebviewIconPath | undefined,
 		showOptions: IWebViewShowOptions,
-	): WebviewInput {
+	): Promise<WebviewInput> {
 		const webview = this._webviewService.createWebviewOverlay(webviewInitInfo);
 		const webviewInput = this._instantiationService.createInstance(WebviewInput, { viewType, name: title, providedId: webviewInitInfo.providedViewType, iconPath }, webview);
-		this._editorService.openEditor(webviewInput, {
-			pinned: true,
-			preserveFocus: showOptions.preserveFocus,
-			modal: showOptions.modal,
-			// preserve pre 1.38 behaviour to not make group active when preserveFocus: true
-			// but make sure to restore the editor to fix https://github.com/microsoft/vscode/issues/79633
-			activation: showOptions.preserveFocus ? EditorActivation.RESTORE : undefined
-		}, showOptions.group);
-		return webviewInput;
+		try {
+			await this._editorService.openEditor(webviewInput, {
+				pinned: true,
+				preserveFocus: showOptions.preserveFocus,
+				modal: showOptions.modal,
+				// preserve pre 1.38 behaviour to not make group active when preserveFocus: true
+				// but make sure to restore the editor to fix https://github.com/microsoft/vscode/issues/79633
+				activation: showOptions.preserveFocus ? EditorActivation.RESTORE : undefined
+			}, showOptions.group);
+			return webviewInput;
+		} catch (error) {
+			webviewInput.dispose();
+			throw error;
+		}
 	}
 
 	public revealWebview(

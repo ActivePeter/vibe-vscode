@@ -16,7 +16,7 @@ import { PickLogicalWorkspaceAction } from '../../browser/logicalWorkspace.contr
 suite('Logical Workspace Contribution', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('focuses the active workspace when it is not the first item', async () => {
+	test('focuses the active workspace and describes implemented state', async () => {
 		const store = disposables.add(new DisposableStore());
 		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
 		const workspaces = [
@@ -29,10 +29,12 @@ suite('Logical Workspace Contribution', () => {
 		});
 
 		let activeItemLabel: string | undefined;
+		let quickPickItems: readonly IQuickPickItem[] = [];
 		instantiationService.stub(IQuickInputService, new class extends mock<IQuickInputService>() {
 			override pick<T extends IQuickPickItem>(picks: Promise<QuickPickInput<T>[]> | QuickPickInput<T>[], options?: IPickOptions<T> & { canPickMany: true }, token?: CancellationToken): Promise<T[] | undefined>;
 			override pick<T extends IQuickPickItem>(picks: Promise<QuickPickInput<T>[]> | QuickPickInput<T>[], options?: IPickOptions<T> & { canPickMany: false }, token?: CancellationToken): Promise<T | undefined>;
 			override async pick<T extends IQuickPickItem>(_picks: Promise<QuickPickInput<T>[]> | QuickPickInput<T>[], options?: Omit<IPickOptions<T>, 'canPickMany'>, _token?: CancellationToken): Promise<T | undefined> {
+				quickPickItems = (await _picks).filter((pick): pick is T => pick.type !== 'separator');
 				activeItemLabel = (await options?.activeItem)?.label;
 				return undefined;
 			}
@@ -41,6 +43,11 @@ suite('Logical Workspace Contribution', () => {
 		await instantiationService.invokeFunction(accessor => new PickLogicalWorkspaceAction().run(accessor));
 
 		assert.strictEqual(activeItemLabel, 'Active');
+		assert.deepStrictEqual(quickPickItems.map(item => ({ label: item.label, description: item.description })), [
+			{ label: 'First', description: "Restores this context's layout, terminals, and editors" },
+			{ label: 'Active', description: 'Active workbench context' },
+			{ label: 'New Workspace...', description: 'Creates an independent layout, terminal, and editor context' },
+		]);
 		store.dispose();
 	});
 });

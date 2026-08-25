@@ -32,12 +32,12 @@ export class PickLogicalWorkspaceAction extends Action2 {
 			label: workspace.name,
 			description: workspace.id === activeWorkspace.id
 				? localize('logicalWorkspaceActive', "Active workbench context")
-				: localize('logicalWorkspaceInactive', "Restores this context's layout, terminals, and sessions"),
+				: localize('logicalWorkspaceInactive', "Restores this context's layout, terminals, and editors"),
 			workspace,
 		}));
 		picks.push({
 			label: localize('logicalWorkspaceNew', "New Workspace..."),
-			description: localize('logicalWorkspaceNewDescription', "Creates an independent layout, terminal, and session context"),
+			description: localize('logicalWorkspaceNewDescription', "Creates an independent layout, terminal, and editor context"),
 			alwaysShow: true,
 			isNewWorkspaceAction: true,
 		});

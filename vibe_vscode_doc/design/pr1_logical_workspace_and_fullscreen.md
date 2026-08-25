@@ -120,6 +120,7 @@ Session catalog 的 refresh 只有在取得完整结果后才能发布权威 rem
 - transport/storage failure 保留队列并退避重试；损坏记录或畸形协议属于不可容忍失败，禁止降级为默认空状态。
 
 完整协议、迁移与失败边界见 [Logical Workspace 远程权威状态](./remote_logical_workspace_state.md)。
+剩余 durable write 与 exactly-once Review gate 的最小接口、上游复用边界和测试要求见 [远端持久化状态最小接口设计](./remote_persistent_state_minimal_interfaces.md)。
 
 ## 5. 总体架构
 

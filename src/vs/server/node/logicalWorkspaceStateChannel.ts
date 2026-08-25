@@ -9,7 +9,7 @@ import { toErrorMessage } from '../../base/common/errorMessage.js';
 import { Emitter, Event } from '../../base/common/event.js';
 import { Disposable } from '../../base/common/lifecycle.js';
 import { dirname } from '../../base/common/path.js';
-import { InMemoryStorageDatabase, IStorage, Storage, StorageHint } from '../../base/parts/storage/common/storage.js';
+import { InMemoryStorageDatabase, IStorageDatabase } from '../../base/parts/storage/common/storage.js';
 import { SQLiteStorageDatabase } from '../../base/parts/storage/node/storage.js';
 import { IServerChannel } from '../../base/parts/ipc/common/ipc.js';
 import { ILogService, LogLevel } from '../../platform/log/common/log.js';
@@ -40,15 +40,17 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 	readonly onDidChange = this._onDidChange.event;
 
 	private readonly sequencer = new Sequencer();
-	private readonly whenReady: Promise<IStorage>;
-	private storage: IStorage | undefined;
+	private readonly confirmedItems = new Map<string, string>();
+	private readonly whenReady: Promise<IStorageDatabase>;
+	private database: IStorageDatabase | undefined;
 
 	constructor(
 		private readonly storagePath: string | undefined,
 		private readonly logService: ILogService,
+		private readonly databaseFactory?: (storagePath: string | undefined) => IStorageDatabase,
 	) {
 		super();
-		this.whenReady = this.createStorage();
+		this.whenReady = this.createDatabase();
 	}
 
 	read(physicalWorkspaceId: string): Promise<IRemoteLogicalWorkspaceStateSnapshot | undefined> {
@@ -91,27 +93,28 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 		});
 	}
 
-	private async createStorage(): Promise<IStorage> {
+	private async createDatabase(): Promise<IStorageDatabase> {
 		if (this.storagePath) {
 			await fs.promises.mkdir(dirname(this.storagePath), { recursive: true });
 		}
-		const database = this.storagePath
+		const database = this.databaseFactory?.(this.storagePath) ?? (this.storagePath
 			? new SQLiteStorageDatabase(this.storagePath, {
 				logging: {
 					logTrace: this.logService.getLevel() === LogLevel.Trace ? message => this.logService.trace(message) : undefined,
 					logError: error => this.logService.error(error),
 				},
 			})
-			: new InMemoryStorageDatabase();
-		const storage = this._register(new Storage(database, this.storagePath ? undefined : { hint: StorageHint.STORAGE_IN_MEMORY }));
-		this.storage = storage;
-		await storage.init();
-		return storage;
+			: new InMemoryStorageDatabase());
+		this.database = database;
+		for (const [key, value] of await database.getItems()) {
+			this.confirmedItems.set(key, value);
+		}
+		return database;
 	}
 
 	private async doRead(physicalWorkspaceId: string): Promise<IRemoteLogicalWorkspaceStateSnapshot | undefined> {
-		const storage = await this.whenReady;
-		const raw = storage.get(this.storageKey(physicalWorkspaceId));
+		await this.whenReady;
+		const raw = this.confirmedItems.get(this.storageKey(physicalWorkspaceId));
 		if (raw === undefined) {
 			return undefined;
 		}
@@ -133,13 +136,16 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 	}
 
 	private async write(physicalWorkspaceId: string, snapshot: IRemoteLogicalWorkspaceStateSnapshot): Promise<void> {
-		const storage = await this.whenReady;
+		const database = await this.whenReady;
 		const storedState: IStoredLogicalWorkspaceState = {
 			storageVersion: 1,
 			revision: snapshot.revision,
 			state: snapshot.state,
 		};
-		await storage.set(this.storageKey(physicalWorkspaceId), JSON.stringify(storedState));
+		const key = this.storageKey(physicalWorkspaceId);
+		const raw = JSON.stringify(storedState);
+		await database.updateItems({ insert: new Map([[key, raw]]) });
+		this.confirmedItems.set(key, raw);
 	}
 
 	private storageKey(physicalWorkspaceId: string): string {
@@ -147,10 +153,10 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 	}
 
 	override dispose(): void {
-		const storage = this.storage;
-		this.storage = undefined;
-		if (storage) {
-			void storage.close().catch(error => this.logService.error('Failed to close the remote Logical Workspace state database', error));
+		const database = this.database;
+		this.database = undefined;
+		if (database) {
+			void database.close(() => new Map(this.confirmedItems)).catch(error => this.logService.error('Failed to close the remote Logical Workspace state database', error));
 		}
 		super.dispose();
 	}

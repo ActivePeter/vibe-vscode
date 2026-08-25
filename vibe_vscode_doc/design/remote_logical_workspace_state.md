@@ -1,6 +1,6 @@
 # Logical Workspace 远程权威状态
 
-> 文档状态：PR #1 当前实现契约
+> 文档状态：PR #1 目标契约；剩余 durable write 与 exactly-once gate 见 [远端持久化状态最小接口设计](./remote_persistent_state_minimal_interfaces.md)
 >
 > 适用范围：Logical Workspace catalog、Terminal ownership、Shell layout 与 editor working set
 
@@ -90,14 +90,14 @@ flowchart LR
 
 服务端在一个 `Sequencer` 中读取当前 snapshot、应用 mutation、递增 revision、等待 SQLite flush，再发布 committed event。不同页面对不同字段的并发修改按服务端顺序合并，不会因为任一页面持有旧快照而丢失另一项修改。
 
-所有 mutation 均为幂等操作：
+这些 mutation 在相邻重复、且中间没有其他 mutation 时具有业务幂等性：
 
 - 相同 Workspace ID 只能创建一次；
 - 重复设置相同布局或 working set 不增加 revision；
 - 已绑定的 Terminal 不会重复加入；
 - 重复解绑不存在的 Terminal 不产生变化。
 
-这允许客户端在“服务端已提交、响应在网络中丢失”时安全重试。
+业务幂等性不能提供 transport exactly-once。若 A 已提交后响应丢失、B 又提交了更新，A 再次执行仍可能覆盖 B；安全重试还需要稳定 operation ID 与服务端持久化去重。
 
 ## 6. 页面 optimistic projection
 
@@ -125,7 +125,7 @@ Remote Agent 重连成功后，客户端主动执行 `read`：
 
 - 补齐断线期间错过的 event；
 - 以最新服务端 snapshot 作为 optimistic queue 的新 base；
-- 随后继续发送未确认且幂等的 mutation。
+- 随后继续发送未确认的 mutation；完成 exactly-once gate 后，transport retry 必须携带首次入队时生成的相同 operation ID。
 
 BroadcastChannel 不再参与 Logical Workspace 状态同步、revision 或 winner 选择。
 
@@ -135,7 +135,7 @@ BroadcastChannel 不再参与 Logical Workspace 状态同步、revision 或 winn
 
 | 类型 | 示例 | 动作 |
 | --- | --- | --- |
-| 可重试 transport/storage failure | 连接暂时中断、IPC 调用失败、SQLite 暂时不可写 | 保留 mutation，按 `1s/5s/15s/30s` 退避重试，并记录 warning |
+| 可重试 transport/storage failure | 连接暂时中断、IPC 调用失败、SQLite 暂时不可写 | 保留 mutation，按 `1s/5s/15s/30s` 退避重试，并记录 warning；Server 只能从 durable confirmed state 重试 |
 | 不可容忍 protocol/state failure | 服务端记录损坏、返回畸形 snapshot、初始化后权威记录消失 | 停止写入并记录 error，不创建默认状态覆盖 |
 
 远程不可用期间，页面可以保留已经显示的 projection，但不得把它升级为新 authority。`whenReady` 在初始远程状态成功确认前不会完成；依赖共享 identity 的 Terminal 创建和 Workspace projection 必须等待它。
@@ -157,7 +157,8 @@ BroadcastChannel 不再参与 Logical Workspace 状态同步、revision 或 winn
 1. 远程已有 revision `1`，新页面本地持久层为空并立即初始化，已有状态仍获胜。
 2. 两个客户端同时初始化不同 candidate，只产生一份 revision `1` 状态。
 3. 两个页面并发写 Terminal ownership 与 Shell layout，最终 snapshot 同时包含两项。
-4. mutation response 丢失后重试，不重复创建资源或增加 revision。
-5. 较新 event 先于较旧 response 到达时，客户端移除已确认 optimistic mutation，并显示较新的服务端值。
-6. active Workspace 保持 page-local，不随远程 catalog 的普通字段变化切换。
-7. 畸形远程 snapshot 被拒绝，不能触发默认状态写回。
+4. SQLite update 失败后 retry，再关闭并重新打开数据库，成功响应对应的 revision/state 必须真实落盘。
+5. mutation response 丢失、另一客户端插入 mutation、原客户端携带相同 operation ID retry，不得再次 apply 原 mutation；Server 重启后去重仍成立。
+6. 较新 event 先于较旧 response 到达时，客户端移除已确认 optimistic mutation，并显示较新的服务端值。
+7. active Workspace 保持 page-local，不随远程 catalog 的普通字段变化切换。
+8. 畸形远程 snapshot 被拒绝，不能触发默认状态写回。

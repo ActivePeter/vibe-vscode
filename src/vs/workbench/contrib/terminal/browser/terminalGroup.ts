@@ -338,12 +338,12 @@ export class TerminalGroup extends Disposable implements ITerminalGroup {
 		return this._terminalInstances[this._activeInstanceIndex];
 	}
 
-	getLayoutInfo(isActive: boolean): ITerminalTabLayoutInfoById {
-		const instances = this.terminalInstances.filter(instance => isNumber(instance.persistentProcessId) && instance.shouldPersist);
+	getLayoutInfo(isActive: boolean, instanceFilter?: (instance: ITerminalInstance) => boolean): ITerminalTabLayoutInfoById {
+		const instances = this.terminalInstances.filter(instance => isNumber(instance.persistentProcessId) && instance.shouldPersist && (!instanceFilter || instanceFilter(instance)));
 		const totalSize = instances.map(t => this._splitPaneContainer?.getPaneSize(t) || 0).reduce((total, size) => total += size, 0);
 		return {
 			isActive: isActive,
-			activePersistentProcessId: this.activeInstance ? this.activeInstance.persistentProcessId : undefined,
+			activePersistentProcessId: this.activeInstance && (!instanceFilter || instanceFilter(this.activeInstance)) ? this.activeInstance.persistentProcessId : undefined,
 			terminals: instances.map(t => {
 				return {
 					relativeSize: totalSize > 0 ? this._splitPaneContainer!.getPaneSize(t) / totalSize : 0,

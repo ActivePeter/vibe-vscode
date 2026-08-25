@@ -5,19 +5,21 @@
 
 import { deepStrictEqual, fail, rejects, strictEqual } from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
-import { Emitter } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
-import { TerminalLocation, TitleEventSource, type ICreateContributedTerminalProfileOptions, type IShellLaunchConfig, type ITerminalBackend, type TerminalIcon } from '../../../../../platform/terminal/common/terminal.js';
+import { TerminalLocation, TitleEventSource, type ICreateContributedTerminalProfileOptions, type IPtyHostAttachTarget, type IShellLaunchConfig, type ITerminalBackend, type ITerminalsLayoutInfoById, type TerminalIcon } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../browser/terminal.js';
+import { TerminalGroup } from '../../browser/terminalGroup.js';
 import { TerminalService } from '../../browser/terminalService.js';
 import { ITerminalProfileService, TERMINAL_CONFIG_SECTION } from '../../common/terminal.js';
+import { IWorkbenchEnvironmentService } from '../../../../services/environment/common/environmentService.js';
 import { ILogicalWorkspaceService, LogicalWorkspaceActivationActor } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { IRemoteAgentService } from '../../../../services/remote/common/remoteAgentService.js';
-import { workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
+import { TestEnvironmentService, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import type { IConfigurationChangeEvent } from '../../../../../platform/configuration/common/configuration.js';
 
 suite('Workbench - TerminalService', () => {
@@ -156,6 +158,84 @@ suite('Workbench - TerminalService', () => {
 				strictEqual(backgroundedTerminalDisposables.size, 0);
 				strictEqual(disposalEmitters[i].hasListeners(), false);
 			}
+		});
+
+		test('should restore and persist only the current remote backend layout', async () => {
+			const attachTarget = {
+				id: 23,
+				logicalTerminalId: 'remote-background-terminal',
+			} satisfies Partial<IPtyHostAttachTarget> as IPtyHostAttachTarget;
+			let persistedState: ITerminalsLayoutInfoById | undefined;
+			const backend = {
+				remoteAuthority: 'test-remote',
+				onDidRequestDetach: Event.None,
+				async getTerminalLayoutInfo() {
+					return { tabs: [], background: [attachTarget] };
+				},
+				async reduceConnectionGraceTime() { },
+				async setTerminalLayoutInfo(state: ITerminalsLayoutInfoById | undefined) {
+					persistedState = state;
+				},
+			} satisfies Partial<ITerminalBackend> as unknown as ITerminalBackend;
+			const remoteEnvironmentService = Object.create(TestEnvironmentService, {
+				remoteAuthority: { value: 'test-remote' },
+			}) as IWorkbenchEnvironmentService;
+			const remoteInstantiationService = workbenchInstantiationService({
+				configurationService: () => configurationService,
+				environmentService: () => remoteEnvironmentService,
+			}, store);
+			remoteInstantiationService.stub(ITerminalInstanceService, 'getBackend', async (remoteAuthority: string | undefined) => remoteAuthority === 'test-remote' ? backend : undefined);
+			remoteInstantiationService.stub(ITerminalInstanceService, 'getRegisteredBackends', []);
+			remoteInstantiationService.stub(ITerminalProfileService, 'getContributedDefaultProfile', async () => undefined);
+			remoteInstantiationService.stub(IRemoteAgentService, 'getConnection', null);
+
+			let revivedShellLaunchConfig: IShellLaunchConfig | undefined;
+			const revivedInstance = {
+				instanceId: 24,
+				persistentProcessId: attachTarget.id,
+				remoteAuthority: 'test-remote',
+				shouldPersist: true,
+				get shellLaunchConfig() { return revivedShellLaunchConfig!; },
+				onDisposed: Event.None,
+				onIconChanged: Event.None,
+				onProcessIdReady: Event.None,
+				onTitleChanged: Event.None,
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			remoteInstantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', (config: Parameters<ITerminalInstanceService['convertProfileToShellLaunchConfig']>[0]) => revivedShellLaunchConfig = config as IShellLaunchConfig);
+			remoteInstantiationService.stub(ITerminalInstanceService, 'createInstance', () => revivedInstance);
+			const remoteTerminalService = store.add(remoteInstantiationService.createInstance(TerminalService));
+			remoteInstantiationService.stub(ITerminalService, remoteTerminalService);
+			remoteTerminalService.registerProcessSupport(true);
+
+			await remoteTerminalService.whenConnected;
+
+			const remoteForeground = createLayoutTerminalInstance(25, 17, 'test-remote');
+			const localForeground = createLayoutTerminalInstance(26, 17, undefined);
+			const group = store.add(remoteInstantiationService.createInstance(TerminalGroup, undefined, remoteForeground));
+			group.addInstance(localForeground);
+			group.setActiveInstanceByIndex(1);
+			Object.assign(remoteInstantiationService.get(ITerminalGroupService), { groups: [group], activeGroup: group });
+
+			const localBackground = createLayoutTerminalInstance(27, attachTarget.id, undefined, { forcePersist: true });
+			const backgroundedInstances = Reflect.get(remoteTerminalService, '_backgroundedTerminalInstances') as Array<{ instance: ITerminalInstance }>;
+			backgroundedInstances.push({ instance: localBackground });
+
+			await runWithFakedTimers({}, async () => saveState(remoteTerminalService));
+
+			deepStrictEqual({
+				restoredAttachTarget: revivedShellLaunchConfig?.attachPersistentProcess,
+				persistedState,
+			}, {
+				restoredAttachTarget: attachTarget,
+				persistedState: {
+					tabs: [{
+						isActive: true,
+						activePersistentProcessId: undefined,
+						terminals: [{ relativeSize: 0, terminal: 17 }],
+					}],
+					background: [attachTarget.id],
+				},
+			});
 		});
 	});
 
@@ -464,4 +544,22 @@ function updateTitle(terminalService: TerminalService, instance: ITerminalInstan
 function updateIcon(terminalService: TerminalService, instance: ITerminalInstance, userInitiated: boolean): void {
 	const fn = Reflect.get(terminalService, '_updateIcon') as (instance: ITerminalInstance, userInitiated: boolean) => void;
 	fn.call(terminalService, instance, userInitiated);
+}
+
+function saveState(terminalService: TerminalService): void {
+	const fn = Reflect.get(terminalService, '_saveState') as () => void;
+	fn.call(terminalService);
+}
+
+function createLayoutTerminalInstance(instanceId: number, persistentProcessId: number, remoteAuthority: string | undefined, shellLaunchConfig: IShellLaunchConfig = {}): ITerminalInstance {
+	return {
+		instanceId,
+		persistentProcessId,
+		remoteAuthority,
+		shouldPersist: true,
+		shellLaunchConfig,
+		onDisposed: Event.None,
+		onDidFocus: Event.None,
+		capabilities: { onDidChangeCapabilities: Event.None } as unknown as ITerminalInstance['capabilities'],
+	} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
 }

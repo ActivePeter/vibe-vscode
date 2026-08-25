@@ -100,7 +100,7 @@ stop_service() {
 
 	if ! tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
 		is_port_listening && fail "port $SERVICE_PORT is owned by an unrecognized process"
-		return
+		return 0
 	fi
 
 	printf 'Stopping existing Vibe VS Code service on port %s...\n' "$SERVICE_PORT"

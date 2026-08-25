@@ -327,25 +327,6 @@ export class TestLogicalWorkspaceService extends Disposable implements ILogicalW
 		this.updateWorkspace(workspaceId, workspace => ({ ...workspace, editorWorkingSet }));
 	}
 
-	bindTerminal(workspaceId: string, logicalTerminalId: string): void {
-		this.getWorkspace(workspaceId);
-		if (this.workspaceList.some(workspace => workspace.terminalIds.includes(logicalTerminalId))) {
-			return;
-		}
-		this.updateWorkspace(workspaceId, workspace => ({ ...workspace, terminalIds: [...workspace.terminalIds, logicalTerminalId] }));
-	}
-
-	unbindTerminal(logicalTerminalId: string): void {
-		const owner = this.workspaceList.find(workspace => workspace.terminalIds.includes(logicalTerminalId));
-		if (owner) {
-			this.updateWorkspace(owner.id, workspace => ({ ...workspace, terminalIds: workspace.terminalIds.filter(candidate => candidate !== logicalTerminalId) }));
-		}
-	}
-
-	workspaceContainsTerminal(workspaceId: string, logicalTerminalId: string): boolean {
-		return this.getWorkspace(workspaceId).terminalIds.includes(logicalTerminalId);
-	}
-
 	private updateWorkspace(workspaceId: string, update: (workspace: ILogicalWorkspace) => ILogicalWorkspace): void {
 		this.getWorkspace(workspaceId);
 		const previousState = this.state;

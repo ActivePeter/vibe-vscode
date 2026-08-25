@@ -8,13 +8,13 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { ILogicalWorkspaceProjection, ILogicalWorkspaceProjectionContext, LogicalWorkspaceProjectionCoordinator } from '../../../services/logicalWorkspace/browser/logicalWorkspaceProjection.js';
-import { ILogicalWorkspaceService, onDidChangeLogicalWorkspaceStateSlice } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILogicalWorkspaceService } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { ITerminalInstance, ITerminalService } from '../../terminal/browser/terminal.js';
 
 /**
  * Projects logical workspace membership onto the terminal service's foreground/background split.
- * The logical workspace service is the only in-page ownership model and submits mutations to the
- * remote authority; this adapter stores no parallel terminal set.
+ * Terminal process metadata is the ownership authority. Legacy Workspace terminal IDs are read
+ * only as a migration fallback for processes created by older builds.
  */
 export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWorkbenchContribution, ILogicalWorkspaceProjection {
 
@@ -33,20 +33,7 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWork
 
 		this.projectionCoordinator = this._register(new LogicalWorkspaceProjectionCoordinator(logicalWorkspaceService, this, storageService, logService));
 		this._register(this.terminalService.onDidChangeInstances(() => void this.projectionCoordinator.requestReconcile()));
-		this._register(onDidChangeLogicalWorkspaceStateSlice(
-			this.logicalWorkspaceService,
-			state => state.workspaces.map(workspace => ({ id: workspace.id, terminalIds: workspace.terminalIds })),
-		)(() => void this.projectionCoordinator.requestReconcile()));
-		this._register(this.terminalService.onDidDisposeInstance(instance => this.handleDisposedTerminal(instance)));
 		this.terminalService.whenConnected.then(() => this.projectionCoordinator.requestReconcile()).catch(error => this.logService.error('Logical workspace terminal reconciliation could not await terminal connection', error));
-	}
-
-	private handleDisposedTerminal(instance: ITerminalInstance): void {
-		const logicalTerminalId = instance.shellLaunchConfig.logicalTerminalId;
-		if (!logicalTerminalId || instance.processWasDetached) {
-			return;
-		}
-		this.logicalWorkspaceService.unbindTerminal(logicalTerminalId);
 	}
 
 	restore(context: ILogicalWorkspaceProjectionContext): Promise<void> {
@@ -59,8 +46,8 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWork
 			if (!context.isCurrent()) {
 				return;
 			}
-			const logicalTerminalId = instance.shellLaunchConfig.logicalTerminalId;
-			if (logicalTerminalId && !this.logicalWorkspaceService.workspaceContainsTerminal(workspaceId, logicalTerminalId)) {
+			const logicalWorkspaceId = this.getLogicalWorkspaceId(instance);
+			if (logicalWorkspaceId && logicalWorkspaceId !== workspaceId) {
 				this.terminalService.moveToBackground(instance);
 			}
 		}
@@ -73,13 +60,22 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements IWork
 			if (foregroundInstances.has(instance)) {
 				continue;
 			}
-			const logicalTerminalId = instance.shellLaunchConfig.logicalTerminalId;
-			if (logicalTerminalId && this.logicalWorkspaceService.workspaceContainsTerminal(workspaceId, logicalTerminalId)) {
+			if (this.getLogicalWorkspaceId(instance) === workspaceId) {
 				await this.terminalService.showBackgroundTerminal(instance, true);
 				if (!context.isCurrent()) {
 					return;
 				}
 			}
 		}
+	}
+
+	private getLogicalWorkspaceId(instance: ITerminalInstance): string | undefined {
+		if (instance.shellLaunchConfig.logicalWorkspaceId) {
+			return instance.shellLaunchConfig.logicalWorkspaceId;
+		}
+		const logicalTerminalId = instance.shellLaunchConfig.logicalTerminalId;
+		return logicalTerminalId
+			? this.logicalWorkspaceService.workspaces.find(workspace => workspace.terminalIds.includes(logicalTerminalId))?.id
+			: undefined;
 	}
 }

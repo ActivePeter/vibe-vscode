@@ -13,10 +13,6 @@ export const enum RemoteLogicalWorkspaceStateCommand {
 	Mutate = 'mutate',
 }
 
-export const enum RemoteLogicalWorkspaceStateEvent {
-	DidChange = 'onDidChange',
-}
-
 export interface IRemoteLogicalWorkspaceStateRequest {
 	readonly physicalWorkspaceId: string;
 }

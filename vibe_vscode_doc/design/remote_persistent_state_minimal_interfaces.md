@@ -1,82 +1,56 @@
-# 远端持久化状态：最小修改方案
+# 远端持久化：最小修改方案
 
-> 目标：修复 Logical Workspace 在 SQLite 写入失败后仍可能被误认为已提交的问题。
+> 目标：Server 只确认已经写入 SQLite 的 Logical Workspace 视图状态。
 >
-> 总体协议：[Logical Workspace 远程权威状态](./remote_logical_workspace_state.md)
+> 总体协议：[Logical Workspace 远端视图状态](./remote_logical_workspace_state.md)
 
-## 结论
-
-不新增公共接口，不修改 VS Code 通用 Storage。
-
-只修改 Vibe 的 `RemoteLogicalWorkspaceStateStorage`：绕过 cache-first 的 `Storage`，直接使用 `IStorageDatabase`，并且只在 SQLite 写入成功后推进内存中的 confirmed state。
+## 修改边界
 
 | 边界 | 决定 |
 | --- | --- |
 | 新增公共接口 | 0 |
-| 修改 Vibe 类 | `RemoteLogicalWorkspaceStateStorage` |
-| 复用 VS Code 能力 | `IStorageDatabase`、`SQLiteStorageDatabase`、`Sequencer` |
-| 保持不变 | RPC、客户端 optimistic queue、reducer、通用 `Storage`、`IStorageService` |
+| 修改存储类 | `RemoteLogicalWorkspaceStateStorage` |
+| 复用 VS Code | `IStorageDatabase`、`SQLiteStorageDatabase`、`Sequencer` |
+| 保持不变 | 通用 `Storage`、`IStorageService` |
 
-## 为什么要改
+当前 `Storage.set()` 先更新 cache；SQLite rejection 不会回滚 cache，重试可能把未落盘 revision 误认为成功。
 
-当前链路：
-
-```text
-RemoteLogicalWorkspaceStateStorage → Storage cache → SQLite
-```
-
-`Storage.set()` 先更新 cache。SQLite 随后写入失败时，cache 不会回滚：本次请求虽然报错，重试却可能从 cache 读到未落盘的新 revision，并错误地返回成功。
-
-修改后：
+修复后直接使用数据库：
 
 ```text
 RemoteLogicalWorkspaceStateStorage → IStorageDatabase → SQLite
-                                  ↘ confirmedItems（仅记录成功写入）
+                                  ↘ confirmedItems
 ```
 
-## 正确性规则
-
-写入顺序必须是：
+## 唯一正确顺序
 
 ```text
 await database.updateItems(...)
 → 更新 confirmedItems
-→ 发布 committed event
 → RPC 返回成功
 ```
 
-如果数据库写入失败：
+数据库失败时：
 
 - `confirmedItems` 保持旧 revision；
-- 不发布 event；
 - RPC 不返回成功；
-- 客户端重试时再次写 SQLite。
+- recovery 只使用 confirmed state。
 
-关闭数据库时，recovery 只能使用 `confirmedItems`。
+## 客户端规则
 
-## 实现范围
+Workspace catalog、layout 和 editor working set 是可覆盖的视图状态。mutation response 丢失时，客户端丢弃该 mutation 并重新 `read`，不自动重放，因此不需要 `operationId`。
 
-在 [`RemoteLogicalWorkspaceStateStorage`](../../src/vs/server/node/logicalWorkspaceStateChannel.ts) 中：
-
-1. 将 `Storage` 替换为 `IStorageDatabase`；
-2. 初始化时用 `getItems()` 填充 `confirmedItems`；
-3. 读取只访问 `confirmedItems`；
-4. 写入等待 `updateItems()` 成功后再更新 `confirmedItems`；
-5. 增加一个 database factory，供测试注入一次写入失败。
+Terminal ownership 不属于这套状态；它随 persistent Terminal process 保存。
 
 ## 验收
-
-唯一关键失败测试：
 
 ```text
 数据库中是 revision 1
 → 写 revision 2 失败
-→ read 仍返回 revision 1，且没有 revision 2 event
-→ 重试成功
-→ 关闭并用新实例重新打开数据库
-→ read 返回 revision 2
+→ read 仍为 revision 1
+→ 后续写入成功
+→ 关闭并重新打开数据库
+→ 读到成功写入的 revision 2
 ```
 
-## 不在本次范围
-
-“数据库已提交，但 RPC 响应丢失”是另一个 exactly-once 问题，需要稳定的 `operationId` 和服务端持久化去重；不与本次 durable write 修复混在一起。
+另需覆盖：mutation 已提交但 response 丢失，另一页面写入 revision 3；原页面只 refresh、不重放，最终保持 revision 3。

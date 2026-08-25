@@ -182,6 +182,7 @@ class RemoteTerminalBackend extends BaseTerminalBackend implements ITerminalBack
 		};
 
 		const shellLaunchConfigDto: IShellLaunchConfigDto = {
+			logicalWorkspaceId: shellLaunchConfig.logicalWorkspaceId,
 			logicalTerminalId: shellLaunchConfig.logicalTerminalId,
 			name: shellLaunchConfig.name,
 			executable: shellLaunchConfig.executable,

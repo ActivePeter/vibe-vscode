@@ -34,6 +34,10 @@ export interface ILogicalWorkspaceShellLayout {
 export interface ILogicalWorkspace {
 	readonly id: string;
 	readonly name: string;
+	/**
+	 * Compatibility-only ownership metadata from builds that predate terminal-owned Logical
+	 * Workspace identity. New terminal ownership must not be written here.
+	 */
 	readonly terminalIds: readonly string[];
 	readonly shellLayout: ILogicalWorkspaceShellLayout | undefined;
 	readonly editorWorkingSet?: string;
@@ -48,20 +52,16 @@ export const enum LogicalWorkspaceMutationType {
 	CreateWorkspace = 'createWorkspace',
 	SetShellLayout = 'setShellLayout',
 	SetEditorWorkingSet = 'setEditorWorkingSet',
-	BindTerminal = 'bindTerminal',
-	UnbindTerminal = 'unbindTerminal',
 }
 
 /**
- * Semantic mutations accepted by the authoritative Logical Workspace store. Mutations are
- * deliberately idempotent so a client can retry after losing a remote response.
+ * Best-effort view-state mutations accepted by the Logical Workspace store. A transport failure
+ * has an unknown outcome and must be reconciled with a read instead of replaying the mutation.
  */
 export type ILogicalWorkspaceMutation =
 	| { readonly type: LogicalWorkspaceMutationType.CreateWorkspace; readonly workspace: ILogicalWorkspace }
 	| { readonly type: LogicalWorkspaceMutationType.SetShellLayout; readonly workspaceId: string; readonly shellLayout: ILogicalWorkspaceShellLayout }
-	| { readonly type: LogicalWorkspaceMutationType.SetEditorWorkingSet; readonly workspaceId: string; readonly editorWorkingSet: string }
-	| { readonly type: LogicalWorkspaceMutationType.BindTerminal; readonly workspaceId: string; readonly logicalTerminalId: string }
-	| { readonly type: LogicalWorkspaceMutationType.UnbindTerminal; readonly logicalTerminalId: string };
+	| { readonly type: LogicalWorkspaceMutationType.SetEditorWorkingSet; readonly workspaceId: string; readonly editorWorkingSet: string };
 
 export function createLogicalWorkspaceSharedState(workspaces: readonly ILogicalWorkspace[]): ILogicalWorkspaceSharedState {
 	return {
@@ -105,14 +105,6 @@ export function parseLogicalWorkspaceMutation(raw: unknown): ILogicalWorkspaceMu
 			return typeof candidate.workspaceId === 'string' && candidate.workspaceId && typeof candidate.editorWorkingSet === 'string' && candidate.editorWorkingSet
 				? { type: candidate.type, workspaceId: candidate.workspaceId, editorWorkingSet: candidate.editorWorkingSet }
 				: undefined;
-		case LogicalWorkspaceMutationType.BindTerminal:
-			return typeof candidate.workspaceId === 'string' && candidate.workspaceId && typeof candidate.logicalTerminalId === 'string' && candidate.logicalTerminalId
-				? { type: candidate.type, workspaceId: candidate.workspaceId, logicalTerminalId: candidate.logicalTerminalId }
-				: undefined;
-		case LogicalWorkspaceMutationType.UnbindTerminal:
-			return typeof candidate.logicalTerminalId === 'string' && candidate.logicalTerminalId
-				? { type: candidate.type, logicalTerminalId: candidate.logicalTerminalId }
-				: undefined;
 	}
 	return undefined;
 }
@@ -131,18 +123,6 @@ export function applyLogicalWorkspaceMutation(state: ILogicalWorkspaceSharedStat
 			return updateLogicalWorkspace(state, mutation.workspaceId, workspace => workspace.editorWorkingSet === mutation.editorWorkingSet
 				? workspace
 				: { ...workspace, editorWorkingSet: mutation.editorWorkingSet });
-		case LogicalWorkspaceMutationType.BindTerminal: {
-			if (state.workspaces.some(workspace => workspace.terminalIds.includes(mutation.logicalTerminalId))) {
-				return state;
-			}
-			return updateLogicalWorkspace(state, mutation.workspaceId, workspace => ({ ...workspace, terminalIds: [...workspace.terminalIds, mutation.logicalTerminalId] }));
-		}
-		case LogicalWorkspaceMutationType.UnbindTerminal: {
-			const owner = state.workspaces.find(workspace => workspace.terminalIds.includes(mutation.logicalTerminalId));
-			return owner
-				? updateLogicalWorkspace(state, owner.id, workspace => ({ ...workspace, terminalIds: workspace.terminalIds.filter(id => id !== mutation.logicalTerminalId) }))
-				: state;
-		}
 	}
 }
 
@@ -247,8 +227,9 @@ export interface ILogicalWorkspaceStateChangeEvent {
 export const ILogicalWorkspaceService = createDecorator<ILogicalWorkspaceService>('logicalWorkspaceService');
 
 /**
- * Exposes the current page's projection of the remote Logical Workspace registry, terminal
- * ownership and workbench snapshots. The global Chat / Agent Session catalog remains outside.
+ * Exposes the current page's projection of the remote Logical Workspace registry and workbench
+ * snapshots. Terminal process identity and ownership remain in the terminal layer. The global
+ * Chat / Agent Session catalog remains outside.
  */
 export interface ILogicalWorkspaceService {
 	readonly _serviceBrand: undefined;
@@ -268,10 +249,6 @@ export interface ILogicalWorkspaceService {
 	activateWorkspace(workspaceId: string, actor: LogicalWorkspaceActivationActor): void;
 	setShellLayout(workspaceId: string, layout: ILogicalWorkspaceShellLayout): void;
 	setEditorWorkingSet(workspaceId: string, editorWorkingSet: string): void;
-
-	bindTerminal(workspaceId: string, logicalTerminalId: string): void;
-	unbindTerminal(logicalTerminalId: string): void;
-	workspaceContainsTerminal(workspaceId: string, logicalTerminalId: string): boolean;
 }
 
 /**

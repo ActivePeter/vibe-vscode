@@ -642,6 +642,7 @@ export class PtyService extends Disposable implements IPtyService {
 		const [cwd, isOrphan] = await Promise.all([persistentProcess.getCwd(), wasRevived ? true : persistentProcess.isOrphaned()]);
 		const result = {
 			id,
+			logicalWorkspaceId: persistentProcess.shellLaunchConfig.logicalWorkspaceId,
 			logicalTerminalId: persistentProcess.shellLaunchConfig.logicalTerminalId,
 			title: persistentProcess.title,
 			titleSource: persistentProcess.titleSource,
@@ -855,6 +856,10 @@ class PersistentTerminalProcess extends Disposable {
 	async updateProperty<T extends ProcessPropertyType>(type: T, value: IProcessPropertyMap[T]): Promise<void> {
 		if (type === ProcessPropertyType.FixedDimensions) {
 			return this._setFixedDimensions(value as IProcessPropertyMap[ProcessPropertyType.FixedDimensions]);
+		}
+		if (type === ProcessPropertyType.LogicalWorkspaceId) {
+			this.shellLaunchConfig.logicalWorkspaceId = value as IProcessPropertyMap[ProcessPropertyType.LogicalWorkspaceId];
+			this._onDidChangeProperty.fire({ type: ProcessPropertyType.LogicalWorkspaceId, value: this.shellLaunchConfig.logicalWorkspaceId });
 		}
 		if (type === ProcessPropertyType.LogicalTerminalId) {
 			this.shellLaunchConfig.logicalTerminalId = value as IProcessPropertyMap[ProcessPropertyType.LogicalTerminalId];

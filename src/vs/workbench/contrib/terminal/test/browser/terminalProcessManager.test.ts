@@ -11,7 +11,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationService, type IConfigurationChangeEvent } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { ITerminalChildProcess, type ITerminalBackend } from '../../../../../platform/terminal/common/terminal.js';
+import { IProcessPropertyMap, IShellLaunchConfig, ITerminalChildProcess, ProcessPropertyType, TitleEventSource, type ITerminalBackend } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalInstanceService, ITerminalService } from '../../browser/terminal.js';
 import { TerminalProcessManager } from '../../browser/terminalProcessManager.js';
 import { IEnvironmentVariableService } from '../../common/environmentVariable.js';
@@ -22,10 +22,10 @@ function listenerCount(emitter: Emitter<unknown>): number {
 }
 
 class TestTerminalChildProcess implements ITerminalChildProcess {
-	id: number = 0;
 	get capabilities() { return []; }
 	constructor(
-		readonly shouldPersist: boolean
+		readonly shouldPersist: boolean,
+		readonly id: number = 0,
 	) {
 	}
 	updateProperty(property: any, value: any): Promise<void> {
@@ -59,6 +59,7 @@ class TestTerminalChildProcess implements ITerminalChildProcess {
 
 class TestTerminalInstanceService implements Partial<ITerminalInstanceService> {
 	readonly ptyHostRestartEmitter = new Emitter<void>();
+	readonly propertyUpdates: { id: number; property: ProcessPropertyType; value: IProcessPropertyMap[ProcessPropertyType] }[] = [];
 	async getBackend() {
 		return {
 			onPtyHostExit: Event.None,
@@ -77,6 +78,10 @@ class TestTerminalInstanceService implements Partial<ITerminalInstanceService> {
 				options: any,
 				shouldPersist: boolean
 			) => new TestTerminalChildProcess(shouldPersist),
+			attachToProcess: async (id: number) => new TestTerminalChildProcess(true, id),
+			updateProperty: async <T extends ProcessPropertyType>(id: number, property: T, value: IProcessPropertyMap[T]) => {
+				this.propertyUpdates.push({ id, property, value });
+			},
 			getLatency: () => Promise.resolve([]),
 			getShellEnvironment: () => Promise.resolve({})
 		} as unknown as ITerminalBackend;
@@ -141,6 +146,31 @@ suite('Workbench - TerminalProcessManager', () => {
 			}, 1, 1, false);
 
 			strictEqual(await manager.detachFromProcess(), false);
+		});
+
+		test('persists migrated Logical Workspace ownership on an attached process', async () => {
+			const attachPersistentProcess: NonNullable<IShellLaunchConfig['attachPersistentProcess']> = {
+				id: 42,
+				logicalTerminalId: 'terminal',
+				pid: 1,
+				title: 'Terminal',
+				titleSource: TitleEventSource.Process,
+				cwd: '/',
+				shellIntegrationNonce: '',
+			};
+			await manager.createProcess({
+				logicalWorkspaceId: 'workspace',
+				logicalTerminalId: 'terminal',
+				attachPersistentProcess,
+			}, 1, 1, false);
+
+			deepStrictEqual({
+				propertyUpdates: terminalInstanceService.propertyUpdates,
+				logicalWorkspaceId: attachPersistentProcess.logicalWorkspaceId,
+			}, {
+				propertyUpdates: [{ id: 42, property: ProcessPropertyType.LogicalWorkspaceId, value: 'workspace' }],
+				logicalWorkspaceId: 'workspace',
+			});
 		});
 
 		suite('local', () => {

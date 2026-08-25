@@ -18,8 +18,8 @@ import { AsyncProjectionCoordinator, ILogicalWorkspaceProjection, LogicalWorkspa
 import { LogicalWorkspaceService } from '../../browser/logicalWorkspaceService.js';
 import { RemoteLogicalWorkspaceStateClient } from '../../browser/logicalWorkspaceRemoteStateClient.js';
 import { ILogicalWorkspaceStateStore } from '../../browser/logicalWorkspaceStateStore.js';
-import { applyLogicalWorkspaceMutation, ILogicalWorkspaceMutation, ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor, LogicalWorkspaceMutationType, onDidChangeLogicalWorkspaceStateSlice, parseLogicalWorkspaceMutation, parseLogicalWorkspaceSharedState } from '../../common/logicalWorkspace.js';
-import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, RemoteLogicalWorkspaceStateErrorCode, RemoteLogicalWorkspaceStateEvent } from '../../common/logicalWorkspaceRemote.js';
+import { applyLogicalWorkspaceMutation, ILogicalWorkspaceMutation, ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor, LogicalWorkspaceMutationType, parseLogicalWorkspaceMutation, parseLogicalWorkspaceSharedState } from '../../common/logicalWorkspace.js';
+import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, RemoteLogicalWorkspaceStateErrorCode } from '../../common/logicalWorkspaceRemote.js';
 
 class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorkspaceStateStore {
 	declare readonly _serviceBrand: undefined;
@@ -89,15 +89,19 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 	readonly onDidChange = this._onDidChange.event;
 	private snapshots = new Map<string, IRemoteLogicalWorkspaceStateSnapshot>();
 	private nextMutationResponseGate: DeferredPromise<void> | undefined;
-	private failNextMutationRequest = false;
+	private dropNextMutationResponse = false;
 
 	delayNextMutationResponse(): DeferredPromise<void> {
 		this.nextMutationResponseGate = new DeferredPromise<void>();
 		return this.nextMutationResponseGate;
 	}
 
-	failNextMutation(): void {
-		this.failNextMutationRequest = true;
+	dropNextMutationResult(): void {
+		this.dropNextMutationResponse = true;
+	}
+
+	getSnapshot(physicalWorkspaceId: string): IRemoteLogicalWorkspaceStateSnapshot | undefined {
+		return this.snapshots.get(physicalWorkspaceId);
 	}
 
 	async call<T>(command: string, arg?: unknown): Promise<T> {
@@ -127,10 +131,6 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 			case RemoteLogicalWorkspaceStateCommand.Read:
 				return this.ok(this.snapshots.get(physicalWorkspaceId)) as T;
 			case RemoteLogicalWorkspaceStateCommand.Mutate: {
-				if (this.failNextMutationRequest) {
-					this.failNextMutationRequest = false;
-					throw new Error('Transient transport failure');
-				}
 				const mutation = parseLogicalWorkspaceMutation(request.mutation);
 				const current = this.snapshots.get(physicalWorkspaceId);
 				if (!mutation || !current) {
@@ -148,6 +148,10 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 					this.nextMutationResponseGate = undefined;
 					await gate.p;
 				}
+				if (this.dropNextMutationResponse) {
+					this.dropNextMutationResponse = false;
+					throw new Error('Mutation response lost after commit');
+				}
 				return this.ok(snapshot) as T;
 			}
 			default:
@@ -155,15 +159,8 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 		}
 	}
 
-	listen<T>(event: string, arg?: unknown): Event<T> {
-		if (event !== RemoteLogicalWorkspaceStateEvent.DidChange || !arg || typeof arg !== 'object') {
-			return Event.None;
-		}
-		const physicalWorkspaceId = (arg as Record<string, unknown>).physicalWorkspaceId;
-		return Event.map(
-			Event.filter(this.onDidChange, change => change.physicalWorkspaceId === physicalWorkspaceId),
-			change => change.snapshot,
-		) as Event<T>;
+	listen<T>(): Event<T> {
+		return Event.None;
 	}
 
 	private ok<T>(value: T): IRemoteLogicalWorkspaceStateResult<T> {
@@ -196,7 +193,7 @@ suite('RemoteLogicalWorkspaceStateClient', () => {
 		});
 	});
 
-	test('projects concurrent semantic mutations without whole-snapshot loss', async () => {
+	test('observes another page write after an explicit refresh', async () => {
 		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
 		const first = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService()));
 		const second = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService()));
@@ -208,19 +205,22 @@ suite('RemoteLogicalWorkspaceStateClient', () => {
 		};
 		const committed = Event.toPromise(Event.filter(channel.onDidChange, event => event.snapshot.revision === 3));
 
-		first.mutate({ type: LogicalWorkspaceMutationType.BindTerminal, workspaceId: 'workspace', logicalTerminalId: 'terminal' });
+		first.mutate({ type: LogicalWorkspaceMutationType.SetEditorWorkingSet, workspaceId: 'workspace', editorWorkingSet: 'editor-state' });
 		second.mutate({ type: LogicalWorkspaceMutationType.SetShellLayout, workspaceId: 'workspace', shellLayout });
 		await committed;
+		const firstRefreshed = Event.toPromise(Event.filter(first.onDidChangeState, state => state.workspaces[0].shellLayout === shellLayout));
+		first.requestRefresh();
+		await firstRefreshed;
 		await timeout(0);
 
 		const expected = {
 			schemaVersion: 2,
-			workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: ['terminal'], shellLayout }],
+			workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: [], shellLayout, editorWorkingSet: 'editor-state' }],
 		};
 		assert.deepStrictEqual({ first: first.state, second: second.state }, { first: expected, second: expected });
 	});
 
-	test('drops an acknowledged optimistic mutation behind a newer server event', async () => {
+	test('keeps a later server write hidden until refresh', async () => {
 		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
 		const first = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService()));
 		const second = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService()));
@@ -244,23 +244,39 @@ suite('RemoteLogicalWorkspaceStateClient', () => {
 		await delayedResponse.complete();
 		await timeout(0);
 
+		assert.deepStrictEqual(first.state?.workspaces[0].shellLayout, redLayout);
+		const refreshed = Event.toPromise(Event.filter(first.onDidChangeState, state => state.workspaces[0].shellLayout === blueLayout));
+		first.requestRefresh();
+		await refreshed;
 		assert.deepStrictEqual(first.state?.workspaces[0].shellLayout, blueLayout);
 	});
 
-	test('keeps an idempotent mutation queued across a transport retry', async () => {
+	test('does not replay a committed mutation after its response is lost', async () => {
 		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
-		const client = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService(), [0]));
-		await client.initialize(state('workspace'));
-		channel.failNextMutation();
-		const committed = Event.toPromise(Event.filter(channel.onDidChange, event => event.snapshot.revision === 2));
-
-		client.mutate({ type: LogicalWorkspaceMutationType.BindTerminal, workspaceId: 'workspace', logicalTerminalId: 'terminal' });
-		await committed;
+		const first = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService(), [0]));
+		const second = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService(), [0]));
+		await Promise.all([first.initialize(state('workspace')), second.initialize(state('workspace'))]);
+		const redLayout: ILogicalWorkspaceShellLayout = {
+			primarySideBar: { visible: true, width: 280, height: 800, activeCompositeId: 'red' },
+			panel: { visible: false, width: 1200, height: 260, activeCompositeId: '' },
+			auxiliaryBar: { visible: false, width: 300, height: 800, activeCompositeId: '' },
+		};
+		const blueLayout: ILogicalWorkspaceShellLayout = {
+			...redLayout,
+			primarySideBar: { ...redLayout.primarySideBar, activeCompositeId: 'blue' },
+		};
+		channel.dropNextMutationResult();
+		const redCommitted = Event.toPromise(Event.filter(channel.onDidChange, event => event.snapshot.revision === 2));
+		first.mutate({ type: LogicalWorkspaceMutationType.SetShellLayout, workspaceId: 'workspace', shellLayout: redLayout });
+		await redCommitted;
+		const blueCommitted = Event.toPromise(Event.filter(channel.onDidChange, event => event.snapshot.revision === 3));
+		second.mutate({ type: LogicalWorkspaceMutationType.SetShellLayout, workspaceId: 'workspace', shellLayout: blueLayout });
+		await blueCommitted;
 		await timeout(0);
 
-		assert.deepStrictEqual(client.state, {
-			schemaVersion: 2,
-			workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: ['terminal'], shellLayout: undefined }],
+		assert.deepStrictEqual(channel.getSnapshot('physical'), {
+			revision: 3,
+			state: { schemaVersion: 2, workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: [], shellLayout: blueLayout }] },
 		});
 	});
 });
@@ -548,35 +564,6 @@ suite('LogicalWorkspaceService', () => {
 			activeWorkspace: expectedWorkspace,
 			sharedState: { schemaVersion: 2, workspaces: [expectedWorkspace] },
 		});
-	});
-
-	test('updates a terminal ownership slice across pages without changing the active Workspace', async () => {
-		const firstService = createService();
-		await firstService.whenReady;
-		const secondService = createService();
-		await secondService.whenReady;
-		const activeWorkspace = secondService.activeWorkspace;
-		const logicalTerminalId = 'external-terminal';
-		const observed: object[] = [];
-		const onDidChangeOwnership = onDidChangeLogicalWorkspaceStateSlice(secondService, state => ({
-			activeWorkspaceId: state.activeWorkspaceId,
-			terminalIds: state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.terminalIds ?? [],
-		}));
-		const ownershipChanged = Event.toPromise(onDidChangeOwnership);
-		disposables.add(onDidChangeOwnership(slice => observed.push(slice)));
-
-		firstService.bindTerminal(firstService.activeWorkspace.id, logicalTerminalId);
-		await ownershipChanged;
-		secondService.setShellLayout(activeWorkspace.id, {
-			primarySideBar: { visible: true, width: 280, height: 800, activeCompositeId: 'workbench.view.explorer' },
-			panel: { visible: false, width: 1200, height: 260, activeCompositeId: 'workbench.panel.terminal' },
-			auxiliaryBar: { visible: false, width: 300, height: 800, activeCompositeId: '' },
-		});
-
-		assert.deepStrictEqual(observed, [{
-			activeWorkspaceId: activeWorkspace.id,
-			terminalIds: [logicalTerminalId],
-		}]);
 	});
 
 	test('falls back with ordered activation events when an external snapshot removes the active workspace', () => {

@@ -164,32 +164,6 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			: workspace), { type: LogicalWorkspaceMutationType.SetEditorWorkingSet, workspaceId, editorWorkingSet });
 	}
 
-	bindTerminal(workspaceId: string, logicalTerminalId: string): void {
-		this.getWorkspace(workspaceId);
-		if (this._state.workspaces.some(workspace => workspace.terminalIds.includes(logicalTerminalId))) {
-			return;
-		}
-
-		this.commitWorkspaces(this._state.workspaces.map(workspace => workspace.id === workspaceId
-			? { ...workspace, terminalIds: [...workspace.terminalIds, logicalTerminalId] }
-			: workspace), { type: LogicalWorkspaceMutationType.BindTerminal, workspaceId, logicalTerminalId });
-	}
-
-	unbindTerminal(logicalTerminalId: string): void {
-		const owner = this._state.workspaces.find(workspace => workspace.terminalIds.includes(logicalTerminalId));
-		if (!owner) {
-			return;
-		}
-
-		this.commitWorkspaces(this._state.workspaces.map(workspace => workspace.id === owner.id
-			? { ...workspace, terminalIds: workspace.terminalIds.filter(candidate => candidate !== logicalTerminalId) }
-			: workspace), { type: LogicalWorkspaceMutationType.UnbindTerminal, logicalTerminalId });
-	}
-
-	workspaceContainsTerminal(workspaceId: string, logicalTerminalId: string): boolean {
-		return this.getWorkspace(workspaceId).terminalIds.includes(logicalTerminalId);
-	}
-
 	private commitWorkspaces(workspaces: readonly ILogicalWorkspace[], mutation: ILogicalWorkspaceMutation): void {
 		this.setState({ ...this._state, workspaces });
 		this.stateStore.applyMutation(mutation);

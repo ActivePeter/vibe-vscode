@@ -163,6 +163,7 @@ suite('Workbench - TerminalService', () => {
 		test('should restore and persist only the current remote backend layout', async () => {
 			const attachTarget = {
 				id: 23,
+				logicalWorkspaceId: 'logical-workspace',
 				logicalTerminalId: 'remote-background-terminal',
 			} satisfies Partial<IPtyHostAttachTarget> as IPtyHostAttachTarget;
 			let persistedState: ITerminalsLayoutInfoById | undefined;
@@ -267,11 +268,13 @@ suite('Workbench - TerminalService', () => {
 			await terminalPromise;
 
 			deepStrictEqual({
-				initiatingWorkspaceOwnsTerminal: logicalWorkspaceService.workspaceContainsTerminal(initiatingWorkspaceId, shellLaunchConfig.logicalTerminalId!),
-				targetWorkspaceOwnsTerminal: logicalWorkspaceService.workspaceContainsTerminal(targetWorkspace.id, shellLaunchConfig.logicalTerminalId!),
+				logicalWorkspaceId: shellLaunchConfig.logicalWorkspaceId,
+				logicalTerminalId: typeof shellLaunchConfig.logicalTerminalId,
+				targetWorkspaceId: targetWorkspace.id,
 			}, {
-				initiatingWorkspaceOwnsTerminal: true,
-				targetWorkspaceOwnsTerminal: false,
+				logicalWorkspaceId: initiatingWorkspaceId,
+				logicalTerminalId: 'string',
+				targetWorkspaceId: targetWorkspace.id,
 			});
 		});
 
@@ -320,15 +323,52 @@ suite('Workbench - TerminalService', () => {
 			await terminalPromise;
 
 			deepStrictEqual({
-				initiatingWorkspaceOwnsTerminal: logicalWorkspaceService.workspaceContainsTerminal(initiatingWorkspaceId, shellLaunchConfig.logicalTerminalId!),
-				targetWorkspaceOwnsTerminal: logicalWorkspaceService.workspaceContainsTerminal(targetWorkspace.id, shellLaunchConfig.logicalTerminalId!),
+				logicalWorkspaceId: shellLaunchConfig.logicalWorkspaceId,
+				logicalTerminalId: typeof shellLaunchConfig.logicalTerminalId,
+				targetWorkspaceId: targetWorkspace.id,
 			}, {
-				initiatingWorkspaceOwnsTerminal: true,
-				targetWorkspaceOwnsTerminal: false,
+				logicalWorkspaceId: initiatingWorkspaceId,
+				logicalTerminalId: 'string',
+				targetWorkspaceId: targetWorkspace.id,
 			});
 		});
 
-		test('should commit terminal ownership only after an instance is created', async () => {
+		test('should migrate legacy Workspace ownership into terminal metadata', async () => {
+			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			const legacyWorkspace = logicalWorkspaceService.createWorkspace('Legacy');
+			(legacyWorkspace.terminalIds as string[]).push('legacy-terminal');
+			const shellLaunchConfig: IShellLaunchConfig = {
+				attachPersistentProcess: {
+					id: 42,
+					logicalTerminalId: 'legacy-terminal',
+					pid: 1,
+					title: 'Terminal',
+					titleSource: TitleEventSource.Process,
+					cwd: '/',
+					shellIntegrationNonce: '',
+				},
+			};
+			instantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', () => shellLaunchConfig);
+			instantiationService.stub(ITerminalGroupService, 'createGroup', () => ({
+				terminalInstances: [{ shellLaunchConfig, shellType: undefined } as ITerminalInstance],
+			} satisfies Partial<ITerminalGroup> as ITerminalGroup));
+			terminalService.registerProcessSupport(true);
+
+			await terminalService.createTerminal({
+				config: shellLaunchConfig,
+				skipContributedProfileCheck: true,
+			});
+
+			deepStrictEqual({
+				logicalWorkspaceId: shellLaunchConfig.logicalWorkspaceId,
+				logicalTerminalId: shellLaunchConfig.logicalTerminalId,
+			}, {
+				logicalWorkspaceId: legacyWorkspace.id,
+				logicalTerminalId: 'legacy-terminal',
+			});
+		});
+
+		test('should not write terminal ownership into Workspace view state', async () => {
 			const shellLaunchConfig: IShellLaunchConfig = { executable: '/bin/sh' };
 			instantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', () => shellLaunchConfig);
 			instantiationService.stub(ITerminalGroupService, 'createGroup', () => {
@@ -342,8 +382,15 @@ suite('Workbench - TerminalService', () => {
 				skipContributedProfileCheck: true,
 			}), /terminal group creation failed/);
 
-			strictEqual(typeof shellLaunchConfig.logicalTerminalId, 'string');
-			strictEqual(logicalWorkspaceService.workspaces.some(workspace => workspace.terminalIds.includes(shellLaunchConfig.logicalTerminalId!)), false);
+			deepStrictEqual({
+				logicalWorkspaceId: shellLaunchConfig.logicalWorkspaceId,
+				logicalTerminalId: typeof shellLaunchConfig.logicalTerminalId,
+				legacyTerminalIds: logicalWorkspaceService.workspaces.flatMap(workspace => workspace.terminalIds),
+			}, {
+				logicalWorkspaceId: logicalWorkspaceService.activeWorkspace.id,
+				logicalTerminalId: 'string',
+				legacyTerminalIds: [],
+			});
 		});
 	});
 

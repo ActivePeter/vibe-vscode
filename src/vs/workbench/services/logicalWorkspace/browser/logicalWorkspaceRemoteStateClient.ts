@@ -11,15 +11,16 @@ import { equals } from '../../../../base/common/objects.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { applyLogicalWorkspaceMutation, ILogicalWorkspaceMutation, ILogicalWorkspaceSharedState, LogicalWorkspaceMutationType } from '../common/logicalWorkspace.js';
-import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, RemoteLogicalWorkspaceStateEvent, parseRemoteLogicalWorkspaceStateSnapshot } from '../common/logicalWorkspaceRemote.js';
+import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, parseRemoteLogicalWorkspaceStateSnapshot } from '../common/logicalWorkspaceRemote.js';
 
 const REMOTE_RETRY_DELAYS = [1000, 5000, 15000, 30000] as const;
 
 class RemoteLogicalWorkspaceProtocolError extends Error { }
 
 /**
- * Maintains an optimistic projection over a server-ordered mutation queue. The projection is
- * disposable; the server snapshot remains authoritative and can always rebuild it.
+ * Maintains an optimistic projection over best-effort view-state writes. Each mutation is sent
+ * once; an unknown transport outcome is reconciled by reading server truth, never by replaying
+ * an older write.
  */
 export class RemoteLogicalWorkspaceStateClient extends Disposable {
 
@@ -50,14 +51,6 @@ export class RemoteLogicalWorkspaceStateClient extends Disposable {
 			throw new Error('Remote Logical Workspace retry delays must not be empty');
 		}
 		this.retryScheduler = this._register(new RunOnceScheduler(() => void this.run(), retryDelays[0]));
-		this._register(channel.listen<unknown>(RemoteLogicalWorkspaceStateEvent.DidChange, { physicalWorkspaceId })(raw => {
-			const snapshot = parseRemoteLogicalWorkspaceStateSnapshot(raw);
-			if (!snapshot) {
-				this.logService.error('[Logical Workspace] Ignoring a malformed remote state event');
-				return;
-			}
-			this.acceptSnapshot(snapshot, true);
-		}));
 	}
 
 	get state(): ILogicalWorkspaceSharedState | undefined {
@@ -156,6 +149,7 @@ export class RemoteLogicalWorkspaceStateClient extends Disposable {
 			this.consecutiveFailures = 0;
 			this.retryScheduler.cancel();
 		} catch (error) {
+			const failedMutation = this.inFlightMutation;
 			this.inFlightMutation = undefined;
 			if (this._store.isDisposed) {
 				return;
@@ -170,6 +164,14 @@ export class RemoteLogicalWorkspaceStateClient extends Disposable {
 				}
 				this.logService.error('[Logical Workspace] Remote state protocol failed', error);
 			} else {
+				if (failedMutation && this.pendingMutations[0] === failedMutation) {
+					this.pendingMutations.shift();
+					this.refreshRequested = true;
+					this.updateProjection(true);
+					this.logService.warn(`[Logical Workspace] Discarded '${failedMutation.type}' after an unknown remote outcome; refreshing server truth`);
+				} else if (this.initialized) {
+					this.refreshRequested = true;
+				}
 				this.scheduleRetry(error);
 			}
 		} finally {
@@ -210,8 +212,8 @@ export class RemoteLogicalWorkspaceStateClient extends Disposable {
 
 	private acceptSnapshot(snapshot: IRemoteLogicalWorkspaceStateSnapshot, emit: boolean): void {
 		if (this.authoritativeSnapshot && snapshot.revision <= this.authoritativeSnapshot.revision) {
-			// A newer event can arrive before the response for the in-flight mutation. Recompute even
-			// for a stale response because the mutation may just have left the optimistic queue.
+			// A refresh can return the current revision after an unknown mutation left the optimistic
+			// queue. Recompute even when the authoritative snapshot itself did not advance.
 			this.updateProjection(emit);
 			return;
 		}
@@ -256,7 +258,7 @@ export class RemoteLogicalWorkspaceStateClient extends Disposable {
 	private scheduleRetry(error: unknown): void {
 		this.consecutiveFailures++;
 		const retryDelay = this.retryDelays[Math.min(this.consecutiveFailures - 1, this.retryDelays.length - 1)];
-		this.logService.warn(`[Logical Workspace] Remote state operation failed; retrying in ${retryDelay}ms: ${toErrorMessage(error)}`);
+		this.logService.warn(`[Logical Workspace] Remote state synchronization failed; retrying in ${retryDelay}ms: ${toErrorMessage(error)}`);
 		this.retryScheduler.schedule(retryDelay);
 	}
 }

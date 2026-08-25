@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import { Sequencer } from '../../base/common/async.js';
 import { toErrorMessage } from '../../base/common/errorMessage.js';
-import { Emitter, Event } from '../../base/common/event.js';
+import { Event } from '../../base/common/event.js';
 import { Disposable } from '../../base/common/lifecycle.js';
 import { dirname } from '../../base/common/path.js';
 import { InMemoryStorageDatabase, IStorageDatabase } from '../../base/parts/storage/common/storage.js';
@@ -14,17 +14,12 @@ import { SQLiteStorageDatabase } from '../../base/parts/storage/node/storage.js'
 import { IServerChannel } from '../../base/parts/ipc/common/ipc.js';
 import { ILogService, LogLevel } from '../../platform/log/common/log.js';
 import { applyLogicalWorkspaceMutation, ILogicalWorkspaceMutation, ILogicalWorkspaceSharedState, parseLogicalWorkspaceMutation, parseLogicalWorkspaceSharedState } from '../../workbench/services/logicalWorkspace/common/logicalWorkspace.js';
-import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, RemoteLogicalWorkspaceStateErrorCode, RemoteLogicalWorkspaceStateEvent } from '../../workbench/services/logicalWorkspace/common/logicalWorkspaceRemote.js';
+import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, RemoteLogicalWorkspaceStateErrorCode } from '../../workbench/services/logicalWorkspace/common/logicalWorkspaceRemote.js';
 
 interface IStoredLogicalWorkspaceState {
 	readonly storageVersion: 1;
 	readonly revision: number;
 	readonly state: ILogicalWorkspaceSharedState;
-}
-
-interface IRemoteLogicalWorkspaceStateChangeEvent {
-	readonly physicalWorkspaceId: string;
-	readonly snapshot: IRemoteLogicalWorkspaceStateSnapshot;
 }
 
 class CorruptLogicalWorkspaceStateError extends Error { }
@@ -35,9 +30,6 @@ class UninitializedLogicalWorkspaceStateError extends Error { }
  * order for every renderer connected to this remote agent.
  */
 export class RemoteLogicalWorkspaceStateStorage extends Disposable {
-
-	private readonly _onDidChange = this._register(new Emitter<IRemoteLogicalWorkspaceStateChangeEvent>());
-	readonly onDidChange = this._onDidChange.event;
 
 	private readonly sequencer = new Sequencer();
 	private readonly confirmedItems = new Map<string, string>();
@@ -66,7 +58,6 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 
 			const snapshot: IRemoteLogicalWorkspaceStateSnapshot = { revision: 1, state };
 			await this.write(physicalWorkspaceId, snapshot);
-			this._onDidChange.fire({ physicalWorkspaceId, snapshot });
 			return snapshot;
 		});
 	}
@@ -88,7 +79,6 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 
 			const snapshot: IRemoteLogicalWorkspaceStateSnapshot = { revision: current.revision + 1, state };
 			await this.write(physicalWorkspaceId, snapshot);
-			this._onDidChange.fire({ physicalWorkspaceId, snapshot });
 			return snapshot;
 		});
 	}
@@ -166,18 +156,8 @@ export class RemoteLogicalWorkspaceStateChannel implements IServerChannel {
 
 	constructor(private readonly storage: RemoteLogicalWorkspaceStateStorage) { }
 
-	listen<T>(_context: unknown, event: string, arg: unknown): Event<T> {
-		if (event !== RemoteLogicalWorkspaceStateEvent.DidChange) {
-			throw new Error(`Event not found: ${event}`);
-		}
-		const physicalWorkspaceId = this.parsePhysicalWorkspaceId(arg);
-		if (!physicalWorkspaceId) {
-			throw new Error('A valid physical Workspace ID is required');
-		}
-		return Event.map(
-			Event.filter(this.storage.onDidChange, change => change.physicalWorkspaceId === physicalWorkspaceId),
-			change => change.snapshot,
-		) as Event<T>;
+	listen<T>(_context: unknown, event: string): Event<T> {
+		throw new Error(`Event not found: ${event}`);
 	}
 
 	async call<T>(_context: unknown, command: string, arg: unknown): Promise<T> {

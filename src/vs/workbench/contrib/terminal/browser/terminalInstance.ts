@@ -435,8 +435,9 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 		if (this._shellLaunchConfig.attachPersistentProcess?.hideFromUser) {
 			this._shellLaunchConfig.hideFromUser = this._shellLaunchConfig.attachPersistentProcess.hideFromUser;
 		}
-		if (this._shellLaunchConfig.attachPersistentProcess?.logicalTerminalId) {
-			this._shellLaunchConfig.logicalTerminalId = this._shellLaunchConfig.attachPersistentProcess.logicalTerminalId;
+		if (this._shellLaunchConfig.attachPersistentProcess) {
+			this._shellLaunchConfig.logicalWorkspaceId = this._shellLaunchConfig.attachPersistentProcess.logicalWorkspaceId ?? this._shellLaunchConfig.logicalWorkspaceId;
+			this._shellLaunchConfig.logicalTerminalId = this._shellLaunchConfig.attachPersistentProcess.logicalTerminalId ?? this._shellLaunchConfig.logicalTerminalId;
 		}
 
 		if (this._shellLaunchConfig.attachPersistentProcess?.isFeatureTerminal) {
@@ -1578,6 +1579,9 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 					break;
 				case ProcessPropertyType.ShellIntegrationInjectionFailureReason:
 					this._shellIntegrationInjectionInfo = value as IProcessPropertyMap[ProcessPropertyType.ShellIntegrationInjectionFailureReason];
+					break;
+				case ProcessPropertyType.LogicalWorkspaceId:
+					this._shellLaunchConfig.logicalWorkspaceId = value as IProcessPropertyMap[ProcessPropertyType.LogicalWorkspaceId];
 					break;
 				case ProcessPropertyType.LogicalTerminalId:
 					this._shellLaunchConfig.logicalTerminalId = value as IProcessPropertyMap[ProcessPropertyType.LogicalTerminalId];

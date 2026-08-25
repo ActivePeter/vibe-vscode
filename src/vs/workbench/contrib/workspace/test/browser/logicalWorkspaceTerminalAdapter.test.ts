@@ -56,16 +56,12 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 				changedInstances.fire();
 			}
 		};
-		const createInstance = (logicalTerminalId: string): ITerminalInstance => ({
-			shellLaunchConfig: { logicalTerminalId },
+		const createInstance = (logicalTerminalId: string, logicalWorkspaceId: string): ITerminalInstance => ({
+			shellLaunchConfig: { logicalTerminalId, logicalWorkspaceId },
 			exitReason: TerminalExitReason.Unknown,
 		} satisfies Partial<ITerminalInstance> as ITerminalInstance);
-		foreground = [createInstance('inactive-1'), createInstance('inactive-2')];
-		background = [createInstance('active-1'), createInstance('active-2')];
-		logicalWorkspaceService.bindTerminal(inactiveWorkspace.id, 'inactive-1');
-		logicalWorkspaceService.bindTerminal(inactiveWorkspace.id, 'inactive-2');
-		logicalWorkspaceService.bindTerminal(activeWorkspaceId, 'active-1');
-		logicalWorkspaceService.bindTerminal(activeWorkspaceId, 'active-2');
+		foreground = [createInstance('inactive-1', inactiveWorkspace.id), createInstance('inactive-2', inactiveWorkspace.id)];
+		background = [createInstance('active-1', activeWorkspaceId), createInstance('active-2', activeWorkspaceId)];
 
 		const adapter = store.add(new LogicalWorkspaceTerminalAdapter(
 			logicalWorkspaceService,
@@ -130,17 +126,15 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 				completedOpens.push(logicalTerminalId);
 			}
 		};
-		const createEditorInstance = (instanceId: number, logicalTerminalId: string): ITerminalInstance => ({
+		const createEditorInstance = (instanceId: number, logicalTerminalId: string, logicalWorkspaceId: string): ITerminalInstance => ({
 			instanceId,
 			target: TerminalLocation.Editor,
-			shellLaunchConfig: { logicalTerminalId },
+			shellLaunchConfig: { logicalTerminalId, logicalWorkspaceId },
 			exitReason: TerminalExitReason.Unknown,
 		} satisfies Partial<ITerminalInstance> as ITerminalInstance);
-		const firstTerminal = createEditorInstance(1, 'first');
-		const secondTerminal = createEditorInstance(2, 'second');
+		const firstTerminal = createEditorInstance(1, 'first', firstWorkspace.id);
+		const secondTerminal = createEditorInstance(2, 'second', secondWorkspace.id);
 		background = [firstTerminal, secondTerminal];
-		logicalWorkspaceService.bindTerminal(firstWorkspace.id, 'first');
-		logicalWorkspaceService.bindTerminal(secondWorkspace.id, 'second');
 
 		const adapter = store.add(new LogicalWorkspaceTerminalAdapter(
 			logicalWorkspaceService,
@@ -168,48 +162,6 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		});
 	});
 
-	test('retains ownership only when disposal actually detached a revivable process', () => {
-		const store = disposables.add(new DisposableStore());
-		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
-		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
-		const workspaceId = logicalWorkspaceService.activeWorkspace.id;
-		const changedInstances = store.add(new Emitter<void>());
-		const disposedInstances = store.add(new Emitter<ITerminalInstance>());
-		const terminalService = new class extends mock<ITerminalService>() {
-			override readonly onDidChangeInstances = changedInstances.event;
-			override readonly onDidDisposeInstance = disposedInstances.event;
-			override readonly whenConnected = Promise.resolve();
-			override readonly foregroundInstances = [];
-			override readonly instances = [];
-		};
-		logicalWorkspaceService.bindTerminal(workspaceId, 'detached');
-		logicalWorkspaceService.bindTerminal(workspaceId, 'closed');
-		store.add(new LogicalWorkspaceTerminalAdapter(
-			logicalWorkspaceService,
-			terminalService,
-			store.add(new TestStorageService()),
-			new NullLogService(),
-		));
-
-		disposedInstances.fire({
-			shellLaunchConfig: { logicalTerminalId: 'detached' },
-			exitReason: TerminalExitReason.Shutdown,
-			processWasDetached: true,
-		} satisfies Partial<ITerminalInstance> as ITerminalInstance);
-		disposedInstances.fire({
-			shellLaunchConfig: { logicalTerminalId: 'closed' },
-			exitReason: TerminalExitReason.Shutdown,
-			processWasDetached: false,
-		} satisfies Partial<ITerminalInstance> as ITerminalInstance);
-
-		assert.deepStrictEqual({
-			detached: logicalWorkspaceService.workspaceContainsTerminal(workspaceId, 'detached'),
-			closed: logicalWorkspaceService.workspaceContainsTerminal(workspaceId, 'closed'),
-		}, {
-			detached: true,
-			closed: false,
-		});
-	});
 });
 
 function createShellLayout(): ILogicalWorkspaceShellLayout {

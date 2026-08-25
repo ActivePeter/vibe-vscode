@@ -1096,13 +1096,12 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 
 		await this._logicalWorkspaceService.whenReady;
-		const logicalTerminalId = this._prepareLogicalWorkspaceTerminal(shellLaunchConfig, creationContext);
+		this._prepareLogicalWorkspaceTerminal(shellLaunchConfig, creationContext);
 		this._evaluateLocalCwd(shellLaunchConfig);
 		const location = await this.resolveLocation(options?.location) || this._terminalConfigurationService.defaultLocation;
 
 		if (shellLaunchConfig.hideFromUser) {
 			const instance = this._terminalInstanceService.createInstance(shellLaunchConfig, location);
-			this._commitLogicalWorkspaceTerminal(creationContext, logicalTerminalId);
 			this._backgroundedTerminalInstances.push({ instance, terminalLocationOptions: options?.location });
 			this._backgroundedTerminalDisposables.set(instance.instanceId, instance.onDisposed(instance => this._onBackgroundTerminalDisposed(instance)));
 			this._onDidChangeInstances.fire();
@@ -1118,7 +1117,6 @@ export class TerminalService extends Disposable implements ITerminalService {
 		} else {
 			instance = this._createTerminal(shellLaunchConfig, location, options);
 		}
-		this._commitLogicalWorkspaceTerminal(creationContext, logicalTerminalId);
 		if (instance.shellType) {
 			this._extensionService.activateByEvent(`onTerminal:${instance.shellType}`);
 		}
@@ -1137,27 +1135,22 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return context.logicalTerminalId ? context : { ...context, logicalTerminalId: generateUuid() };
 	}
 
-	private _prepareLogicalWorkspaceTerminal(shellLaunchConfig: IShellLaunchConfig, context: ITerminalCreationContext): string | undefined {
+	private _prepareLogicalWorkspaceTerminal(shellLaunchConfig: IShellLaunchConfig, context: ITerminalCreationContext): void {
 		const attachTarget = shellLaunchConfig.attachPersistentProcess;
 		shellLaunchConfig.logicalTerminalId ??= attachTarget?.logicalTerminalId ?? context.logicalTerminalId;
 
-		const isExplicitlyManaged = shellLaunchConfig.logicalTerminalId !== undefined;
+		const isExplicitlyManaged = shellLaunchConfig.logicalWorkspaceId !== undefined || shellLaunchConfig.logicalTerminalId !== undefined;
 		const isRestoredUserTerminal = attachTarget !== undefined && !attachTarget.hideFromUser && !attachTarget.isFeatureTerminal;
 		const isNewUserTerminal = attachTarget === undefined && !shellLaunchConfig.hideFromUser && !shellLaunchConfig.isFeatureTerminal;
 		if (!isExplicitlyManaged && !isRestoredUserTerminal && !isNewUserTerminal) {
-			return undefined;
+			return;
 		}
 
 		const logicalTerminalId = shellLaunchConfig.logicalTerminalId ?? generateUuid();
 		shellLaunchConfig.logicalTerminalId = logicalTerminalId;
+		const legacyWorkspaceId = this._logicalWorkspaceService.workspaces.find(workspace => workspace.terminalIds.includes(logicalTerminalId))?.id;
+		shellLaunchConfig.logicalWorkspaceId ??= attachTarget?.logicalWorkspaceId ?? legacyWorkspaceId ?? context.logicalWorkspaceId;
 		shellLaunchConfig.forcePersist = true;
-		return logicalTerminalId;
-	}
-
-	private _commitLogicalWorkspaceTerminal(context: ITerminalCreationContext, logicalTerminalId: string | undefined): void {
-		if (logicalTerminalId) {
-			this._logicalWorkspaceService.bindTerminal(context.logicalWorkspaceId, logicalTerminalId);
-		}
 	}
 
 	async createAndFocusTerminal(options?: ICreateTerminalOptions): Promise<ITerminalInstance> {

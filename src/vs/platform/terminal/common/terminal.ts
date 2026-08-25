@@ -190,6 +190,7 @@ export interface IRawTerminalsLayoutInfo<T> {
 
 export interface IPtyHostAttachTarget {
 	id: number;
+	logicalWorkspaceId?: string;
 	logicalTerminalId?: string;
 	pid: number;
 	title: string;
@@ -267,6 +268,7 @@ export const enum ProcessPropertyType {
 	FailedShellIntegrationActivation = 'failedShellIntegrationActivation',
 	UsedShellIntegrationInjection = 'usedShellIntegrationInjection',
 	ShellIntegrationInjectionFailureReason = 'shellIntegrationInjectionFailureReason',
+	LogicalWorkspaceId = 'logicalWorkspaceId',
 	LogicalTerminalId = 'logicalTerminalId',
 }
 
@@ -287,6 +289,7 @@ export interface IProcessPropertyMap {
 	[ProcessPropertyType.FailedShellIntegrationActivation]: boolean | undefined;
 	[ProcessPropertyType.UsedShellIntegrationInjection]: boolean | undefined;
 	[ProcessPropertyType.ShellIntegrationInjectionFailureReason]: ShellIntegrationInjectionFailureReason | undefined;
+	[ProcessPropertyType.LogicalWorkspaceId]: string | undefined;
 	[ProcessPropertyType.LogicalTerminalId]: string | undefined;
 }
 
@@ -499,6 +502,12 @@ export const remoteResolverTerminal = Symbol('remoteResolverTerminal');
 
 export interface IShellLaunchConfig {
 	/**
+	 * Stable Logical Workspace ownership stored with the terminal process. Workspace view state may
+	 * use legacy terminal IDs to initialize this value, but it is not the ownership authority.
+	 */
+	logicalWorkspaceId?: string;
+
+	/**
 	 * Stable identity used to associate a user-facing terminal with a logical workspace across
 	 * renderer reloads and persistent process reconnection.
 	 */
@@ -575,6 +584,7 @@ export interface IShellLaunchConfig {
 	 */
 	attachPersistentProcess?: {
 		id: number;
+		logicalWorkspaceId?: string;
 		logicalTerminalId?: string;
 		findRevivedId?: boolean;
 		pid: number;
@@ -743,6 +753,7 @@ export const enum TerminalLocationConfigValue {
 export type TerminalIcon = ThemeIcon | URI | { light: URI; dark: URI };
 
 export interface IShellLaunchConfigDto {
+	logicalWorkspaceId?: string;
 	logicalTerminalId?: string;
 	name?: string;
 	executable?: string;

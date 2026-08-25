@@ -110,7 +110,7 @@ suite('RemoteLogicalWorkspaceStateChannel', () => {
 		await Promise.all([
 			callForSnapshot(channel, RemoteLogicalWorkspaceStateCommand.Mutate, {
 				physicalWorkspaceId,
-				mutation: { type: LogicalWorkspaceMutationType.BindTerminal, workspaceId: 'workspace', logicalTerminalId: 'terminal' },
+				mutation: { type: LogicalWorkspaceMutationType.SetEditorWorkingSet, workspaceId: 'workspace', editorWorkingSet: 'editor-state' },
 			}),
 			callForSnapshot(channel, RemoteLogicalWorkspaceStateCommand.Mutate, {
 				physicalWorkspaceId,
@@ -123,23 +123,23 @@ suite('RemoteLogicalWorkspaceStateChannel', () => {
 			revision: 3,
 			state: {
 				schemaVersion: 2,
-				workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: ['terminal'], shellLayout }],
+				workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: [], shellLayout, editorWorkingSet: 'editor-state' }],
 			},
 		});
 	});
 
-	test('keeps retried idempotent mutations on one revision', async () => {
+	test('does not increment revision for an unchanged view mutation', async () => {
 		const channel = createChannel();
 		const physicalWorkspaceId = 'physical';
-		const mutation = { type: LogicalWorkspaceMutationType.BindTerminal, workspaceId: 'workspace', logicalTerminalId: 'terminal' } as const;
+		const mutation = { type: LogicalWorkspaceMutationType.SetEditorWorkingSet, workspaceId: 'workspace', editorWorkingSet: 'editor-state' } as const;
 		await callForSnapshot(channel, RemoteLogicalWorkspaceStateCommand.Initialize, { physicalWorkspaceId, state: state('workspace') });
 
 		const first = await callForSnapshot(channel, RemoteLogicalWorkspaceStateCommand.Mutate, { physicalWorkspaceId, mutation });
 		const retried = await callForSnapshot(channel, RemoteLogicalWorkspaceStateCommand.Mutate, { physicalWorkspaceId, mutation });
 
 		assert.deepStrictEqual({ first, retried }, {
-			first: { revision: 2, state: { schemaVersion: 2, workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: ['terminal'], shellLayout: undefined }] } },
-			retried: { revision: 2, state: { schemaVersion: 2, workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: ['terminal'], shellLayout: undefined }] } },
+			first: { revision: 2, state: { schemaVersion: 2, workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: [], shellLayout: undefined, editorWorkingSet: 'editor-state' }] } },
+			retried: { revision: 2, state: { schemaVersion: 2, workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: [], shellLayout: undefined, editorWorkingSet: 'editor-state' }] } },
 		});
 	});
 
@@ -152,10 +152,8 @@ suite('RemoteLogicalWorkspaceStateChannel', () => {
 		const firstDatabase = new FailOnceStorageDatabase(new SQLiteStorageDatabase(storagePath));
 		const firstStorage = disposables.add(new RemoteLogicalWorkspaceStateStorage(storagePath, new NullLogService(), () => firstDatabase));
 		const firstChannel = new RemoteLogicalWorkspaceStateChannel(firstStorage);
-		const revisions: number[] = [];
-		disposables.add(firstStorage.onDidChange(event => revisions.push(event.snapshot.revision)));
 		const physicalWorkspaceId = 'physical';
-		const mutation = { type: LogicalWorkspaceMutationType.BindTerminal, workspaceId: 'workspace', logicalTerminalId: 'terminal' } as const;
+		const mutation = { type: LogicalWorkspaceMutationType.SetEditorWorkingSet, workspaceId: 'workspace', editorWorkingSet: 'editor-state' } as const;
 
 		try {
 			const initial = await callForSnapshot(firstChannel, RemoteLogicalWorkspaceStateCommand.Initialize, { physicalWorkspaceId, state: state('workspace') });
@@ -166,10 +164,9 @@ suite('RemoteLogicalWorkspaceStateChannel', () => {
 			);
 			const afterFailure = await callForSnapshot(firstChannel, RemoteLogicalWorkspaceStateCommand.Read, { physicalWorkspaceId });
 
-			assert.deepStrictEqual({ initial, afterFailure, revisions }, {
+			assert.deepStrictEqual({ initial, afterFailure }, {
 				initial: { revision: 1, state: state('workspace') },
 				afterFailure: { revision: 1, state: state('workspace') },
-				revisions: [1],
 			});
 
 			const retried = await callForSnapshot(firstChannel, RemoteLogicalWorkspaceStateCommand.Mutate, { physicalWorkspaceId, mutation });
@@ -181,10 +178,9 @@ suite('RemoteLogicalWorkspaceStateChannel', () => {
 			const reopenedChannel = new RemoteLogicalWorkspaceStateChannel(reopenedStorage);
 			try {
 				const reopened = await callForSnapshot(reopenedChannel, RemoteLogicalWorkspaceStateCommand.Read, { physicalWorkspaceId });
-				assert.deepStrictEqual({ retried, reopened, revisions }, {
-					retried: { revision: 2, state: { schemaVersion: 2, workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: ['terminal'], shellLayout: undefined }] } },
-					reopened: { revision: 2, state: { schemaVersion: 2, workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: ['terminal'], shellLayout: undefined }] } },
-					revisions: [1, 2],
+				assert.deepStrictEqual({ retried, reopened }, {
+					retried: { revision: 2, state: { schemaVersion: 2, workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: [], shellLayout: undefined, editorWorkingSet: 'editor-state' }] } },
+					reopened: { revision: 2, state: { schemaVersion: 2, workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: [], shellLayout: undefined, editorWorkingSet: 'editor-state' }] } },
 				});
 			} finally {
 				reopenedStorage.dispose();

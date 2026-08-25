@@ -27,8 +27,8 @@ import * as extHostProtocol from '../common/extHost.protocol.js';
 import { MainThreadWebviews, reviveWebviewContentOptions, reviveWebviewExtension } from './mainThreadWebviews.js';
 import { ThemeIcon } from '../../../base/common/themables.js';
 
-const FULLSCREEN_EXTENSION_ID = 'dever.dever-project-switcher';
-const FULLSCREEN_VIEW_TYPE = 'dever.projectSwitcher.fullscreen';
+const FULLSCREEN_EXTENSION_ID = 'vibe-vscode.project-switcher';
+const FULLSCREEN_VIEW_TYPE = 'vibe-vscode.projectSwitcher.fullscreen';
 
 /**
  * The presentation contract attached to a webview handle for its entire lifetime.
@@ -186,7 +186,7 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 		showOptions: extHostProtocol.WebviewPanelShowOptions,
 	): Promise<void> {
 		const extension = reviveWebviewExtension(extensionData);
-		const fullscreen = initData.panelOptions.deverFullscreen === true;
+		const fullscreen = initData.panelOptions.vibeVscodeFullscreen === true;
 		if (fullscreen) {
 			const registeredExtension = this._extensionService.extensions.find(candidate => ExtensionIdentifier.equals(candidate.identifier, extension.id));
 			const isTrustedFullscreenExtension = ExtensionIdentifier.equals(extension.id, FULLSCREEN_EXTENSION_ID) &&
@@ -195,10 +195,10 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 				extension.location !== undefined &&
 				isEqual(registeredExtension.extensionLocation, extension.location);
 			if (!isTrustedFullscreenExtension) {
-				throw new Error(localize('deverFullscreenPanelUnauthorized', "Only the built-in vibe vscode extension can open the vibe vscode fullscreen panel."));
+				throw new Error(localize('vibeVscodeFullscreenPanelUnauthorized', "Only the built-in vibe vscode extension can open the vibe vscode fullscreen panel."));
 			}
 			if (this._editorGroupService.activeModalEditorPart) {
-				throw new Error(localize('deverFullscreenPanelModalConflict', "Close the current modal editor before opening the vibe vscode fullscreen panel."));
+				throw new Error(localize('vibeVscodeFullscreenPanelModalConflict', "Close the current modal editor before opening the vibe vscode fullscreen panel."));
 			}
 		}
 

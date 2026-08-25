@@ -33,7 +33,7 @@ suite('MainThreadWebviewPanels', () => {
 
 	test('keeps fullscreen modal presentation options when revealing a panel', async () => {
 		const extensionLocation = URI.file('/builtin/vibe-vscode');
-		const extensionId = new ExtensionIdentifier('dever.dever-project-switcher');
+		const extensionId = new ExtensionIdentifier('vibe-vscode.project-switcher');
 		const registeredExtension = upcastPartial<IExtensionDescription>({
 			identifier: extensionId,
 			extensionLocation,
@@ -104,11 +104,11 @@ suite('MainThreadWebviewPanels', () => {
 		const initData: IWebviewInitData = {
 			title: 'Sessions',
 			webviewOptions: {},
-			panelOptions: { deverFullscreen: true },
+			panelOptions: { vibeVscodeFullscreen: true },
 			serializeBuffersForPostMessage: false,
 		};
 
-		await panels.$createWebviewPanel(extension, 'fullscreen-handle', 'dever.projectSwitcher.fullscreen', initData, { preserveFocus: true });
+		await panels.$createWebviewPanel(extension, 'fullscreen-handle', 'vibe-vscode.projectSwitcher.fullscreen', initData, { preserveFocus: true });
 		const mainThreadProxy = new class extends mock<MainThreadWebviewManager>() {
 			$reveal(handle: string, showOptions: { viewColumn?: number; preserveFocus?: boolean }): void {
 				panels.$reveal(handle, showOptions);
@@ -125,7 +125,7 @@ suite('MainThreadWebviewPanels', () => {
 		const extHostWebview = new class extends mock<ExtHostWebview>() {
 			override dispose(): void { }
 		}();
-		const panel = extHostPanels.createNewWebviewPanel('fullscreen-handle', 'dever.projectSwitcher.fullscreen', 'Sessions', 1, { deverFullscreen: true }, extHostWebview, true);
+		const panel = extHostPanels.createNewWebviewPanel('fullscreen-handle', 'vibe-vscode.projectSwitcher.fullscreen', 'Sessions', 1, { vibeVscodeFullscreen: true }, extHostWebview, true);
 		panel.reveal(9, true);
 
 		const expected = {
@@ -150,7 +150,7 @@ suite('MainThreadWebviewPanels', () => {
 
 	test('propagates fullscreen editor open failures and disposes the unowned input', async () => {
 		const extensionLocation = URI.file('/builtin/vibe-vscode');
-		const extensionId = new ExtensionIdentifier('dever.dever-project-switcher');
+		const extensionId = new ExtensionIdentifier('vibe-vscode.project-switcher');
 		const registeredExtension = upcastPartial<IExtensionDescription>({
 			identifier: extensionId,
 			extensionLocation,
@@ -213,7 +213,7 @@ suite('MainThreadWebviewPanels', () => {
 		const initData: IWebviewInitData = {
 			title: 'Sessions',
 			webviewOptions: {},
-			panelOptions: { deverFullscreen: true },
+			panelOptions: { vibeVscodeFullscreen: true },
 			serializeBuffersForPostMessage: false,
 		};
 
@@ -221,7 +221,7 @@ suite('MainThreadWebviewPanels', () => {
 			panels.$createWebviewPanel(
 				{ id: extensionId, location: extensionLocation },
 				'fullscreen-rejected-handle',
-				'dever.projectSwitcher.fullscreen',
+				'vibe-vscode.projectSwitcher.fullscreen',
 				initData,
 				{ preserveFocus: false },
 			),

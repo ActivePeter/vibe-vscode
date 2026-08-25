@@ -337,13 +337,13 @@ export class ExtHostWebviewPanels extends Disposable implements extHostProtocol.
 }
 
 function serializeWebviewPanelOptions(extension: IExtensionDescription, options: vscode.WebviewPanelOptions): extHostProtocol.IWebviewPanelOptions {
-	if (options.deverFullscreen) {
-		checkProposedApiEnabled(extension, 'deverFullscreenPanel');
+	if (options.vibeVscodeFullscreen) {
+		checkProposedApiEnabled(extension, 'vibeVscodeFullscreenPanel');
 	}
 
 	return {
 		enableFindWidget: options.enableFindWidget,
 		retainContextWhenHidden: options.retainContextWhenHidden,
-		deverFullscreen: options.deverFullscreen,
+		vibeVscodeFullscreen: options.vibeVscodeFullscreen,
 	};
 }

@@ -1,9 +1,9 @@
 {
-  "name": "dever-project-switcher",
+  "name": "project-switcher",
   "displayName": "%displayName%",
   "description": "%description%",
   "version": "0.0.1",
-  "publisher": "dever",
+  "publisher": "vibe-vscode",
   "license": "MIT",
   "engines": {
     "vscode": "^1.134.0"
@@ -16,11 +16,11 @@
     "ui"
   ],
   "enabledApiProposals": [
-    "deverFullscreenPanel"
+    "vibeVscodeFullscreenPanel"
   ],
   "activationEvents": [
-    "onCommand:dever.openFullscreenPanel",
-    "onCommand:dever.closeFullscreenPanel"
+    "onCommand:vibe-vscode.openFullscreenPanel",
+    "onCommand:vibe-vscode.closeFullscreenPanel"
   ],
   "capabilities": {
     "virtualWorkspaces": true,
@@ -31,12 +31,12 @@
   "contributes": {
     "commands": [
       {
-        "command": "dever.openFullscreenPanel",
+        "command": "vibe-vscode.openFullscreenPanel",
         "title": "%command.openFullscreenPanel%",
         "category": "vibe vscode"
       },
       {
-        "command": "dever.closeFullscreenPanel",
+        "command": "vibe-vscode.closeFullscreenPanel",
         "title": "%command.closeFullscreenPanel%",
         "category": "vibe vscode"
       }

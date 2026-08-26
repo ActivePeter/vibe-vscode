@@ -10,9 +10,12 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { IStorageService, StorageScope } from '../../../../../platform/storage/common/storage.js';
 import { TerminalExitReason, TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { LogicalWorkspaceProjectionCoordinator } from '../../../../services/logicalWorkspace/browser/logicalWorkspaceProjection.js';
-import { ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { LogicalWorkspaceService } from '../../../../services/logicalWorkspace/browser/logicalWorkspaceService.js';
+import { ILogicalWorkspaceStateStore, LOGICAL_WORKSPACE_SHARED_STATE_KEY, LogicalWorkspaceStateStore } from '../../../../services/logicalWorkspace/browser/logicalWorkspaceStateStore.js';
+import { ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor, LogicalWorkspaceStateChangeKind } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../test/common/workbenchTestServices.js';
 import { ITerminalInstance, ITerminalService } from '../../../terminal/browser/terminal.js';
@@ -21,10 +24,68 @@ import { LogicalWorkspaceTerminalAdapter } from '../../browser/logicalWorkspaceT
 suite('LogicalWorkspaceTerminalAdapter', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('workbench fixture uses the production Logical Workspace state stack', async () => {
+		const store = disposables.add(new DisposableStore());
+		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
+		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		const logicalWorkspaceStateStore = instantiationService.get(ILogicalWorkspaceStateStore);
+		await logicalWorkspaceService.whenReady;
+
+		const stateChanges: LogicalWorkspaceStateChangeKind[] = [];
+		let workspaceChanges = 0;
+		store.add(logicalWorkspaceService.onDidChangeState(event => stateChanges.push(event.changed)));
+		store.add(logicalWorkspaceService.onDidChangeWorkspaces(() => workspaceChanges++));
+
+		const activeWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
+		const activeWorkspaceName = logicalWorkspaceService.activeWorkspace.name;
+		logicalWorkspaceService.setShellLayout(activeWorkspaceId, createShellLayout());
+		logicalWorkspaceService.setShellLayout(activeWorkspaceId, createShellLayout());
+		logicalWorkspaceService.setEditorWorkingSet(activeWorkspaceId, 'editor-state');
+		logicalWorkspaceService.setEditorWorkingSet(activeWorkspaceId, 'editor-state');
+		const createdWorkspace = logicalWorkspaceService.createWorkspace('  Review  ');
+		assert.throws(() => logicalWorkspaceService.createWorkspace('   '), /must not be empty/);
+
+		const rawPersistedState = instantiationService.get(IStorageService).get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE);
+		const persistedState: unknown = JSON.parse(rawPersistedState ?? 'null');
+		assert.deepStrictEqual({
+			usesProductionService: logicalWorkspaceService instanceof LogicalWorkspaceService,
+			usesProductionStore: logicalWorkspaceStateStore instanceof LogicalWorkspaceStateStore,
+			createdWorkspaceName: createdWorkspace.name,
+			stateChanges,
+			workspaceChanges,
+			persistedState,
+		}, {
+			usesProductionService: true,
+			usesProductionStore: true,
+			createdWorkspaceName: 'Review',
+			stateChanges: [
+				LogicalWorkspaceStateChangeKind.Workspaces,
+				LogicalWorkspaceStateChangeKind.Workspaces,
+				LogicalWorkspaceStateChangeKind.Workspaces,
+			],
+			workspaceChanges: 3,
+			persistedState: {
+				schemaVersion: 2,
+				workspaces: [{
+					id: activeWorkspaceId,
+					name: activeWorkspaceName,
+					terminalIds: [],
+					shellLayout: createShellLayout(),
+					editorWorkingSet: 'editor-state',
+				}, {
+					id: createdWorkspace.id,
+					name: 'Review',
+					terminalIds: [],
+				}],
+			},
+		});
+	});
+
 	test('completes a terminal projection transaction before an awaited reconcile resolves', async () => {
 		const store = disposables.add(new DisposableStore());
 		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
 		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		await logicalWorkspaceService.whenReady;
 		const activeWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
 		const inactiveWorkspace = logicalWorkspaceService.createWorkspace('Inactive');
 		const changedInstances = store.add(new Emitter<void>());
@@ -94,6 +155,7 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		const store = disposables.add(new DisposableStore());
 		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
 		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		await logicalWorkspaceService.whenReady;
 		const firstWorkspace = logicalWorkspaceService.activeWorkspace;
 		const secondWorkspace = logicalWorkspaceService.createWorkspace('Second');
 		const changedInstances = store.add(new Emitter<void>());

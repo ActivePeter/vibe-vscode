@@ -412,6 +412,7 @@ suite('LocalAgentsSessionsController', () => {
 			let providerDeltaCount = 0;
 			disposables.add(controller.onDidChangeChatSessionItems(() => providerDeltaCount++));
 			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			await logicalWorkspaceService.whenReady;
 			const nextWorkspace = logicalWorkspaceService.createWorkspace('Next');
 			logicalWorkspaceService.activateWorkspace(nextWorkspace.id, LogicalWorkspaceActivationActor.Picker);
 

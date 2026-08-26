@@ -371,6 +371,7 @@ suite('AgentSessions', () => {
 				await viewModel.resolve(chatSessionTestType);
 
 				const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+				await logicalWorkspaceService.whenReady;
 				const secondWorkspace = logicalWorkspaceService.createWorkspace('Second');
 				logicalWorkspaceService.activateWorkspace(secondWorkspace.id, LogicalWorkspaceActivationActor.Picker);
 

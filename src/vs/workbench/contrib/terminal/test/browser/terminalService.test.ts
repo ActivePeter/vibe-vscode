@@ -257,6 +257,7 @@ suite('Workbench - TerminalService', () => {
 			terminalService.registerProcessSupport(true);
 
 			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			await logicalWorkspaceService.whenReady;
 			const initiatingWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
 			const targetWorkspace = logicalWorkspaceService.createWorkspace('Target');
 			const terminalPromise = terminalService.createTerminal({
@@ -308,6 +309,7 @@ suite('Workbench - TerminalService', () => {
 			terminalService.registerProcessSupport(true);
 
 			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			await logicalWorkspaceService.whenReady;
 			const initiatingWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
 			const targetWorkspace = logicalWorkspaceService.createWorkspace('Target');
 			const terminalPromise = terminalService.createTerminal({
@@ -335,6 +337,7 @@ suite('Workbench - TerminalService', () => {
 
 		test('should migrate legacy Workspace ownership into terminal metadata', async () => {
 			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			await logicalWorkspaceService.whenReady;
 			const legacyWorkspace = logicalWorkspaceService.createWorkspace('Legacy');
 			(legacyWorkspace.terminalIds as string[]).push('legacy-terminal');
 			const shellLaunchConfig: IShellLaunchConfig = {
@@ -377,6 +380,7 @@ suite('Workbench - TerminalService', () => {
 			terminalService.registerProcessSupport(true);
 
 			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			await logicalWorkspaceService.whenReady;
 			await rejects(terminalService.createTerminal({
 				config: { executable: '/bin/sh' },
 				skipContributedProfileCheck: true,

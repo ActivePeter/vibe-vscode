@@ -19,7 +19,7 @@ import { MultiWindowParts } from '../../part.js';
 import { DeferredPromise } from '../../../../base/common/async.js';
 import { IStorageService, IStorageValueChangeEvent, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { IAuxiliaryWindowOpenOptions, IAuxiliaryWindowService } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
+import { AuxiliaryWindowMode, IAuxiliaryWindowOpenOptions, IAuxiliaryWindowService } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { ContextKeyValue, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { getActiveElement, IDimension, isAncestor, isHTMLElement } from '../../../../base/browser/dom.js';
@@ -30,6 +30,7 @@ import { IStatusbarService } from '../../../services/statusbar/browser/statusbar
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IModalEditorPartOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorPartModalVisibleContext } from '../../../common/contextkeys.js';
+import { Orientation } from '../../../../base/browser/ui/grid/grid.js';
 
 interface IEditorPartsUIState {
 	readonly auxiliary: IAuxiliaryEditorPartState[];
@@ -49,6 +50,192 @@ interface IEditorWorkingSetState extends IEditorWorkingSet {
 interface ISerializedEditorWorkingSetState {
 	readonly main: IEditorPartUIState;
 	readonly auxiliary: IEditorPartsUIState;
+}
+
+function isSerializedEditorWorkingSetState(candidate: unknown): candidate is ISerializedEditorWorkingSetState {
+	if (!isRecord(candidate)) {
+		return false;
+	}
+
+	const groupIds = new Set<number>();
+	return isEditorPartUIState(candidate.main, groupIds) && isEditorPartsUIState(candidate.auxiliary, groupIds);
+}
+
+function isEditorPartsUIState(candidate: unknown, groupIds: Set<number>): candidate is IEditorPartsUIState {
+	if (!isRecord(candidate) || !Array.isArray(candidate.auxiliary) || !Array.isArray(candidate.mru)) {
+		return false;
+	}
+
+	if (!isIndexPermutation(candidate.mru, candidate.auxiliary.length + 1)) {
+		return false;
+	}
+
+	return candidate.auxiliary.every(auxiliary => isAuxiliaryEditorPartState(auxiliary, groupIds));
+}
+
+function isAuxiliaryEditorPartState(candidate: unknown, groupIds: Set<number>): candidate is IAuxiliaryEditorPartState {
+	if (!isRecord(candidate) || !isEditorPartUIState(candidate.state, groupIds)) {
+		return false;
+	}
+
+	if (candidate.bounds !== undefined && !isAuxiliaryWindowBounds(candidate.bounds)) {
+		return false;
+	}
+
+	if (candidate.mode !== undefined && candidate.mode !== AuxiliaryWindowMode.Maximized && candidate.mode !== AuxiliaryWindowMode.Normal && candidate.mode !== AuxiliaryWindowMode.Fullscreen) {
+		return false;
+	}
+
+	if (candidate.zoomLevel !== undefined && !isFiniteNumber(candidate.zoomLevel)) {
+		return false;
+	}
+
+	if (candidate.backgroundColor !== undefined && typeof candidate.backgroundColor !== 'string') {
+		return false;
+	}
+
+	const booleanProperties = ['compact', 'alwaysOnTop', 'nativeTitlebar', 'disableFullscreen', 'frameless', 'transparent', 'notResizable', 'disableMaximize', 'noBackgroundThrottling'] as const;
+	return booleanProperties.every(property => candidate[property] === undefined || typeof candidate[property] === 'boolean');
+}
+
+function isAuxiliaryWindowBounds(candidate: unknown): boolean {
+	if (!isRecord(candidate)) {
+		return false;
+	}
+
+	for (const property of ['x', 'y', 'width', 'height'] as const) {
+		const value = candidate[property];
+		if (value !== undefined && (!isFiniteNumber(value) || ((property === 'width' || property === 'height') && value < 0))) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function isEditorPartUIState(candidate: unknown, allGroupIds: Set<number>): candidate is IEditorPartUIState {
+	if (!isRecord(candidate) || !isGroupIdentifier(candidate.activeGroup) || !Array.isArray(candidate.mostRecentActiveGroups)) {
+		return false;
+	}
+
+	const groupIds = new Set<number>();
+	if (!isSerializedEditorGrid(candidate.serializedGrid, groupIds) || !groupIds.has(candidate.activeGroup) || !hasSameIdentifiers(candidate.mostRecentActiveGroups, groupIds)) {
+		return false;
+	}
+
+	for (const groupId of groupIds) {
+		if (allGroupIds.has(groupId)) {
+			return false;
+		}
+	}
+	for (const groupId of groupIds) {
+		allGroupIds.add(groupId);
+	}
+
+	return true;
+}
+
+function isSerializedEditorGrid(candidate: unknown, groupIds: Set<number>): boolean {
+	if (!isRecord(candidate) || (candidate.orientation !== Orientation.HORIZONTAL && candidate.orientation !== Orientation.VERTICAL) || !isNonNegativeFiniteNumber(candidate.width) || !isNonNegativeFiniteNumber(candidate.height)) {
+		return false;
+	}
+
+	return isSerializedEditorGridNode(candidate.root, groupIds, true);
+}
+
+function isSerializedEditorGridNode(candidate: unknown, groupIds: Set<number>, root: boolean): boolean {
+	if (!isRecord(candidate) || !isNonNegativeFiniteNumber(candidate.size) || (candidate.visible !== undefined && typeof candidate.visible !== 'boolean')) {
+		return false;
+	}
+
+	if (candidate.type === 'branch') {
+		return Array.isArray(candidate.data) && candidate.data.length > 0 && candidate.data.every(child => isSerializedEditorGridNode(child, groupIds, false));
+	}
+
+	if (root || candidate.type !== 'leaf' || (candidate.maximized !== undefined && typeof candidate.maximized !== 'boolean') || !isSerializedEditorGroup(candidate.data)) {
+		return false;
+	}
+
+	const groupId = candidate.data.id;
+	if (groupIds.has(groupId)) {
+		return false;
+	}
+	groupIds.add(groupId);
+
+	return true;
+}
+
+function isSerializedEditorGroup(candidate: unknown): candidate is { readonly id: number } {
+	if (!isRecord(candidate) || !isGroupIdentifier(candidate.id) || !Array.isArray(candidate.editors) || !Array.isArray(candidate.mru)) {
+		return false;
+	}
+
+	if (candidate.locked !== undefined && typeof candidate.locked !== 'boolean') {
+		return false;
+	}
+
+	if (!candidate.editors.every(editor => isRecord(editor) && typeof editor.id === 'string' && typeof editor.value === 'string')) {
+		return false;
+	}
+
+	if (!isIndexList(candidate.mru, candidate.editors.length)) {
+		return false;
+	}
+
+	return (candidate.preview === undefined || isIndex(candidate.preview, candidate.editors.length)) &&
+		(candidate.sticky === undefined || isIndex(candidate.sticky, candidate.editors.length));
+}
+
+function hasSameIdentifiers(candidate: unknown[], identifiers: Set<number>): boolean {
+	if (candidate.length !== identifiers.size) {
+		return false;
+	}
+
+	const seen = new Set<number>();
+	for (const identifier of candidate) {
+		if (!isGroupIdentifier(identifier) || !identifiers.has(identifier) || seen.has(identifier)) {
+			return false;
+		}
+		seen.add(identifier);
+	}
+
+	return true;
+}
+
+function isIndexPermutation(candidate: unknown[], length: number): boolean {
+	return candidate.length === length && isIndexList(candidate, length);
+}
+
+function isIndexList(candidate: unknown[], length: number): boolean {
+	const seen = new Set<number>();
+	for (const index of candidate) {
+		if (!isIndex(index, length) || seen.has(index)) {
+			return false;
+		}
+		seen.add(index);
+	}
+
+	return true;
+}
+
+function isIndex(candidate: unknown, length: number): candidate is number {
+	return Number.isSafeInteger(candidate) && (candidate as number) >= 0 && (candidate as number) < length;
+}
+
+function isGroupIdentifier(candidate: unknown): candidate is number {
+	return Number.isSafeInteger(candidate) && (candidate as number) >= 0;
+}
+
+function isNonNegativeFiniteNumber(candidate: unknown): candidate is number {
+	return isFiniteNumber(candidate) && candidate >= 0;
+}
+
+function isFiniteNumber(candidate: unknown): candidate is number {
+	return typeof candidate === 'number' && Number.isFinite(candidate);
+}
+
+function isRecord(candidate: unknown): candidate is Record<string, unknown> {
+	return !!candidate && typeof candidate === 'object' && !Array.isArray(candidate);
 }
 
 interface IModalEditorPartState {
@@ -615,19 +802,14 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		let workingSet: unknown;
 		try {
 			workingSet = JSON.parse(serializedWorkingSet);
+			if (!isSerializedEditorWorkingSetState(workingSet)) {
+				return false;
+			}
 		} catch {
 			return false;
 		}
 
-		if (!workingSet || typeof workingSet !== 'object') {
-			return false;
-		}
-		const candidate = workingSet as Partial<ISerializedEditorWorkingSetState>;
-		if (!candidate.main || typeof candidate.main !== 'object' || !candidate.auxiliary || typeof candidate.auxiliary !== 'object') {
-			return false;
-		}
-
-		return this.doApplyWorkingSet(candidate as ISerializedEditorWorkingSetState, options);
+		return this.doApplyWorkingSet(workingSet, options);
 	}
 
 	saveWorkingSet(name: string): IEditorWorkingSet {
@@ -669,7 +851,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 			workingSetState = this.editorWorkingSets[this.indexOfWorkingSet(workingSet) ?? -1];
 		}
 
-		if (!workingSetState) {
+		if (!workingSetState || (workingSetState !== 'empty' && !isSerializedEditorWorkingSetState(workingSetState))) {
 			return false;
 		}
 

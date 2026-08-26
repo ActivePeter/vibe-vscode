@@ -56,6 +56,26 @@ const MODAL_SIDEBAR_DEFAULT_WIDTH = 260;
 const MODAL_SIDEBAR_PADDING = 8; // matches CSS padding on sidebar container
 const MODAL_SIDEBAR_BORDER_RIGHT = 1; // matches CSS border-right on sidebar container
 
+/**
+ * Presentation modes for the modal editor host.
+ */
+export const enum ModalEditorPresentation {
+	Modal,
+	Fullscreen,
+}
+
+/**
+ * Returns the minimum size constraint for a modal editor presentation.
+ */
+export function getModalEditorMinimumSize(presentation: ModalEditorPresentation, hasSidebar: boolean): Dimension {
+	if (presentation === ModalEditorPresentation.Fullscreen) {
+		return Dimension.None;
+	}
+
+	const effectiveMinWidth = MODAL_MIN_WIDTH + (hasSidebar ? MODAL_SIDEBAR_MIN_WIDTH : 0);
+	return new Dimension(effectiveMinWidth, MODAL_MIN_HEIGHT);
+}
+
 const defaultModalEditorAllowableCommands = new Set([
 
 	// Application
@@ -152,8 +172,9 @@ export class ModalEditorPart {
 	}
 
 	async create(options?: IModalEditorPartOptions): Promise<ICreateModalEditorPartResult> {
-		const fullscreen = options?.fullscreen === true;
-		if (fullscreen && (options.maximized !== undefined || options.size !== undefined || options.position !== undefined || options.sidebar !== undefined)) {
+		const presentation = options?.fullscreen === true ? ModalEditorPresentation.Fullscreen : ModalEditorPresentation.Modal;
+		const fullscreen = presentation === ModalEditorPresentation.Fullscreen;
+		if (fullscreen && (options?.maximized !== undefined || options?.size !== undefined || options?.position !== undefined || options?.sidebar !== undefined)) {
 			throw new Error(localize('fullscreenModalEditorIncompatibleOptions', "Fullscreen modal editors cannot use maximized, size, position, or sidebar options."));
 		}
 
@@ -210,8 +231,7 @@ export class ModalEditorPart {
 		const resizableElement = new ResizableHTMLElement();
 		disposables.add(toDisposable(() => resizableElement.dispose()));
 		resizableElement.domNode.classList.add('modal-editor-resizable');
-		const effectiveMinWidth = MODAL_MIN_WIDTH + (options?.sidebar ? MODAL_SIDEBAR_MIN_WIDTH : 0);
-		resizableElement.minSize = new Dimension(effectiveMinWidth, MODAL_MIN_HEIGHT);
+		resizableElement.minSize = getModalEditorMinimumSize(presentation, !!options?.sidebar);
 		modalElement.appendChild(resizableElement.domNode);
 
 		const shadowElement = resizableElement.domNode.appendChild($('.modal-editor-shadow'));

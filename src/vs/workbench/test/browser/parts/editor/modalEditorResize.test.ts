@@ -4,10 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { Dimension } from '../../../../../base/browser/dom.js';
+import { ResizableHTMLElement } from '../../../../../base/browser/ui/resizable/resizable.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
-
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { getModalEditorMinimumSize, ModalEditorPresentation } from '../../../../browser/parts/editor/modalEditorPart.js';
 
 interface ISize {
 	readonly width: number;
@@ -79,6 +81,28 @@ suite('Modal Editor Resize', () => {
 	teardown(() => disposables.clear());
 
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('fullscreen fits a viewport smaller than the regular modal minimum', () => {
+		const viewport = new Dimension(320, 200);
+		const resizableElement = disposables.add(new ResizableHTMLElement());
+		resizableElement.minSize = getModalEditorMinimumSize(ModalEditorPresentation.Fullscreen, false);
+		resizableElement.maxSize = viewport;
+
+		resizableElement.layout(viewport.height, viewport.width);
+
+		assert.deepStrictEqual(
+			{
+				regularMinimum: getModalEditorMinimumSize(ModalEditorPresentation.Modal, false),
+				fullscreenMinimum: resizableElement.minSize,
+				fullscreenSize: resizableElement.size,
+			},
+			{
+				regularMinimum: new Dimension(400, 300),
+				fullscreenMinimum: Dimension.None,
+				fullscreenSize: viewport,
+			}
+		);
+	});
 
 	test('double-click from default size maximizes', () => {
 		const host = disposables.add(new TestModalEditorResizeHost());

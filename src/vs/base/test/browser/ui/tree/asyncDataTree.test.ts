@@ -5,14 +5,16 @@
 
 import assert from 'assert';
 import { IIdentityProvider, IListVirtualDelegate } from '../../../../browser/ui/list/list.js';
-import { AsyncDataTree, CompressibleAsyncDataTree, ITreeCompressionDelegate } from '../../../../browser/ui/tree/asyncDataTree.js';
+import { AsyncDataTree, CompressibleAsyncDataTree, IAsyncFindProvider, ITreeCompressionDelegate } from '../../../../browser/ui/tree/asyncDataTree.js';
 import { ICompressedTreeNode } from '../../../../browser/ui/tree/compressedObjectTreeModel.js';
 import { ICompressibleTreeRenderer } from '../../../../browser/ui/tree/objectTree.js';
-import { IAsyncDataSource, ITreeNode } from '../../../../browser/ui/tree/tree.js';
-import { timeout } from '../../../../common/async.js';
+import { IAsyncDataSource, ITreeNode, TreeVisibility } from '../../../../browser/ui/tree/tree.js';
+import { DeferredPromise, timeout } from '../../../../common/async.js';
 import { Iterable } from '../../../../common/iterator.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../common/utils.js';
 import { runWithFakedTimers } from '../../../common/timeTravelScheduler.js';
+import { IContextViewProvider } from '../../../../browser/ui/contextview/contextview.js';
+import { TreeFindMode } from '../../../../browser/ui/tree/abstractTree.js';
 
 interface Element {
 	id: string;
@@ -100,6 +102,84 @@ class Model {
 suite('AsyncDataTree', function () {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('close completion owns the provider session across an immediate reopen', async () => {
+		await runWithFakedTimers({ useFakeTimers: true }, async () => {
+			const container = document.createElement('div');
+			const calls: string[] = [];
+			const sessionEnd = new DeferredPromise<void>();
+			let sessionActive = false;
+			const findProvider: IAsyncFindProvider<Element> = {
+				startSession: () => {
+					sessionActive = true;
+					calls.push('start');
+				},
+				find: async pattern => {
+					if (!sessionActive) {
+						throw new Error('no session state');
+					}
+					calls.push(`find:${pattern}`);
+					return { matchCount: 1, isMatch: () => true };
+				},
+				endSession: async () => {
+					sessionActive = false;
+					calls.push('end:start');
+					await sessionEnd.p;
+					calls.push('end:done');
+				},
+			};
+			const contextViewProvider: IContextViewProvider = {
+				showContextView: () => { },
+				hideContextView: () => { },
+				layout: () => { },
+			};
+			const model = new Model({ id: 'root', children: [{ id: 'a' }, { id: 'b' }] });
+			const tree = store.add(new AsyncDataTree<Element, Element>('testAsyncFindClose', container, new VirtualDelegate(), [new Renderer()], new DataSource(), {
+				identityProvider: new IdentityProvider(),
+				keyboardNavigationLabelProvider: { getKeyboardNavigationLabel: element => element.id },
+				contextViewProvider,
+				filter: { filter: () => TreeVisibility.Visible },
+				findProvider,
+				defaultFindMode: TreeFindMode.Filter,
+			}));
+			tree.layout(200);
+			await tree.setInput(model.root);
+
+			const typeFindPattern = (pattern: string) => {
+				const input = container.querySelector<HTMLInputElement>('.monaco-tree-type-filter:not(.disabled) input');
+				assert.ok(input);
+				input.value = pattern;
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+			};
+
+			tree.openFind();
+			typeFindPattern('a');
+			await timeout(300);
+
+			let closeCompleted = false;
+			const close = tree.closeFind().then(() => closeCompleted = true);
+			tree.openFind();
+			typeFindPattern('b');
+			await timeout(300);
+			const beforeSessionEnd = { closeCompleted, calls: [...calls] };
+
+			sessionEnd.complete();
+			await close;
+			await timeout(0);
+
+			const result = {
+				beforeSessionEnd,
+				afterSessionEnd: { closeCompleted, calls: [...calls] },
+			};
+			await tree.closeFind();
+			await timeout(300);
+
+			assert.deepStrictEqual(result, {
+				beforeSessionEnd: { closeCompleted: false, calls: ['start', 'find:a', 'end:start'] },
+				afterSessionEnd: { closeCompleted: true, calls: ['start', 'find:a', 'end:start', 'end:done', 'start', 'find:b'] },
+			});
+		});
+	});
 
 	test('Collapse state should be preserved across refresh calls', async () => {
 		const container = document.createElement('div');

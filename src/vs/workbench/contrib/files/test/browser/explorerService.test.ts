@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { mock } from '../../../../../base/test/common/mock.js';
@@ -65,17 +66,25 @@ suite('ExplorerService', () => {
 		assert.deepStrictEqual(service.getContext(true), [parentFile]);
 
 		const projectionCalls: string[] = [];
+		const findClosed = new DeferredPromise<void>();
 		service.registerView(new class extends mock<IExplorerView>() {
 			override async closeFind(): Promise<void> {
 				projectionCalls.push(`close:${service.visibleRoots.at(0)?.name}`);
+				await findClosed.p;
 			}
 			override async setTreeInput(): Promise<void> {
 				projectionCalls.push(`input:${service.visibleRoots.at(0)?.name}`);
 			}
 		});
+		const activation = service.setActiveRoot(nestedFolder.uri);
+		const beforeFindClosed = [...projectionCalls];
+		findClosed.complete();
+		await activation;
 		await service.setActiveRoot(nestedFolder.uri);
-		await service.setActiveRoot(nestedFolder.uri);
-		assert.deepStrictEqual(projectionCalls, ['close:nested', 'input:nested']);
+		assert.deepStrictEqual({ beforeFindClosed, projectionCalls }, {
+			beforeFindClosed: ['close:nested'],
+			projectionCalls: ['close:nested', 'input:nested'],
+		});
 
 		store.dispose();
 	});

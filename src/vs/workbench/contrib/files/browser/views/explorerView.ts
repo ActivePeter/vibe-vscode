@@ -836,14 +836,12 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 	}
 
 	async closeFind(): Promise<void> {
-		if (!this.tree || !this.findProvider) {
+		if (!this.tree) {
 			return;
 		}
 
-		// Closing the widget cancels its in-flight token synchronously. End the provider session
-		// immediately as well so a rapidly reopened widget cannot reuse the previous Project input.
-		this.tree.closeFind();
-		await this.findProvider.endSession();
+		// Wait for the controller-owned provider session to close before changing the Project input.
+		await this.tree.closeFind();
 	}
 
 	public async selectResource(resource: URI | undefined, reveal = this._autoReveal, retry = 0): Promise<void> {

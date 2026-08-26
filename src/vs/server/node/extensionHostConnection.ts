@@ -5,9 +5,10 @@
 
 import * as cp from 'child_process';
 import * as net from 'net';
+import { Sequencer } from '../../base/common/async.js';
 import { VSBuffer } from '../../base/common/buffer.js';
 import { Emitter, Event } from '../../base/common/event.js';
-import { Disposable, DisposableStore, toDisposable } from '../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../base/common/lifecycle.js';
 import { FileAccess } from '../../base/common/network.js';
 import { delimiter, join } from '../../base/common/path.js';
 import { IProcessEnvironment, isWindows } from '../../base/common/platform.js';
@@ -78,13 +79,13 @@ class ConnectionData {
 		return this.socket.drain();
 	}
 
-	public toIExtHostSocketMessage(): IExtHostSocketMessage {
+	public toIExtHostSocketMessage(useDecodedSocket = false): IExtHostSocketMessage {
 
 		let skipWebSocketFrames: boolean;
 		let permessageDeflate: boolean;
 		let inflateBytes: VSBuffer;
 
-		if (this.socket instanceof NodeSocket) {
+		if (useDecodedSocket || this.socket instanceof NodeSocket) {
 			skipWebSocketFrames = true;
 			permessageDeflate = false;
 			inflateBytes = VSBuffer.alloc(0);
@@ -111,9 +112,14 @@ export class ExtensionHostConnection extends Disposable {
 	readonly onClose: Event<void> = this._onClose.event;
 
 	private readonly _canSendSocket: boolean;
+	private readonly _useSocketBridge: boolean;
+	private readonly _useSocketTransferProtocol: boolean;
+	private readonly _connectionSequencer = new Sequencer();
+	private readonly _activeSocketBridge = this._register(new MutableDisposable<DisposableStore>());
 	private _disposed: boolean;
 	private _remoteAddress: string;
 	private _extensionHostProcess: cp.ChildProcess | null;
+	private _socketTransferReady: boolean;
 	private _connectionData: ConnectionData | null;
 
 	constructor(
@@ -121,18 +127,23 @@ export class ExtensionHostConnection extends Disposable {
 		remoteAddress: string,
 		socket: NodeSocket | WebSocketNodeSocket,
 		initialDataChunk: VSBuffer,
+		private readonly _extensionHostProcessFactory: typeof cp.fork | undefined,
 		@IServerEnvironmentService private readonly _environmentService: IServerEnvironmentService,
 		@ILogService private readonly _logService: ILogService,
 		@IExtensionHostStatusService private readonly _extensionHostStatusService: IExtensionHostStatusService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService
 	) {
 		super();
-		// A TLSSocket cannot be transferred through child-process IPC. Keep the TLS
-		// endpoint in this process and bridge extension-host traffic over its IPC pipe.
-		this._canSendSocket = !this._environmentService.args['tls-key-path'] && (!isWindows || !this._environmentService.args['socket-path']);
+		// A TLSSocket cannot be transferred through child-process IPC. Keep TLS/WebSocket
+		// processing here and give the extension host a fresh plain-socket bridge for each
+		// initial connection and reconnection.
+		this._useSocketBridge = Boolean(this._environmentService.args['tls-key-path']);
+		this._canSendSocket = !this._useSocketBridge && (!isWindows || !this._environmentService.args['socket-path']);
+		this._useSocketTransferProtocol = this._canSendSocket || this._useSocketBridge;
 		this._disposed = false;
 		this._remoteAddress = remoteAddress;
 		this._extensionHostProcess = null;
+		this._socketTransferReady = false;
 		this._connectionData = new ConnectionData(socket, initialDataChunk);
 		if (!this._canSendSocket && socket instanceof WebSocketNodeSocket) {
 			socket.setRecordInflateBytes(false);
@@ -158,9 +169,10 @@ export class ExtensionHostConnection extends Disposable {
 		this._logService.error(`${this._logPrefix}${_str}`);
 	}
 
-	private async _pipeSockets(extHostSocket: net.Socket, connectionData: ConnectionData): Promise<void> {
+	private _pipeSockets(extHostSocket: net.Socket, connectionData: ConnectionData, forwardInitialDataChunk = true): void {
 
 		const disposables = new DisposableStore();
+		this._activeSocketBridge.value = disposables;
 		disposables.add(connectionData.socket);
 		disposables.add(toDisposable(() => {
 			if (!extHostSocket.destroyed && !extHostSocket.writableEnded) {
@@ -169,7 +181,11 @@ export class ExtensionHostConnection extends Disposable {
 		}));
 
 		const stopAndCleanup = () => {
-			disposables.dispose();
+			if (this._activeSocketBridge.value === disposables) {
+				this._activeSocketBridge.clear();
+			} else {
+				disposables.dispose();
+			}
 		};
 
 		disposables.add(connectionData.socket.onEnd(stopAndCleanup));
@@ -184,9 +200,10 @@ export class ExtensionHostConnection extends Disposable {
 			connectionData.socket.write(VSBuffer.wrap(e));
 		}));
 
-		if (connectionData.initialDataChunk.byteLength > 0) {
+		if (forwardInitialDataChunk && connectionData.initialDataChunk.byteLength > 0) {
 			extHostSocket.write(connectionData.initialDataChunk.buffer);
 		}
+		extHostSocket.resume();
 	}
 
 	private async _sendSocketToExtensionHost(extensionHostProcess: cp.ChildProcess, connectionData: ConnectionData): Promise<void> {
@@ -199,7 +216,144 @@ export class ExtensionHostConnection extends Disposable {
 		} else {
 			socket = connectionData.socket.socket.socket;
 		}
-		extensionHostProcess.send(msg, socket);
+		await this._sendSocketHandleToExtensionHost(extensionHostProcess, msg, socket);
+	}
+
+	private _sendSocketHandleToExtensionHost(extensionHostProcess: cp.ChildProcess, message: IExtHostSocketMessage, socket: net.Socket): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			try {
+				extensionHostProcess.send(message, socket, { keepOpen: false }, error => error ? reject(error) : resolve());
+			} catch (error) {
+				reject(error);
+			}
+		});
+	}
+
+	private async _sendSocketBridgeToExtensionHost(extensionHostProcess: cp.ChildProcess, connectionData: ConnectionData): Promise<void> {
+		// TLS and WebSocket framing stay in the server process. The child receives a plain
+		// socket so its existing PersistentProtocol reconnection state machine remains intact.
+		await connectionData.socketDrain();
+		const bridge = await this._createSocketBridge();
+		if (this._disposed || this._extensionHostProcess !== extensionHostProcess) {
+			bridge.parentSocket.destroy();
+			bridge.extensionHostSocket.destroy();
+			connectionData.socket.end();
+			return;
+		}
+
+		try {
+			await this._sendSocketHandleToExtensionHost(extensionHostProcess, connectionData.toIExtHostSocketMessage(true), bridge.extensionHostSocket);
+			if (this._disposed || this._extensionHostProcess !== extensionHostProcess) {
+				bridge.parentSocket.destroy();
+				connectionData.socket.end();
+				return;
+			}
+			// The initial chunk travels in IExtHostSocketMessage, matching direct socket transfer.
+			this._pipeSockets(bridge.parentSocket, connectionData, false);
+		} catch (error) {
+			bridge.parentSocket.destroy();
+			bridge.extensionHostSocket.destroy();
+			throw error;
+		}
+	}
+
+	private _queueSocketToExtensionHost(extensionHostProcess: cp.ChildProcess, connectionData: ConnectionData): void {
+		void this._connectionSequencer.queue(async () => {
+			if (this._disposed || this._extensionHostProcess !== extensionHostProcess) {
+				connectionData.socket.end();
+				return;
+			}
+			if (this._useSocketBridge) {
+				await this._sendSocketBridgeToExtensionHost(extensionHostProcess, connectionData);
+			} else {
+				await this._sendSocketToExtensionHost(extensionHostProcess, connectionData);
+			}
+		}).catch(error => {
+			connectionData.socket.end();
+			if (!this._disposed) {
+				this._logError('Failed to connect socket to Extension Host Process');
+				this._logService.error(error);
+			}
+		});
+	}
+
+	private async _createSocketBridge(): Promise<{ parentSocket: net.Socket; extensionHostSocket: net.Socket }> {
+		if (!isWindows) {
+			const { namedPipeServer, pipeName } = await this._listenOnPipe();
+			return this._connectSocketBridge(namedPipeServer, () => net.createConnection(pipeName));
+		}
+
+		const loopbackServer = net.createServer({ pauseOnConnect: true });
+		const port = await new Promise<number>((resolve, reject) => {
+			const onError = (error: Error) => reject(error);
+			loopbackServer.once('error', onError);
+			loopbackServer.listen(0, '127.0.0.1', () => {
+				loopbackServer.removeListener('error', onError);
+				const address = loopbackServer.address();
+				if (!address || typeof address === 'string') {
+					reject(new Error('Could not create Extension Host loopback bridge'));
+					return;
+				}
+				resolve(address.port);
+			});
+		});
+		return this._connectSocketBridge(loopbackServer, () => net.createConnection({ host: '127.0.0.1', port }));
+	}
+
+	private _connectSocketBridge(server: net.Server, createConnection: () => net.Socket): Promise<{ parentSocket: net.Socket; extensionHostSocket: net.Socket }> {
+		return new Promise((resolve, reject) => {
+			let parentSocket: net.Socket | undefined;
+			let extensionHostSocket: net.Socket | undefined;
+			let extensionHostConnected = false;
+			let settled = false;
+
+			const cleanupListeners = () => {
+				server.removeListener('error', fail);
+				server.removeListener('connection', acceptConnection);
+				extensionHostSocket?.removeListener('error', fail);
+				extensionHostSocket?.removeListener('connect', didConnect);
+			};
+			const fail = (error: Error) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				cleanupListeners();
+				server.close();
+				parentSocket?.destroy();
+				extensionHostSocket?.destroy();
+				reject(error);
+			};
+			const tryResolve = () => {
+				if (settled || !parentSocket || !extensionHostSocket || !extensionHostConnected) {
+					return;
+				}
+				settled = true;
+				cleanupListeners();
+				server.close();
+				parentSocket.setNoDelay(true);
+				extensionHostSocket.setNoDelay(true);
+				resolve({ parentSocket, extensionHostSocket });
+			};
+			const acceptConnection = (socket: net.Socket) => {
+				parentSocket = socket;
+				tryResolve();
+			};
+			const didConnect = () => {
+				extensionHostConnected = true;
+				tryResolve();
+			};
+
+			server.once('error', fail);
+			server.once('connection', acceptConnection);
+			try {
+				extensionHostSocket = createConnection();
+				extensionHostSocket.once('error', fail);
+				extensionHostSocket.once('connect', didConnect);
+			} catch (error) {
+				fail(error instanceof Error ? error : new Error(String(error)));
+			}
+		});
 	}
 
 	public shortenReconnectionGraceTimeIfNecessary(): void {
@@ -220,13 +374,14 @@ export class ExtensionHostConnection extends Disposable {
 		}
 		const connectionData = new ConnectionData(_socket, initialDataChunk);
 
-		if (!this._extensionHostProcess) {
-			// The extension host didn't even start up yet
+		if (!this._extensionHostProcess || (this._useSocketTransferProtocol && !this._socketTransferReady)) {
+			// The extension host either has not started or has not installed its socket listener yet.
+			this._connectionData?.socket.end();
 			this._connectionData = connectionData;
 			return;
 		}
 
-		this._sendSocketToExtensionHost(this._extensionHostProcess, connectionData);
+		this._queueSocketToExtensionHost(this._extensionHostProcess, connectionData);
 	}
 
 	private _cleanResources(): void {
@@ -243,6 +398,7 @@ export class ExtensionHostConnection extends Disposable {
 			this._extensionHostProcess.kill();
 			this._extensionHostProcess = null;
 		}
+		this._socketTransferReady = false;
 		this._onClose.fire(undefined);
 	}
 
@@ -264,7 +420,7 @@ export class ExtensionHostConnection extends Disposable {
 
 			let extHostNamedPipeServer: net.Server | null;
 
-			if (this._canSendSocket) {
+			if (this._useSocketTransferProtocol) {
 				writeExtHostConnection(new SocketExtHostConnection(), env);
 				extHostNamedPipeServer = null;
 			} else {
@@ -289,7 +445,8 @@ export class ExtensionHostConnection extends Disposable {
 			if (this._configurationService.getValue<boolean>('extensions.supportNodeGlobalNavigator')) {
 				args.push('--supportGlobalNavigator');
 			}
-			this._extensionHostProcess = cp.fork(FileAccess.asFileUri('bootstrap-fork').fsPath, args, opts);
+			const extensionHostProcessFactory = this._extensionHostProcessFactory ?? cp.fork;
+			this._extensionHostProcess = extensionHostProcessFactory(FileAccess.asFileUri('bootstrap-fork').fsPath, args, opts);
 			const pid = this._extensionHostProcess.pid;
 			this._log(`<${pid}> Launched Extension Host Process.`);
 
@@ -323,8 +480,12 @@ export class ExtensionHostConnection extends Disposable {
 				const messageListener = (msg: IExtHostReadyMessage) => {
 					if (msg.type === 'VSCODE_EXTHOST_IPC_READY') {
 						this._extensionHostProcess!.removeListener('message', messageListener);
-						this._sendSocketToExtensionHost(this._extensionHostProcess!, this._connectionData!);
+						this._socketTransferReady = true;
+						const connectionData = this._connectionData;
 						this._connectionData = null;
+						if (connectionData) {
+							this._queueSocketToExtensionHost(this._extensionHostProcess!, connectionData);
+						}
 					}
 				};
 				this._extensionHostProcess.on('message', messageListener);
@@ -341,7 +502,7 @@ export class ExtensionHostConnection extends Disposable {
 		return new Promise<{ pipeName: string; namedPipeServer: net.Server }>((resolve, reject) => {
 			const pipeName = createRandomIPCHandle();
 
-			const namedPipeServer = net.createServer();
+			const namedPipeServer = net.createServer({ pauseOnConnect: true });
 			namedPipeServer.on('error', reject);
 			namedPipeServer.listen(pipeName, () => {
 				namedPipeServer?.removeListener('error', reject);

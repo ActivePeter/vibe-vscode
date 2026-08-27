@@ -15,7 +15,9 @@ Before running the deployment, tell the user that the skill is starting the 1808
 
 The script must remain the single automation entry for this skill. It:
 
-- stops the canonical `vibe_vscode_latest` tmux service when it exists;
+- keeps the active service on an immutable last-known-good runtime while compiling the canonical checkout;
+- stages and validates a complete runtime snapshot before stopping the active service;
+- switches to the candidate only after the build succeeds, and automatically restores the last-known-good runtime when startup or health checks fail;
 - builds and starts the service entirely from `/mnt/ceph/vibe-vscode`, without invoking another project's control code;
 - preserves the existing state under `/mnt/ceph/dever_for_dev/.dever/vscode-services/state/latest`;
 - waits for an HTTPS `200` response and verifies a `0.0.0.0:18080` listener before succeeding;

@@ -129,6 +129,33 @@ validate_runtime_root() {
 	done
 }
 
+validate_candidate_runtime_root() {
+	local runtime_root="$1"
+	local link_path
+	local resolved_link
+	local required_path
+	local -a required_paths=(
+		"$runtime_root/node"
+		"$runtime_root/resources/server/bin-dev/helpers/browser.sh"
+		"$runtime_root/resources/server/bin-dev/remote-cli/code.sh"
+	)
+
+	validate_runtime_root "$runtime_root" || return 1
+	for required_path in "${required_paths[@]}"; do
+		[[ -x "$required_path" ]] || return 1
+	done
+
+	# A last-known-good release must survive replacement or removal of the canonical dependency
+	# trees. Relative links contained inside a copied node_modules tree are allowed, but no link
+	# may resolve back into the mutable source checkout.
+	while IFS= read -r -d '' link_path; do
+		resolved_link="$(readlink -f -- "$link_path" 2>/dev/null || true)"
+		case "$resolved_link" in
+		"$SOURCE_ROOT" | "$SOURCE_ROOT"/*) return 1 ;;
+		esac
+	done < <(find "$runtime_root" -type l -print0)
+}
+
 resolve_runtime_link() {
 	local link_path="$1"
 	local runtime_root
@@ -149,11 +176,33 @@ set_runtime_link() {
 	mv -Tf -- "$temporary_link" "$link_path"
 }
 
+copy_runtime_tree() {
+	local source_path="$1"
+	local target_path="$2"
+	local previous_path="${3:-}"
+	local resolved_previous_path=
+	local -a rsync_arguments=(--archive)
+
+	# Reuse immutable files from the active release when possible. The first migration from a
+	# source-linked runtime performs a real copy; later releases hard-link unchanged files only
+	# to another versioned runtime, never to the canonical checkout.
+	if [[ -n "$previous_path" && -d "$previous_path" && ! -L "$previous_path" ]]; then
+		resolved_previous_path="$(realpath -e -- "$previous_path")"
+	fi
+	case "$resolved_previous_path" in
+	'' | "$SOURCE_ROOT" | "$SOURCE_ROOT"/*) ;;
+	*) rsync_arguments+=(--link-dest="$resolved_previous_path") ;;
+	esac
+	mkdir -p -- "$target_path"
+	rsync "${rsync_arguments[@]}" "$source_path/" "$target_path/"
+}
+
 create_runtime_snapshot() {
 	local result_variable="$1"
 	local release_id
 	local release_root
 	local node_modules_path
+	local previous_path
 	local relative_path
 	local root_file
 
@@ -164,23 +213,37 @@ create_runtime_snapshot() {
 	mkdir -p -- "$SERVICE_RELEASES_ROOT" "$STAGING_RUNTIME_ROOT/remote"
 	rsync --archive "$SOURCE_ROOT/out/" "$STAGING_RUNTIME_ROOT/out/"
 	rsync --archive --exclude='node_modules/' "$SOURCE_ROOT/extensions/" "$STAGING_RUNTIME_ROOT/extensions/"
+	mkdir -p -- "$STAGING_RUNTIME_ROOT/resources"
+	rsync --archive "$SOURCE_ROOT/resources/server/" "$STAGING_RUNTIME_ROOT/resources/server/"
 
 	for root_file in package.json product.json product.overrides.json; do
 		if [[ -f "$SOURCE_ROOT/$root_file" ]]; then
 			cp -a -- "$SOURCE_ROOT/$root_file" "$STAGING_RUNTIME_ROOT/$root_file"
 		fi
 	done
+	cp -a -- "$NODE_BIN" "$STAGING_RUNTIME_ROOT/node"
 	cp -a -- "$SOURCE_ROOT/remote/package.json" "$STAGING_RUNTIME_ROOT/remote/package.json"
-	ln -s -- "$SOURCE_ROOT/node_modules" "$STAGING_RUNTIME_ROOT/node_modules"
-	ln -s -- "$SOURCE_ROOT/remote/node_modules" "$STAGING_RUNTIME_ROOT/remote/node_modules"
+	previous_path=
+	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]]; then
+		previous_path="$ACTIVE_RUNTIME_ROOT/node_modules"
+	fi
+	copy_runtime_tree "$SOURCE_ROOT/node_modules" "$STAGING_RUNTIME_ROOT/node_modules" "$previous_path"
+	previous_path=
+	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]]; then
+		previous_path="$ACTIVE_RUNTIME_ROOT/remote/node_modules"
+	fi
+	copy_runtime_tree "$SOURCE_ROOT/remote/node_modules" "$STAGING_RUNTIME_ROOT/remote/node_modules" "$previous_path"
 
 	while IFS= read -r -d '' node_modules_path; do
 		relative_path="${node_modules_path#"$SOURCE_ROOT"/}"
-		mkdir -p -- "$(dirname -- "$STAGING_RUNTIME_ROOT/$relative_path")"
-		ln -s -- "$node_modules_path" "$STAGING_RUNTIME_ROOT/$relative_path"
+		previous_path=
+		if [[ -n "$ACTIVE_RUNTIME_ROOT" ]]; then
+			previous_path="$ACTIVE_RUNTIME_ROOT/$relative_path"
+		fi
+		copy_runtime_tree "$node_modules_path" "$STAGING_RUNTIME_ROOT/$relative_path" "$previous_path"
 	done < <(find "$SOURCE_ROOT/extensions" -name node_modules -prune -print0)
 
-	validate_runtime_root "$STAGING_RUNTIME_ROOT" || fail "staged runtime is incomplete: $STAGING_RUNTIME_ROOT"
+	validate_candidate_runtime_root "$STAGING_RUNTIME_ROOT" || fail "staged runtime is incomplete or depends on mutable source: $STAGING_RUNTIME_ROOT"
 	mv -- "$STAGING_RUNTIME_ROOT" "$release_root"
 	STAGING_RUNTIME_ROOT=
 	printf -v "$result_variable" '%s' "$release_root"
@@ -228,13 +291,18 @@ build_current() {
 run_server() {
 	local runtime_root="$1"
 	local workspace_path="$2"
+	local runtime_node="$NODE_BIN"
+
+	if [[ -x "$runtime_root/node" ]]; then
+		runtime_node="$runtime_root/node"
+	fi
 
 	mkdir -p -- "$SERVICE_STATE_ROOT/server" "$(dirname -- "$SERVICE_LOG")"
 	exec >> "$SERVICE_LOG" 2>&1
 	log "Starting HTTPS Vibe VS Code development service from $runtime_root on 0.0.0.0:$SERVICE_PORT."
 	cd -- "$runtime_root"
 	exec env NODE_ENV=development VSCODE_DEV=1 \
-		"$NODE_BIN" out/server-main.js \
+		"$runtime_node" out/server-main.js \
 		--host 0.0.0.0 \
 		--port "$SERVICE_PORT" \
 		--tls-key-path "$TLS_KEY_PATH" \
@@ -259,9 +327,22 @@ start_service() {
 
 wait_until_ready() {
 	local runtime_label="$1"
+	local expected_runtime_root="$2"
+	local running_runtime_root
 	local deadline=$((SECONDS + DEPLOY_TIMEOUT_SECONDS))
+	expected_runtime_root="$(realpath -e -- "$expected_runtime_root")"
 
 	while (( SECONDS < deadline )); do
+		if ! tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
+			printf 'Service session exited before %s became healthy.\n' "$runtime_label" >&2
+			return 1
+		fi
+		running_runtime_root="$(service_runtime_root 2>/dev/null || true)"
+		if [[ "$running_runtime_root" != "$expected_runtime_root" ]]; then
+			printf 'Service session for %s is running from unexpected root: %s\n' "$runtime_label" "${running_runtime_root:-<unavailable>}" >&2
+			return 1
+		fi
+
 		if [[ "$(health_status)" == '200' ]]; then
 			if ! has_public_listener; then
 				printf 'Observed listener addresses:\n%s\n' "$(listener_addresses)" >&2
@@ -270,11 +351,6 @@ wait_until_ready() {
 			fi
 			printf 'Vibe VS Code runtime is ready: %s (%s, 0.0.0.0:%s)\n' "$runtime_label" "$SERVICE_URL" "$SERVICE_PORT"
 			return 0
-		fi
-
-		if ! tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
-			printf 'Service session exited before %s became healthy.\n' "$runtime_label" >&2
-			return 1
 		fi
 
 		sleep 2
@@ -312,7 +388,7 @@ prepare_active_runtime() {
 	printf 'Migrating the legacy source-tree service to an immutable runtime snapshot...\n'
 	create_runtime_snapshot bootstrap_runtime
 	stop_service
-	if start_service "$bootstrap_runtime" "$workspace_path" && wait_until_ready 'last-known-good bootstrap runtime'; then
+	if start_service "$bootstrap_runtime" "$workspace_path" && wait_until_ready 'last-known-good bootstrap runtime' "$bootstrap_runtime"; then
 		ACTIVE_RUNTIME_ROOT="$bootstrap_runtime"
 		set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
 		return 0
@@ -320,7 +396,7 @@ prepare_active_runtime() {
 
 	print_log_tail
 	stop_service
-	if start_service "$SOURCE_ROOT" "$workspace_path" && wait_until_ready 'restored legacy source runtime'; then
+	if start_service "$SOURCE_ROOT" "$workspace_path" && wait_until_ready 'restored legacy source runtime' "$SOURCE_ROOT"; then
 		fail 'could not activate the immutable bootstrap runtime; restored the legacy source service'
 	fi
 	print_log_tail
@@ -349,8 +425,9 @@ activate_candidate_runtime() {
 	local candidate_runtime="$1"
 	local workspace_path="$2"
 
+	validate_candidate_runtime_root "$candidate_runtime" || fail "candidate runtime is incomplete or depends on mutable source: $candidate_runtime"
 	stop_service
-	if start_service "$candidate_runtime" "$workspace_path" && wait_until_ready 'candidate runtime'; then
+	if start_service "$candidate_runtime" "$workspace_path" && wait_until_ready 'candidate runtime' "$candidate_runtime"; then
 		promote_runtime "$candidate_runtime" "$ACTIVE_RUNTIME_ROOT"
 		printf 'Vibe VS Code deployment is ready: %s (0.0.0.0:%s)\n' "$SERVICE_URL" "$SERVICE_PORT"
 		return 0
@@ -359,7 +436,7 @@ activate_candidate_runtime() {
 	print_log_tail
 	printf 'Candidate runtime failed; restoring last-known-good runtime...\n' >&2
 	stop_service
-	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]] && start_service "$ACTIVE_RUNTIME_ROOT" "$workspace_path" && wait_until_ready 'restored last-known-good runtime'; then
+	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]] && start_service "$ACTIVE_RUNTIME_ROOT" "$workspace_path" && wait_until_ready 'restored last-known-good runtime' "$ACTIVE_RUNTIME_ROOT"; then
 		fail 'candidate runtime failed health checks; restored last-known-good runtime'
 	fi
 

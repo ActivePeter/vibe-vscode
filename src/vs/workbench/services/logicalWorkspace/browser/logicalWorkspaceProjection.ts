@@ -4,9 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { equals } from '../../../../base/common/objects.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
-import { ILogicalWorkspace, ILogicalWorkspaceService, LogicalWorkspaceActivationActor } from '../common/logicalWorkspace.js';
+import { ILogicalWorkspace, ILogicalWorkspaceService, ILogicalWorkspaceStateSnapshot, LogicalWorkspaceActivationActor, onDidChangeLogicalWorkspaceStateSlice } from '../common/logicalWorkspace.js';
 
 export interface IAsyncProjectionContext<T> {
 	readonly value: T;
@@ -66,6 +67,12 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 		const completion = new Promise<void>(resolve => this.waiters.push({ sequence, resolve }));
 		this.ensureRunning();
 		return completion;
+	}
+
+	async whenIdle(): Promise<void> {
+		while (this.running) {
+			await this.running;
+		}
 	}
 
 	private ensureRunning(): void {
@@ -130,17 +137,23 @@ export interface ILogicalWorkspaceProjectionContext {
  */
 export interface ILogicalWorkspaceProjection {
 	readonly id: string;
+	/** Selects the complete semantic state consumed by this projection. */
+	stateSlice?(state: ILogicalWorkspaceStateSnapshot): unknown;
 
 	/** Captures the currently projected state before a switch or page save. */
 	capture?(workspaceId: string): void;
 
-	/** Restores the requested Workspace and ignores stale work through `context.isCurrent`. */
-	restore(context: ILogicalWorkspaceProjectionContext): Promise<void>;
+	/**
+	 * Restores the requested Workspace and ignores stale work through `context.isCurrent`.
+	 * Returning `false` leaves the last successfully projected snapshot unchanged.
+	 */
+	restore(context: ILogicalWorkspaceProjectionContext): Promise<boolean | void>;
 }
 
 interface ILogicalWorkspaceProjectionIntent {
 	readonly workspace: ILogicalWorkspace;
 	readonly activationSequence: number;
+	readonly stateSlice: unknown;
 }
 
 /**
@@ -150,12 +163,14 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 
 	private readonly asyncProjection: AsyncProjectionCoordinator<ILogicalWorkspaceProjectionIntent>;
 	private projectedWorkspaceId: string | undefined;
+	private projectedStateSlice: unknown;
+	readonly whenReady: Promise<void>;
 
 	constructor(
 		private readonly logicalWorkspaceService: ILogicalWorkspaceService,
 		private readonly projection: ILogicalWorkspaceProjection,
 		storageService: IStorageService,
-		logService: ILogService,
+		private readonly logService: ILogService,
 	) {
 		super();
 		this.asyncProjection = this._register(new AsyncProjectionCoordinator(
@@ -166,22 +181,25 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 		));
 
 		this._register(logicalWorkspaceService.onWillChangeActiveWorkspace(event => {
-			if (event.actor !== LogicalWorkspaceActivationActor.SharedState && this.projectedWorkspaceId === event.previousWorkspaceId) {
-				this.capture(event.previousWorkspaceId, logService);
+			if (event.actor !== LogicalWorkspaceActivationActor.SharedState) {
+				this.captureProjectedState(event.previousWorkspaceId);
 			}
 		}));
-		this._register(logicalWorkspaceService.onDidChangeActiveWorkspace(() => {
+		this._register(onDidChangeLogicalWorkspaceStateSlice(logicalWorkspaceService, state => this.getStateSlice(state))(() => {
 			void this.requestReconcile();
 		}));
 		if (projection.capture) {
 			this._register(storageService.onWillSaveState(() => {
-				if (this.projectedWorkspaceId === logicalWorkspaceService.activeWorkspace.id) {
-					this.capture(this.projectedWorkspaceId, logService);
-				}
+				this.captureProjectedState(logicalWorkspaceService.activeWorkspace.id);
 			}));
 		}
 
-		void this.requestReconcile();
+		this.whenReady = this.initialize();
+	}
+
+	private async initialize(): Promise<void> {
+		await this.requestReconcile();
+		await this.asyncProjection.whenIdle();
 	}
 
 	async requestReconcile(): Promise<void> {
@@ -192,32 +210,46 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 		const intent: ILogicalWorkspaceProjectionIntent = {
 			workspace: this.logicalWorkspaceService.activeWorkspace,
 			activationSequence: this.logicalWorkspaceService.activationSequence,
+			stateSlice: this.getStateSlice(),
 		};
 		return this.asyncProjection.request(intent, () => this.isCurrent(intent));
 	}
 
+	/** Captures only when the UI and authority still describe the same successful projection. */
+	captureProjectedState(workspaceId: string): void {
+		if (!this.canCapture(workspaceId)) {
+			return;
+		}
+		try {
+			this.projection.capture?.(workspaceId);
+		} catch (error) {
+			this.logService.error(`${this.projection.id} projection capture failed`, error);
+		}
+	}
+
 	private async restore(context: IAsyncProjectionContext<ILogicalWorkspaceProjectionIntent>): Promise<void> {
 		const intent = context.value;
-		await this.projection.restore({
+		const restored = await this.projection.restore({
 			workspace: intent.workspace,
 			activationSequence: intent.activationSequence,
 			isCurrent: context.isCurrent,
 		});
-		if (context.isCurrent()) {
+		if (restored !== false && context.isCurrent()) {
 			this.projectedWorkspaceId = intent.workspace.id;
+			this.projectedStateSlice = intent.stateSlice;
 		}
 	}
 
-	private capture(workspaceId: string, logService: ILogService): void {
-		try {
-			this.projection.capture?.(workspaceId);
-		} catch (error) {
-			logService.error(`${this.projection.id} projection capture failed`, error);
-		}
+	private canCapture(workspaceId: string): boolean {
+		return this.projectedWorkspaceId === workspaceId && equals(this.projectedStateSlice, this.getStateSlice());
 	}
 
 	private isCurrent(intent: ILogicalWorkspaceProjectionIntent): boolean {
 		return this.logicalWorkspaceService.activeWorkspace.id === intent.workspace.id
 			&& this.logicalWorkspaceService.activationSequence === intent.activationSequence;
+	}
+
+	private getStateSlice(state = this.logicalWorkspaceService.state): unknown {
+		return this.projection.stateSlice?.(state) ?? state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId);
 	}
 }

@@ -55,13 +55,16 @@ export const enum LogicalWorkspaceMutationType {
 }
 
 /**
- * Best-effort view-state mutations accepted by the Logical Workspace store. A transport failure
- * has an unknown outcome and must be reconciled with a read instead of replaying the mutation.
+ * Mutations accepted by the Logical Workspace authority. Replaceable view-state writes are sent
+ * once and reconciled with a read after an unknown outcome. UUID-based creation is additive and
+ * may be retried until the new catalog identity is confirmed.
  */
 export type ILogicalWorkspaceMutation =
 	| { readonly type: LogicalWorkspaceMutationType.CreateWorkspace; readonly workspace: ILogicalWorkspace }
 	| { readonly type: LogicalWorkspaceMutationType.SetShellLayout; readonly workspaceId: string; readonly shellLayout: ILogicalWorkspaceShellLayout }
 	| { readonly type: LogicalWorkspaceMutationType.SetEditorWorkingSet; readonly workspaceId: string; readonly editorWorkingSet: string };
+
+export type ILogicalWorkspaceViewMutation = Exclude<ILogicalWorkspaceMutation, { readonly type: LogicalWorkspaceMutationType.CreateWorkspace }>;
 
 export function createLogicalWorkspaceSharedState(workspaces: readonly ILogicalWorkspace[]): ILogicalWorkspaceSharedState {
 	return {
@@ -227,6 +230,26 @@ export interface ILogicalWorkspaceStateChangeEvent {
 export const ILogicalWorkspaceService = createDecorator<ILogicalWorkspaceService>('logicalWorkspaceService');
 
 /**
+ * Readiness boundary for the initial Logical Workspace editor working-set projection. Workbench
+ * editor startup awaits this service before it opens later startup inputs.
+ */
+export const ILogicalWorkspaceEditorProjectionService = createDecorator<ILogicalWorkspaceEditorProjectionService>('logicalWorkspaceEditorProjectionService');
+
+export interface ILogicalWorkspaceEditorProjectionService {
+	readonly _serviceBrand: undefined;
+	readonly whenReady: Promise<void>;
+}
+
+/** Orders Terminal foreground/background projection before destructive editor working-set apply. */
+export const ILogicalWorkspaceTerminalProjectionService = createDecorator<ILogicalWorkspaceTerminalProjectionService>('logicalWorkspaceTerminalProjectionService');
+
+export interface ILogicalWorkspaceTerminalProjectionService {
+	readonly _serviceBrand: undefined;
+	readonly whenReady: Promise<void>;
+	requestReconcile(): Promise<void>;
+}
+
+/**
  * Exposes the current page's projection of the remote Logical Workspace registry and workbench
  * snapshots. Terminal process identity and ownership remain in the terminal layer. The global
  * Chat / Agent Session catalog remains outside.
@@ -247,7 +270,7 @@ export interface ILogicalWorkspaceService {
 	readonly isReady: boolean;
 	readonly whenReady: Promise<void>;
 
-	createWorkspace(name: string): ILogicalWorkspace;
+	createWorkspace(name: string): Promise<ILogicalWorkspace>;
 	activateWorkspace(workspaceId: string, actor: LogicalWorkspaceActivationActor): void;
 	setShellLayout(workspaceId: string, layout: ILogicalWorkspaceShellLayout): void;
 	setEditorWorkingSet(workspaceId: string, editorWorkingSet: string): void;

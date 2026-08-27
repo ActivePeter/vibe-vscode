@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
-import { Emitter } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -15,10 +15,13 @@ import { TerminalExitReason, TerminalLocation } from '../../../../../platform/te
 import { LogicalWorkspaceProjectionCoordinator } from '../../../../services/logicalWorkspace/browser/logicalWorkspaceProjection.js';
 import { LogicalWorkspaceService } from '../../../../services/logicalWorkspace/browser/logicalWorkspaceService.js';
 import { ILogicalWorkspaceStateStore, LOGICAL_WORKSPACE_SHARED_STATE_KEY, LogicalWorkspaceStateStore } from '../../../../services/logicalWorkspace/browser/logicalWorkspaceStateStore.js';
-import { ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor, LogicalWorkspaceStateChangeKind } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceTerminalProjectionService, LogicalWorkspaceActivationActor, LogicalWorkspaceStateChangeKind } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../test/common/workbenchTestServices.js';
 import { ITerminalInstance, ITerminalService } from '../../../terminal/browser/terminal.js';
+import { LogicalWorkspaceEditorAdapter } from '../../browser/logicalWorkspaceEditorAdapter.js';
 import { LogicalWorkspaceTerminalAdapter } from '../../browser/logicalWorkspaceTerminalAdapter.js';
 
 suite('LogicalWorkspaceTerminalAdapter', () => {
@@ -42,8 +45,8 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		logicalWorkspaceService.setShellLayout(activeWorkspaceId, createShellLayout());
 		logicalWorkspaceService.setEditorWorkingSet(activeWorkspaceId, 'editor-state');
 		logicalWorkspaceService.setEditorWorkingSet(activeWorkspaceId, 'editor-state');
-		const createdWorkspace = logicalWorkspaceService.createWorkspace('  Review  ');
-		assert.throws(() => logicalWorkspaceService.createWorkspace('   '), /must not be empty/);
+		const createdWorkspace = await logicalWorkspaceService.createWorkspace('  Review  ');
+		await assert.rejects(logicalWorkspaceService.createWorkspace('   '), /must not be empty/);
 
 		const rawPersistedState = instantiationService.get(IStorageService).get(LOGICAL_WORKSPACE_SHARED_STATE_KEY, StorageScope.WORKSPACE);
 		const persistedState: unknown = JSON.parse(rawPersistedState ?? 'null');
@@ -81,13 +84,57 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		});
 	});
 
+	test('finishes Terminal projection before destructive editor restore', async () => {
+		const store = disposables.add(new DisposableStore());
+		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
+		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		await logicalWorkspaceService.whenReady;
+		logicalWorkspaceService.setEditorWorkingSet(logicalWorkspaceService.activeWorkspace.id, 'editor-working-set');
+		const terminalProjectionStarted = new DeferredPromise<void>();
+		const releaseTerminalProjection = new DeferredPromise<void>();
+		const terminalProjectionService = new class extends mock<ILogicalWorkspaceTerminalProjectionService>() {
+			override readonly whenReady = Promise.resolve();
+			override async requestReconcile(): Promise<void> {
+				await terminalProjectionStarted.complete();
+				await releaseTerminalProjection.p;
+			}
+		};
+		let editorApplyCount = 0;
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly whenReady = Promise.resolve();
+			override async applySerializedWorkingSet(): Promise<boolean> {
+				editorApplyCount++;
+				return true;
+			}
+		};
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidEditorsChange = Event.None;
+			override getEditors(): [] { return []; }
+		};
+		const adapter = store.add(new LogicalWorkspaceEditorAdapter(
+			logicalWorkspaceService,
+			editorGroupsService,
+			editorService,
+			terminalProjectionService,
+			store.add(new TestStorageService()),
+			new NullLogService(),
+		));
+
+		await terminalProjectionStarted.p;
+		assert.strictEqual(editorApplyCount, 0);
+		await releaseTerminalProjection.complete();
+		await adapter.whenReady;
+		assert.strictEqual(editorApplyCount, 1);
+		store.dispose();
+	});
+
 	test('completes a terminal projection transaction before an awaited reconcile resolves', async () => {
 		const store = disposables.add(new DisposableStore());
 		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
 		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
 		await logicalWorkspaceService.whenReady;
 		const activeWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
-		const inactiveWorkspace = logicalWorkspaceService.createWorkspace('Inactive');
+		const inactiveWorkspace = await logicalWorkspaceService.createWorkspace('Inactive');
 		const changedInstances = store.add(new Emitter<void>());
 		const disposedInstances = store.add(new Emitter<ITerminalInstance>());
 		let foreground: ITerminalInstance[] = [];
@@ -151,17 +198,15 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		assert.strictEqual(foregroundReads, 0);
 	});
 
-	test('a delayed editor terminal restore cannot overwrite a newer Workspace projection', async () => {
+	test('leaves editor Terminal restoration to the editor working set owner', async () => {
 		const store = disposables.add(new DisposableStore());
 		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
 		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
 		await logicalWorkspaceService.whenReady;
 		const firstWorkspace = logicalWorkspaceService.activeWorkspace;
-		const secondWorkspace = logicalWorkspaceService.createWorkspace('Second');
+		const secondWorkspace = await logicalWorkspaceService.createWorkspace('Second');
 		const changedInstances = store.add(new Emitter<void>());
 		const disposedInstances = store.add(new Emitter<ITerminalInstance>());
-		const firstOpenStarted = new DeferredPromise<void>();
-		const releaseFirstOpen = new DeferredPromise<void>();
 		const completedOpens: string[] = [];
 		let foreground: ITerminalInstance[] = [];
 		let background: ITerminalInstance[] = [];
@@ -180,12 +225,7 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 				background = background.filter(candidate => candidate !== instance);
 				foreground.push(instance);
 				changedInstances.fire();
-				const logicalTerminalId = instance.shellLaunchConfig.logicalTerminalId!;
-				if (logicalTerminalId === 'first') {
-					await firstOpenStarted.complete();
-					await releaseFirstOpen.p;
-				}
-				completedOpens.push(logicalTerminalId);
+				completedOpens.push(instance.shellLaunchConfig.logicalTerminalId!);
 			}
 		};
 		const createEditorInstance = (instanceId: number, logicalTerminalId: string, logicalWorkspaceId: string): ITerminalInstance => ({
@@ -205,22 +245,19 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 			new NullLogService(),
 		));
 		const coordinator = Reflect.get(adapter, 'projectionCoordinator') as LogicalWorkspaceProjectionCoordinator;
-		await firstOpenStarted.p;
+		await coordinator.whenReady;
 
 		logicalWorkspaceService.activateWorkspace(secondWorkspace.id, LogicalWorkspaceActivationActor.Picker);
-		const secondProjection = coordinator.requestReconcile();
-		await releaseFirstOpen.complete();
-		await secondProjection;
-		await timeout(0);
+		await coordinator.requestReconcile();
 
 		assert.deepStrictEqual({
 			foreground: foreground.map(instance => instance.shellLaunchConfig.logicalTerminalId),
 			background: background.map(instance => instance.shellLaunchConfig.logicalTerminalId),
 			completedOpens,
 		}, {
-			foreground: ['second'],
-			background: ['first'],
-			completedOpens: ['first', 'second'],
+			foreground: [],
+			background: ['first', 'second'],
+			completedOpens: [],
 		});
 	});
 

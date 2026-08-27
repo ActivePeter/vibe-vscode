@@ -10,7 +10,7 @@ import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { ViewContainerLocation } from '../../../common/views.js';
 import { IWorkbenchLayoutService, Parts } from '../../../services/layout/browser/layoutService.js';
 import { ILogicalWorkspaceProjection, ILogicalWorkspaceProjectionContext, LogicalWorkspaceProjectionCoordinator } from '../../../services/logicalWorkspace/browser/logicalWorkspaceProjection.js';
-import { ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceShellPartLayout } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceShellPartLayout, ILogicalWorkspaceStateSnapshot } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { IPaneCompositePartService } from '../../../services/panecomposite/browser/panecomposite.js';
 
 type LogicalWorkspaceShellPart = Parts.SIDEBAR_PART | Parts.PANEL_PART | Parts.AUXILIARYBAR_PART;
@@ -40,6 +40,13 @@ export class LogicalWorkspaceLayoutAdapter extends Disposable implements IWorkbe
 	) {
 		super();
 		this._register(new LogicalWorkspaceProjectionCoordinator(logicalWorkspaceService, this, storageService, logService));
+	}
+
+	stateSlice(state: ILogicalWorkspaceStateSnapshot): unknown {
+		return {
+			activeWorkspaceId: state.activeWorkspaceId,
+			shellLayout: state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.shellLayout,
+		};
 	}
 
 	capture(workspaceId: string): void {

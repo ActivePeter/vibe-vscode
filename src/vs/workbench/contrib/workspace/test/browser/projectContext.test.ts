@@ -17,7 +17,7 @@ import { ICommandService } from '../../../../../platform/commands/common/command
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IPickOptions, IQuickInputService, IQuickPickItem, QuickPickInput } from '../../../../../platform/quickinput/common/quickInput.js';
 import { TestStorageService } from '../../../../test/common/workbenchTestServices.js';
-import { IWorkspace, IWorkspaceContextService, IWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
+import { IWorkspace, IWorkspaceContextService, IWorkspaceFolder, IWorkspaceFoldersChangeEvent } from '../../../../../platform/workspace/common/workspace.js';
 import { IPaneCompositePartService } from '../../../../services/panecomposite/browser/panecomposite.js';
 import { IExplorerService } from '../../../files/browser/files.js';
 import { ISCMProvider, ISCMRepository, ISCMRepositorySelectionMode, ISCMService, ISCMViewService, ISCMViewVisibleRepositoryChangeEvent } from '../../../scm/common/scm.js';
@@ -195,6 +195,73 @@ suite('ProjectContextService', () => {
 			selectedResources: [currentFolder.uri.toString(), addedFolder.uri.toString()],
 			visibleRepositories: [repository],
 			focusedRepositories: [currentRootRepository, repository],
+		});
+		store.dispose();
+	});
+
+	test('does not commit a folder removed while the Project picker is open', async () => {
+		const store = disposables.add(new DisposableStore());
+		const firstFolder = createFolder('first', 0);
+		const removedFolder = createFolder('removed', 1);
+		let folders: IWorkspaceFolder[] = [firstFolder, removedFolder];
+		const foldersChanged = store.add(new Emitter<IWorkspaceFoldersChangeEvent>());
+		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
+			override readonly onDidChangeWorkspaceFolders = foldersChanged.event;
+			override readonly onDidChangeWorkspaceName = Event.None;
+			override readonly onDidChangeWorkbenchState = Event.None;
+			override getWorkspace(): IWorkspace { return { id: 'physical', folders }; }
+		};
+		const pickerOpened = new DeferredPromise<void>();
+		const picked = new DeferredPromise<IQuickPickItem | undefined>();
+		const quickInputService = new class extends mock<IQuickInputService>() {
+			override pick<T extends IQuickPickItem>(picks: Promise<QuickPickInput<T>[]> | QuickPickInput<T>[], options?: IPickOptions<T> & { canPickMany: true }, token?: CancellationToken): Promise<T[] | undefined>;
+			override pick<T extends IQuickPickItem>(picks: Promise<QuickPickInput<T>[]> | QuickPickInput<T>[], options?: IPickOptions<T> & { canPickMany: false }, token?: CancellationToken): Promise<T | undefined>;
+			override async pick<T extends IQuickPickItem>(picks: Promise<QuickPickInput<T>[]> | QuickPickInput<T>[]): Promise<T | undefined> {
+				const items = await picks;
+				await pickerOpened.complete();
+				const item = await picked.p;
+				return items.find(candidate => candidate.type !== 'separator' && candidate.label === item?.label) as T | undefined;
+			}
+		};
+		const activeRoots: Array<URI | undefined> = [];
+		const selectedResources: URI[] = [];
+		const explorerService = new class extends mock<IExplorerService>() {
+			override async setActiveRoot(resource: URI | undefined): Promise<void> { activeRoots.push(resource); }
+			override async select(resource: URI): Promise<void> { selectedResources.push(resource); }
+		};
+		const scmService = new class extends mock<ISCMService>() {
+			override readonly onDidAddRepository = Event.None;
+			override readonly onDidRemoveRepository = Event.None;
+			override get repositories(): Iterable<ISCMRepository> { return []; }
+		};
+		const service = store.add(new ProjectContextService(
+			workspaceContextService,
+			quickInputService,
+			store.add(new TestStorageService()),
+			new class extends mock<ICommandService>() { },
+			new class extends mock<IPaneCompositePartService>() { },
+			explorerService,
+			scmService,
+			store.add(new TestSCMViewService(ISCMRepositorySelectionMode.Multiple)),
+			new NullLogService(),
+		));
+
+		const selection = service.pickProjectContext();
+		await pickerOpened.p;
+		folders = [firstFolder];
+		foldersChanged.fire({ added: [], removed: [removedFolder], changed: [] });
+		await picked.complete({ label: removedFolder.name });
+		await selection;
+		await timeout(0);
+
+		assert.deepStrictEqual({
+			selectedFolder: service.selectedFolder?.uri.toString(),
+			lastActiveRoot: activeRoots.at(-1)?.toString(),
+			selectedResources: selectedResources.map(resource => resource.toString()),
+		}, {
+			selectedFolder: firstFolder.uri.toString(),
+			lastActiveRoot: firstFolder.uri.toString(),
+			selectedResources: [],
 		});
 		store.dispose();
 	});

@@ -53,6 +53,12 @@ const preparedSerializedEditorInputs = new WeakMap<ISerializedEditorInput, IPrep
  */
 export function prepareSerializedEditorInput(serialized: ISerializedEditorInput, instantiationService: IInstantiationService): EditorInput | undefined {
 	const serializer = Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).getEditorSerializer(serialized.id);
+	if (serializer?.canDeserialize) {
+		if (!serializer.canDeserialize(serialized.value)) {
+			throw new Error(`Invalid serialized editor input: ${serialized.id}`);
+		}
+		return undefined;
+	}
 	const candidate = serializer?.deserialize(instantiationService, serialized.value);
 	const editor = candidate instanceof EditorInput ? candidate : undefined;
 	preparedSerializedEditorInputs.set(serialized, { editor });

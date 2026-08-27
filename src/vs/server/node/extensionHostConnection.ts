@@ -69,11 +69,67 @@ export async function buildUserEnvironment(startParamsEnv: { [key: string]: stri
 	return env;
 }
 
+class SocketBridgeDataBuffer extends Disposable {
+
+	private readonly bufferedData: VSBuffer[] = [];
+	private readonly sourceSocket: net.Socket;
+	private target: net.Socket | undefined;
+
+	constructor(socket: NodeSocket | WebSocketNodeSocket) {
+		super();
+		this.sourceSocket = socket instanceof NodeSocket ? socket.socket : socket.socket.socket;
+		// Preserve transport backpressure while the transferable bridge socket is being created.
+		// The listener below only covers data that was already decoded in the current turn.
+		this.sourceSocket.pause();
+		this._register(socket.onData(data => {
+			if (this.target) {
+				this.target.write(data.buffer);
+			} else {
+				this.bufferedData.push(data);
+			}
+		}));
+	}
+
+	pipeTo(target: net.Socket): void {
+		this.target = target;
+		for (const data of this.bufferedData) {
+			target.write(data.buffer);
+		}
+		this.bufferedData.length = 0;
+		this.sourceSocket.resume();
+	}
+
+	override dispose(): void {
+		this.bufferedData.length = 0;
+		this.target = undefined;
+		super.dispose();
+	}
+}
+
 class ConnectionData {
+	private socketBridgeDataBuffer: SocketBridgeDataBuffer | undefined;
+
 	constructor(
 		public readonly socket: NodeSocket | WebSocketNodeSocket,
 		public readonly initialDataChunk: VSBuffer
 	) { }
+
+	startSocketBridgeBuffering(): void {
+		this.socketBridgeDataBuffer ??= new SocketBridgeDataBuffer(this.socket);
+	}
+
+	pipeSocketBridgeDataTo(target: net.Socket, disposables: DisposableStore): void {
+		if (!this.socketBridgeDataBuffer) {
+			throw new Error('Socket bridge buffering was not started');
+		}
+		disposables.add(this.socketBridgeDataBuffer);
+		this.socketBridgeDataBuffer.pipeTo(target);
+	}
+
+	disposeSocketBridgeBuffer(): void {
+		this.socketBridgeDataBuffer?.dispose();
+		this.socketBridgeDataBuffer = undefined;
+	}
 
 	public socketDrain(): Promise<void> {
 		return this.socket.drain();
@@ -145,6 +201,9 @@ export class ExtensionHostConnection extends Disposable {
 		this._extensionHostProcess = null;
 		this._socketTransferReady = false;
 		this._connectionData = new ConnectionData(socket, initialDataChunk);
+		if (this._useSocketBridge) {
+			this._connectionData.startSocketBridgeBuffering();
+		}
 		if (!this._canSendSocket && socket instanceof WebSocketNodeSocket) {
 			socket.setRecordInflateBytes(false);
 		}
@@ -169,7 +228,7 @@ export class ExtensionHostConnection extends Disposable {
 		this._logService.error(`${this._logPrefix}${_str}`);
 	}
 
-	private _pipeSockets(extHostSocket: net.Socket, connectionData: ConnectionData, forwardInitialDataChunk = true): void {
+	private _pipeSockets(extHostSocket: net.Socket, connectionData: ConnectionData, forwardInitialDataChunk = true, useBufferedBridgeData = false): void {
 
 		const disposables = new DisposableStore();
 		this._activeSocketBridge.value = disposables;
@@ -195,7 +254,11 @@ export class ExtensionHostConnection extends Disposable {
 		disposables.add(Event.fromNodeEventEmitter<void>(extHostSocket, 'close')(stopAndCleanup));
 		disposables.add(Event.fromNodeEventEmitter<void>(extHostSocket, 'error')(stopAndCleanup));
 
-		disposables.add(connectionData.socket.onData((e) => extHostSocket.write(e.buffer)));
+		if (useBufferedBridgeData) {
+			connectionData.pipeSocketBridgeDataTo(extHostSocket, disposables);
+		} else {
+			disposables.add(connectionData.socket.onData((e) => extHostSocket.write(e.buffer)));
+		}
 		disposables.add(Event.fromNodeEventEmitter<Buffer>(extHostSocket, 'data')((e) => {
 			connectionData.socket.write(VSBuffer.wrap(e));
 		}));
@@ -237,6 +300,7 @@ export class ExtensionHostConnection extends Disposable {
 		if (this._disposed || this._extensionHostProcess !== extensionHostProcess) {
 			bridge.parentSocket.destroy();
 			bridge.extensionHostSocket.destroy();
+			connectionData.disposeSocketBridgeBuffer();
 			connectionData.socket.end();
 			return;
 		}
@@ -245,12 +309,14 @@ export class ExtensionHostConnection extends Disposable {
 			await this._sendSocketHandleToExtensionHost(extensionHostProcess, connectionData.toIExtHostSocketMessage(true), bridge.extensionHostSocket);
 			if (this._disposed || this._extensionHostProcess !== extensionHostProcess) {
 				bridge.parentSocket.destroy();
+				connectionData.disposeSocketBridgeBuffer();
 				connectionData.socket.end();
 				return;
 			}
 			// The initial chunk travels in IExtHostSocketMessage, matching direct socket transfer.
-			this._pipeSockets(bridge.parentSocket, connectionData, false);
+			this._pipeSockets(bridge.parentSocket, connectionData, false, true);
 		} catch (error) {
+			connectionData.disposeSocketBridgeBuffer();
 			bridge.parentSocket.destroy();
 			bridge.extensionHostSocket.destroy();
 			throw error;
@@ -260,6 +326,7 @@ export class ExtensionHostConnection extends Disposable {
 	private _queueSocketToExtensionHost(extensionHostProcess: cp.ChildProcess, connectionData: ConnectionData): void {
 		void this._connectionSequencer.queue(async () => {
 			if (this._disposed || this._extensionHostProcess !== extensionHostProcess) {
+				connectionData.disposeSocketBridgeBuffer();
 				connectionData.socket.end();
 				return;
 			}
@@ -269,6 +336,7 @@ export class ExtensionHostConnection extends Disposable {
 				await this._sendSocketToExtensionHost(extensionHostProcess, connectionData);
 			}
 		}).catch(error => {
+			connectionData.disposeSocketBridgeBuffer();
 			connectionData.socket.end();
 			if (!this._disposed) {
 				this._logError('Failed to connect socket to Extension Host Process');
@@ -373,9 +441,13 @@ export class ExtensionHostConnection extends Disposable {
 			_socket.setRecordInflateBytes(false);
 		}
 		const connectionData = new ConnectionData(_socket, initialDataChunk);
+		if (this._useSocketBridge) {
+			connectionData.startSocketBridgeBuffering();
+		}
 
 		if (!this._extensionHostProcess || (this._useSocketTransferProtocol && !this._socketTransferReady)) {
 			// The extension host either has not started or has not installed its socket listener yet.
+			this._connectionData?.disposeSocketBridgeBuffer();
 			this._connectionData?.socket.end();
 			this._connectionData = connectionData;
 			return;
@@ -391,6 +463,7 @@ export class ExtensionHostConnection extends Disposable {
 		}
 		this._disposed = true;
 		if (this._connectionData) {
+			this._connectionData.disposeSocketBridgeBuffer();
 			this._connectionData.socket.end();
 			this._connectionData = null;
 		}

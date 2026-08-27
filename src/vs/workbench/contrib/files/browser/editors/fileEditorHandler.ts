@@ -47,6 +47,25 @@ export class FileEditorInputSerializer implements IEditorSerializer {
 		return JSON.stringify(serializedFileEditorInput);
 	}
 
+	canDeserialize(serializedEditorInput: string): boolean {
+		try {
+			const candidate: unknown = JSON.parse(serializedEditorInput);
+			if (!candidate || typeof candidate !== 'object') {
+				return false;
+			}
+			const input = candidate as Partial<ISerializedFileEditorInput>;
+			if (!URI.isUri(URI.revive(input.resourceJSON))) {
+				return false;
+			}
+			if (input.preferredResourceJSON !== undefined && !URI.isUri(URI.revive(input.preferredResourceJSON))) {
+				return false;
+			}
+			return [input.name, input.description, input.encoding, input.modeId].every(value => value === undefined || typeof value === 'string');
+		} catch {
+			return false;
+		}
+	}
+
 	deserialize(instantiationService: IInstantiationService, serializedEditorInput: string): FileEditorInput {
 		return instantiationService.invokeFunction(accessor => {
 			const serializedFileEditorInput: ISerializedFileEditorInput = JSON.parse(serializedEditorInput);

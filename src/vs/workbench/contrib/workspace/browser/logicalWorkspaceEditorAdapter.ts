@@ -6,25 +6,28 @@
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { EditorsOrder } from '../../../common/editor.js';
-import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { WebviewInput } from '../../webviewPanel/browser/webviewEditorInput.js';
 import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ILogicalWorkspaceProjection, ILogicalWorkspaceProjectionContext, LogicalWorkspaceProjectionCoordinator } from '../../../services/logicalWorkspace/browser/logicalWorkspaceProjection.js';
-import { ILogicalWorkspaceService } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILogicalWorkspaceEditorProjectionService, ILogicalWorkspaceService, ILogicalWorkspaceStateSnapshot, ILogicalWorkspaceTerminalProjectionService } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
 
 /**
  * Keeps each Logical Workspace's editor groups and open editors in its shared snapshot.
  */
-export class LogicalWorkspaceEditorAdapter extends Disposable implements IWorkbenchContribution, ILogicalWorkspaceProjection {
+export class LogicalWorkspaceEditorAdapter extends Disposable implements ILogicalWorkspaceEditorProjectionService, ILogicalWorkspaceProjection {
 
 	static readonly ID = 'workbench.contrib.logicalWorkspaceEditorAdapter';
+	declare readonly _serviceBrand: undefined;
 	readonly id = LogicalWorkspaceEditorAdapter.ID;
+	readonly whenReady: Promise<void>;
 
 	private readonly captureScheduler = this._register(new RunOnceScheduler(() => this.captureProjectedWorkspace(), 250));
 	private readonly webviewStateListeners = this._register(new MutableDisposable<DisposableStore>());
+	private readonly projectionCoordinator: LogicalWorkspaceProjectionCoordinator;
 	private projectedWorkspaceId: string | undefined;
 	private restoring = false;
 
@@ -32,6 +35,7 @@ export class LogicalWorkspaceEditorAdapter extends Disposable implements IWorkbe
 		@ILogicalWorkspaceService private readonly logicalWorkspaceService: ILogicalWorkspaceService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@IEditorService private readonly editorService: IEditorService,
+		@ILogicalWorkspaceTerminalProjectionService private readonly terminalProjectionService: ILogicalWorkspaceTerminalProjectionService,
 		@IStorageService storageService: IStorageService,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -40,7 +44,15 @@ export class LogicalWorkspaceEditorAdapter extends Disposable implements IWorkbe
 			this.refreshWebviewStateListeners();
 			this.scheduleCapture();
 		}));
-		this._register(new LogicalWorkspaceProjectionCoordinator(logicalWorkspaceService, this, storageService, logService));
+		this.projectionCoordinator = this._register(new LogicalWorkspaceProjectionCoordinator(logicalWorkspaceService, this, storageService, logService));
+		this.whenReady = this.projectionCoordinator.whenReady;
+	}
+
+	stateSlice(state: ILogicalWorkspaceStateSnapshot): unknown {
+		return {
+			activeWorkspaceId: state.activeWorkspaceId,
+			editorWorkingSet: state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.editorWorkingSet,
+		};
 	}
 
 	capture(workspaceId: string): void {
@@ -50,7 +62,12 @@ export class LogicalWorkspaceEditorAdapter extends Disposable implements IWorkbe
 		this.logicalWorkspaceService.setEditorWorkingSet(workspaceId, this.editorGroupsService.serializeWorkingSet());
 	}
 
-	async restore(context: ILogicalWorkspaceProjectionContext): Promise<void> {
+	async restore(context: ILogicalWorkspaceProjectionContext): Promise<boolean> {
+		await this.editorGroupsService.whenReady;
+		await this.terminalProjectionService.requestReconcile();
+		if (!context.isCurrent()) {
+			return false;
+		}
 		this.captureScheduler.cancel();
 		this.restoring = true;
 		try {
@@ -61,14 +78,19 @@ export class LogicalWorkspaceEditorAdapter extends Disposable implements IWorkbe
 				applied = await this.editorGroupsService.applyWorkingSet('empty');
 			}
 			if (!context.isCurrent()) {
-				return;
+				return false;
 			}
 			if (!applied) {
+				this.projectedWorkspaceId = undefined;
 				this.logService.warn(`Logical workspace editor working set could not be restored: ${context.workspace.id}`);
-				return;
+				return false;
 			}
 			this.projectedWorkspaceId = context.workspace.id;
 			this.refreshWebviewStateListeners();
+			return true;
+		} catch (error) {
+			this.projectedWorkspaceId = undefined;
+			throw error;
 		} finally {
 			this.restoring = false;
 		}
@@ -83,7 +105,7 @@ export class LogicalWorkspaceEditorAdapter extends Disposable implements IWorkbe
 	private captureProjectedWorkspace(): void {
 		const workspaceId = this.projectedWorkspaceId;
 		if (workspaceId && workspaceId === this.logicalWorkspaceService.activeWorkspace.id) {
-			this.capture(workspaceId);
+			this.projectionCoordinator.captureProjectedState(workspaceId);
 		}
 	}
 
@@ -97,3 +119,5 @@ export class LogicalWorkspaceEditorAdapter extends Disposable implements IWorkbe
 		this.webviewStateListeners.value = listeners;
 	}
 }
+
+registerSingleton(ILogicalWorkspaceEditorProjectionService, LogicalWorkspaceEditorAdapter, InstantiationType.Delayed);

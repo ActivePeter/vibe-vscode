@@ -11,13 +11,15 @@ import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { StorageScope } from '../../../../../platform/storage/common/storage.js';
-import { WorkbenchState } from '../../../../../platform/workspace/common/workspace.js';
+import { StorageScope, WillSaveStateReason } from '../../../../../platform/storage/common/storage.js';
+import { WorkbenchState, Workspace } from '../../../../../platform/workspace/common/workspace.js';
 import { TestContextService, TestStorageService } from '../../../../test/common/workbenchTestServices.js';
+import { TestRemoteAgentService } from '../../../../test/browser/workbenchTestServices.js';
+import { IRemoteAgentConnection } from '../../../remote/common/remoteAgentService.js';
 import { AsyncProjectionCoordinator, ILogicalWorkspaceProjection, LogicalWorkspaceProjectionCoordinator } from '../../browser/logicalWorkspaceProjection.js';
 import { LogicalWorkspaceService } from '../../browser/logicalWorkspaceService.js';
 import { RemoteLogicalWorkspaceStateClient } from '../../browser/logicalWorkspaceRemoteStateClient.js';
-import { ILogicalWorkspaceStateStore } from '../../browser/logicalWorkspaceStateStore.js';
+import { ILogicalWorkspaceStateStore, LogicalWorkspaceStateStore } from '../../browser/logicalWorkspaceStateStore.js';
 import { applyLogicalWorkspaceMutation, ILogicalWorkspaceMutation, ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor, LogicalWorkspaceMutationType, parseLogicalWorkspaceMutation, parseLogicalWorkspaceSharedState } from '../../common/logicalWorkspace.js';
 import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, RemoteLogicalWorkspaceStateErrorCode } from '../../common/logicalWorkspaceRemote.js';
 
@@ -30,6 +32,7 @@ class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorks
 	private sharedState: unknown;
 	private readonly activeWorkspaceIds = new Map<string, string>();
 	private initializeGate: DeferredPromise<ILogicalWorkspaceSharedState> | undefined;
+	private sharedStateEmittedDuringInitialize: ILogicalWorkspaceSharedState | undefined;
 	writeCount = 0;
 
 	readSharedState(): unknown {
@@ -37,10 +40,19 @@ class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorks
 	}
 
 	async initializeSharedState(state: ILogicalWorkspaceSharedState): Promise<ILogicalWorkspaceSharedState> {
-		this.sharedState = this.initializeGate ? await this.initializeGate.p : state;
+		const initializedState = this.initializeGate ? await this.initializeGate.p : state;
+		this.sharedState = initializedState;
 		this.initializeGate = undefined;
 		this.writeCount++;
-		return this.sharedState as ILogicalWorkspaceSharedState;
+		if (this.sharedStateEmittedDuringInitialize) {
+			this.sharedState = this.sharedStateEmittedDuringInitialize;
+			this._onDidChangeSharedState.fire();
+		}
+		return initializedState;
+	}
+
+	async createWorkspace(workspace: ILogicalWorkspaceSharedState['workspaces'][number]): Promise<void> {
+		this.applyMutation({ type: LogicalWorkspaceMutationType.CreateWorkspace, workspace });
 	}
 
 	applyMutation(mutation: ILogicalWorkspaceMutation): void {
@@ -69,6 +81,10 @@ class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorks
 	delayInitialize(): DeferredPromise<ILogicalWorkspaceSharedState> {
 		return this.initializeGate = new DeferredPromise<ILogicalWorkspaceSharedState>();
 	}
+
+	emitDuringInitialize(state: ILogicalWorkspaceSharedState): void {
+		this.sharedStateEmittedDuringInitialize = state;
+	}
 }
 
 class DeferredWorkspaceContextService extends TestContextService {
@@ -96,6 +112,8 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 	private snapshots = new Map<string, IRemoteLogicalWorkspaceStateSnapshot>();
 	private nextMutationResponseGate: DeferredPromise<void> | undefined;
 	private dropNextMutationResponse = false;
+	private failNextMutationBeforeCommit = false;
+	mutationCalls = 0;
 
 	delayNextMutationResponse(): DeferredPromise<void> {
 		this.nextMutationResponseGate = new DeferredPromise<void>();
@@ -104,6 +122,10 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 
 	dropNextMutationResult(): void {
 		this.dropNextMutationResponse = true;
+	}
+
+	failNextMutationRequest(): void {
+		this.failNextMutationBeforeCommit = true;
 	}
 
 	getSnapshot(physicalWorkspaceId: string): IRemoteLogicalWorkspaceStateSnapshot | undefined {
@@ -137,6 +159,11 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 			case RemoteLogicalWorkspaceStateCommand.Read:
 				return this.ok(this.snapshots.get(physicalWorkspaceId)) as T;
 			case RemoteLogicalWorkspaceStateCommand.Mutate: {
+				this.mutationCalls++;
+				if (this.failNextMutationBeforeCommit) {
+					this.failNextMutationBeforeCommit = false;
+					throw new Error('Mutation request failed before commit');
+				}
 				const mutation = parseLogicalWorkspaceMutation(request.mutation);
 				const current = this.snapshots.get(physicalWorkspaceId);
 				if (!mutation || !current) {
@@ -285,6 +312,42 @@ suite('RemoteLogicalWorkspaceStateClient', () => {
 			state: { schemaVersion: 2, workspaces: [{ id: 'workspace', name: 'workspace', terminalIds: [], shellLayout: blueLayout }] },
 		});
 	});
+
+	test('keeps a new Workspace hidden until its durable identity is confirmed', async () => {
+		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
+		const client = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService(), [0]));
+		await client.initialize(state('existing'));
+		channel.failNextMutationRequest();
+		const workspace = { id: 'created', name: 'Created', terminalIds: [], shellLayout: undefined };
+		let creationResolved = false;
+		const creation = client.createWorkspace(workspace).then(() => creationResolved = true);
+
+		assert.deepStrictEqual({ state: client.state, creationResolved }, {
+			state: state('existing'),
+			creationResolved: false,
+		});
+
+		await creation;
+		assert.deepStrictEqual({ state: client.state, mutationCalls: channel.mutationCalls }, {
+			state: { schemaVersion: 2, workspaces: [state('existing').workspaces[0], workspace] },
+			mutationCalls: 2,
+		});
+	});
+
+	test('confirms a committed creation from read after its response is lost', async () => {
+		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
+		const client = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService(), [0]));
+		await client.initialize(state('existing'));
+		channel.dropNextMutationResult();
+		const workspace = { id: 'created', name: 'Created', terminalIds: [], shellLayout: undefined };
+
+		await client.createWorkspace(workspace);
+
+		assert.deepStrictEqual({ state: client.state, mutationCalls: channel.mutationCalls }, {
+			state: { schemaVersion: 2, workspaces: [state('existing').workspaces[0], workspace] },
+			mutationCalls: 1,
+		});
+	});
 });
 
 suite('LogicalWorkspaceService', () => {
@@ -306,10 +369,10 @@ suite('LogicalWorkspaceService', () => {
 		return disposables.add(new LogicalWorkspaceService(storageService, contextService, store, configurationService));
 	}
 
-	test('announces activation before changing the active workspace', () => {
+	test('announces activation before changing the active workspace', async () => {
 		const service = createService();
 		const previousWorkspaceId = service.activeWorkspace.id;
-		const workspace = service.createWorkspace('Review');
+		const workspace = await service.createWorkspace('Review');
 		const observed: object[] = [];
 
 		disposables.add(service.onWillChangeActiveWorkspace(event => observed.push({ phase: 'will', activeWorkspaceId: service.activeWorkspace.id, sequence: service.activationSequence, event })));
@@ -332,9 +395,9 @@ suite('LogicalWorkspaceService', () => {
 		]);
 	});
 
-	test('persists shell layout including a part without an active composite', () => {
+	test('persists shell layout including a part without an active composite', async () => {
 		const service = createService();
-		const workspace = service.createWorkspace('Review');
+		const workspace = await service.createWorkspace('Review');
 		const shellLayout: ILogicalWorkspaceShellLayout = {
 			primarySideBar: { visible: true, width: 280, height: 800, activeCompositeId: 'workbench.view.explorer' },
 			panel: { visible: true, width: 1200, height: 260, activeCompositeId: 'workbench.panel.terminal' },
@@ -352,9 +415,9 @@ suite('LogicalWorkspaceService', () => {
 		});
 	});
 
-	test('stores the active workspace in page state without rewriting shared snapshots', () => {
+	test('stores the active workspace in page state without rewriting shared snapshots', async () => {
 		const service = createService();
-		const workspace = service.createWorkspace('Review');
+		const workspace = await service.createWorkspace('Review');
 		const writesBeforeActivation = stateStore.writeCount;
 
 		service.activateWorkspace(workspace.id, LogicalWorkspaceActivationActor.Picker);
@@ -373,6 +436,13 @@ suite('LogicalWorkspaceService', () => {
 		const selectedWorkspaceId = 'workspace-b';
 		stateStore.writeActiveWorkspaceId(physicalWorkspaceId, selectedWorkspaceId);
 		const initialize = stateStore.delayInitialize();
+		stateStore.emitDuringInitialize({
+			schemaVersion: 2,
+			workspaces: [
+				{ id: 'workspace-a', name: 'A', terminalIds: [], shellLayout: undefined },
+				{ id: selectedWorkspaceId, name: 'B', terminalIds: [], shellLayout: undefined },
+			],
+		});
 		const service = createService();
 
 		assert.deepStrictEqual({
@@ -385,10 +455,7 @@ suite('LogicalWorkspaceService', () => {
 
 		await initialize.complete({
 			schemaVersion: 2,
-			workspaces: [
-				{ id: 'workspace-a', name: 'A', terminalIds: [], shellLayout: undefined },
-				{ id: selectedWorkspaceId, name: 'B', terminalIds: [], shellLayout: undefined },
-			],
+			workspaces: [{ id: 'workspace-a', name: 'A', terminalIds: [], shellLayout: undefined }],
 		});
 		await service.whenReady;
 
@@ -400,6 +467,46 @@ suite('LogicalWorkspaceService', () => {
 			isReady: true,
 			activeWorkspaceId: selectedWorkspaceId,
 			storedActiveWorkspaceId: selectedWorkspaceId,
+		});
+	});
+
+	test('production remote store preserves page selection across reentrant initialization events', async () => {
+		const physicalWorkspaceId = 'production-remote-initialization';
+		const selectedWorkspaceId = 'workspace-b';
+		const authoritativeState: ILogicalWorkspaceSharedState = {
+			schemaVersion: 2,
+			workspaces: [
+				{ id: 'workspace-a', name: 'A', terminalIds: [], shellLayout: undefined },
+				{ id: selectedWorkspaceId, name: 'B', terminalIds: [], shellLayout: undefined },
+			],
+		};
+		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
+		await channel.call(RemoteLogicalWorkspaceStateCommand.Initialize, { physicalWorkspaceId, state: authoritativeState });
+		const connection = {
+			remoteAuthority: 'test-remote',
+			onReconnecting: Event.None,
+			onDidStateChange: Event.None,
+			getChannel: () => channel,
+		} as unknown as IRemoteAgentConnection;
+		const remoteAgentService = new class extends TestRemoteAgentService {
+			override getConnection(): IRemoteAgentConnection { return connection; }
+		};
+		const productionContext = new TestContextService(new Workspace(physicalWorkspaceId, [], false, null, () => false, 'Physical'));
+		const productionStorage = disposables.add(new TestStorageService());
+		const productionStore = disposables.add(new LogicalWorkspaceStateStore(productionStorage, productionContext, remoteAgentService, new NullLogService()));
+		productionStore.writeActiveWorkspaceId(physicalWorkspaceId, selectedWorkspaceId);
+		const service = disposables.add(new LogicalWorkspaceService(productionStorage, productionContext, productionStore, new TestConfigurationService()));
+
+		await service.whenReady;
+
+		assert.deepStrictEqual({
+			activeWorkspaceId: service.activeWorkspace.id,
+			storedActiveWorkspaceId: productionStore.readActiveWorkspaceId(physicalWorkspaceId),
+			workspaces: service.workspaces,
+		}, {
+			activeWorkspaceId: selectedWorkspaceId,
+			storedActiveWorkspaceId: selectedWorkspaceId,
+			workspaces: authoritativeState.workspaces,
 		});
 	});
 
@@ -518,9 +625,9 @@ suite('LogicalWorkspaceService', () => {
 		});
 	});
 
-	test('accepts authoritative external snapshots while preserving a valid page selection', () => {
+	test('accepts authoritative external snapshots while preserving a valid page selection', async () => {
 		const service = createService();
-		const activeWorkspace = service.createWorkspace('Active');
+		const activeWorkspace = await service.createWorkspace('Active');
 		service.activateWorkspace(activeWorkspace.id, LogicalWorkspaceActivationActor.Picker);
 		const incomingWorkspace = {
 			id: 'incoming',
@@ -607,10 +714,10 @@ suite('LogicalWorkspaceService', () => {
 		});
 	});
 
-	test('falls back with ordered activation events when an external snapshot removes the active workspace', () => {
+	test('falls back with ordered activation events when an external snapshot removes the active workspace', async () => {
 		const service = createService();
 		const fallbackWorkspace = service.activeWorkspace;
-		const removedWorkspace = service.createWorkspace('Removed');
+		const removedWorkspace = await service.createWorkspace('Removed');
 		service.activateWorkspace(removedWorkspace.id, LogicalWorkspaceActivationActor.Picker);
 		const observed: object[] = [];
 		disposables.add(service.onWillChangeActiveWorkspace(event => observed.push({ phase: 'will', activeWorkspaceId: service.activeWorkspace.id, event })));
@@ -647,7 +754,7 @@ suite('LogicalWorkspaceService', () => {
 		const coordinator = disposables.add(new LogicalWorkspaceProjectionCoordinator(service, projection, storageService, new NullLogService()));
 		await timeout(0);
 
-		const nextWorkspace = service.createWorkspace('Next');
+		const nextWorkspace = await service.createWorkspace('Next');
 		service.activateWorkspace(nextWorkspace.id, LogicalWorkspaceActivationActor.Picker);
 		await coordinator.requestReconcile();
 
@@ -659,6 +766,197 @@ suite('LogicalWorkspaceService', () => {
 			initiallyRestored: true,
 			lastRestored: nextWorkspace.id,
 			capturedWorkspaceIds: [initialWorkspaceId],
+		});
+	});
+
+	test('initial projection readiness waits for the real UI commit', async () => {
+		const service = createService();
+		const restoreStarted = new DeferredPromise<void>();
+		const releaseRestore = new DeferredPromise<void>();
+		let ready = false;
+		const projection: ILogicalWorkspaceProjection = {
+			id: 'initialProjectionReadiness',
+			restore: async context => {
+				await restoreStarted.complete();
+				await releaseRestore.p;
+				assert.strictEqual(context.isCurrent(), true);
+			},
+		};
+		const coordinator = disposables.add(new LogicalWorkspaceProjectionCoordinator(service, projection, storageService, new NullLogService()));
+		void coordinator.whenReady.then(() => ready = true);
+
+		await restoreStarted.p;
+		assert.strictEqual(ready, false);
+		await releaseRestore.complete();
+		await coordinator.whenReady;
+		assert.strictEqual(ready, true);
+	});
+
+	test('same active Workspace content refresh converges before a later capture', async () => {
+		const service = createService();
+		await service.whenReady;
+		const activeWorkspaceId = service.activeWorkspace.id;
+		const nextWorkspace = await service.createWorkspace('Next');
+		service.setEditorWorkingSet(activeWorkspaceId, 'v1');
+		const firstRestoreStarted = new DeferredPromise<void>();
+		const releaseFirstRestore = new DeferredPromise<void>();
+		const secondRestoreStarted = new DeferredPromise<void>();
+		const releaseSecondRestore = new DeferredPromise<void>();
+		const secondRestoreApplied = new DeferredPromise<void>();
+		const nextWorkspaceRestored = new DeferredPromise<void>();
+		const restored: Array<string | undefined> = [];
+		const captured: Array<string | undefined> = [];
+		let projectedEditorState: string | undefined;
+		const projection: ILogicalWorkspaceProjection = {
+			id: 'sameTargetContentProjection',
+			capture: () => captured.push(projectedEditorState),
+			restore: async context => {
+				const editorState = context.workspace.editorWorkingSet;
+				restored.push(editorState);
+				if (editorState === 'v1') {
+					await firstRestoreStarted.complete();
+					await releaseFirstRestore.p;
+				}
+				if (editorState === 'v2') {
+					await secondRestoreStarted.complete();
+					await releaseSecondRestore.p;
+				}
+				if (!context.isCurrent()) {
+					return;
+				}
+				projectedEditorState = editorState;
+				if (editorState === 'v2') {
+					await secondRestoreApplied.complete();
+				}
+				if (context.workspace.id === nextWorkspace.id) {
+					await nextWorkspaceRestored.complete();
+				}
+			},
+		};
+		const coordinator = disposables.add(new LogicalWorkspaceProjectionCoordinator(service, projection, storageService, new NullLogService()));
+		let initialProjectionReady = false;
+		void coordinator.whenReady.then(() => initialProjectionReady = true);
+		await firstRestoreStarted.p;
+
+		stateStore.setSharedState({
+			schemaVersion: 2,
+			workspaces: service.workspaces.map(workspace => workspace.id === activeWorkspaceId ? { ...workspace, editorWorkingSet: 'v2' } : workspace),
+		});
+		await releaseFirstRestore.complete();
+		await secondRestoreStarted.p;
+		assert.strictEqual(initialProjectionReady, false);
+		await releaseSecondRestore.complete();
+		await secondRestoreApplied.p;
+		await coordinator.whenReady;
+
+		service.activateWorkspace(nextWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+		await nextWorkspaceRestored.p;
+
+		assert.deepStrictEqual({ restored, captured }, {
+			restored: ['v1', 'v2', undefined],
+			captured: ['v2'],
+		});
+	});
+
+	test('does not capture an obsolete projection while newer same-Workspace content is pending', async () => {
+		const service = createService();
+		await service.whenReady;
+		const activeWorkspaceId = service.activeWorkspace.id;
+		const nextWorkspace = await service.createWorkspace('Next');
+		service.setEditorWorkingSet(activeWorkspaceId, 'v1');
+		const v2RestoreStarted = new DeferredPromise<void>();
+		const releaseV2Restore = new DeferredPromise<void>();
+		const nextWorkspaceRestored = new DeferredPromise<void>();
+		const captured: Array<{ readonly workspaceId: string; readonly editorWorkingSet: string | undefined }> = [];
+		let projectedEditorWorkingSet: string | undefined;
+		const projection: ILogicalWorkspaceProjection = {
+			id: 'pendingSameTargetContentProjection',
+			stateSlice: state => state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.editorWorkingSet,
+			capture: workspaceId => {
+				captured.push({ workspaceId, editorWorkingSet: projectedEditorWorkingSet });
+				service.setEditorWorkingSet(workspaceId, projectedEditorWorkingSet ?? '');
+			},
+			restore: async context => {
+				if (context.workspace.editorWorkingSet === 'v2') {
+					await v2RestoreStarted.complete();
+					await releaseV2Restore.p;
+				}
+				if (!context.isCurrent()) {
+					return;
+				}
+				projectedEditorWorkingSet = context.workspace.editorWorkingSet;
+				if (context.workspace.id === nextWorkspace.id) {
+					await nextWorkspaceRestored.complete();
+				}
+			},
+		};
+		const coordinator = disposables.add(new LogicalWorkspaceProjectionCoordinator(service, projection, storageService, new NullLogService()));
+		await coordinator.whenReady;
+
+		stateStore.setSharedState({
+			schemaVersion: 2,
+			workspaces: service.workspaces.map(workspace => workspace.id === activeWorkspaceId ? { ...workspace, editorWorkingSet: 'v2' } : workspace),
+		});
+		await v2RestoreStarted.p;
+		storageService.testEmitWillSaveState(WillSaveStateReason.SHUTDOWN);
+		service.activateWorkspace(nextWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+		await releaseV2Restore.complete();
+		await nextWorkspaceRestored.p;
+
+		assert.deepStrictEqual({
+			captured,
+			authoritativeEditorWorkingSet: service.workspaces.find(workspace => workspace.id === activeWorkspaceId)?.editorWorkingSet,
+			projectedEditorWorkingSet,
+		}, {
+			captured: [],
+			authoritativeEditorWorkingSet: 'v2',
+			projectedEditorWorkingSet: undefined,
+		});
+	});
+
+	test('does not capture a state slice whose restore was rejected', async () => {
+		const service = createService();
+		await service.whenReady;
+		const activeWorkspaceId = service.activeWorkspace.id;
+		const nextWorkspace = await service.createWorkspace('Next');
+		service.setEditorWorkingSet(activeWorkspaceId, 'v1');
+		let projectedEditorWorkingSet: string | undefined;
+		const captured: string[] = [];
+		const projection: ILogicalWorkspaceProjection = {
+			id: 'rejectedStateSliceProjection',
+			stateSlice: state => state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.editorWorkingSet,
+			capture: workspaceId => {
+				captured.push(workspaceId);
+				service.setEditorWorkingSet(workspaceId, projectedEditorWorkingSet ?? '');
+			},
+			restore: async context => {
+				if (context.workspace.editorWorkingSet === 'v2') {
+					return false;
+				}
+				projectedEditorWorkingSet = context.workspace.editorWorkingSet;
+				return true;
+			},
+		};
+		const coordinator = disposables.add(new LogicalWorkspaceProjectionCoordinator(service, projection, storageService, new NullLogService()));
+		await coordinator.whenReady;
+
+		stateStore.setSharedState({
+			schemaVersion: 2,
+			workspaces: service.workspaces.map(workspace => workspace.id === activeWorkspaceId ? { ...workspace, editorWorkingSet: 'v2' } : workspace),
+		});
+		await coordinator.requestReconcile();
+		coordinator.captureProjectedState(activeWorkspaceId);
+		storageService.testEmitWillSaveState(WillSaveStateReason.SHUTDOWN);
+		service.activateWorkspace(nextWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+
+		assert.deepStrictEqual({
+			captured,
+			projectedEditorWorkingSet,
+			authoritativeEditorWorkingSet: service.workspaces.find(workspace => workspace.id === activeWorkspaceId)?.editorWorkingSet,
+		}, {
+			captured: [],
+			projectedEditorWorkingSet: 'v1',
+			authoritativeEditorWorkingSet: 'v2',
 		});
 	});
 

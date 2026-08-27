@@ -38,7 +38,9 @@ await database.updateItems(...)
 
 ## 客户端规则
 
-Workspace catalog、layout 和 editor working set 是可覆盖的视图状态。mutation response 丢失时，客户端丢弃该 mutation 并重新 `read`，不自动重放，因此不需要 `operationId`。
+Layout 和 editor working set 是可覆盖的视图状态。mutation response 丢失时，客户端丢弃该 mutation 并重新 `read`，不自动重放，因此不需要 `operationId`。
+
+Workspace UUID 是 durable identity：创建结果未知时先 `read`，已存在即确认，不存在才重试相同的幂等 create。创建确认前不会进入可激活 catalog。
 
 Terminal ownership 不属于这套状态；它随 persistent Terminal process 保存。
 

@@ -150,7 +150,14 @@ export class ProjectContextService extends Disposable implements IProjectContext
 			return;
 		}
 
-		await this.selectFolder(pick.folder, true);
+		// Quick Pick items are a snapshot. Resolve the selected URI against the current
+		// Physical Workspace so a folder removed while the picker was open cannot be committed.
+		const selectedFolderUri = pick.folder.uri;
+		const currentFolder = this.workspace.folders.find(folder => isEqual(folder.uri, selectedFolderUri));
+		if (!currentFolder) {
+			return;
+		}
+		await this.selectFolder(currentFolder, true);
 	}
 
 	private resolveStoredFolder(): IWorkspaceFolder | undefined {

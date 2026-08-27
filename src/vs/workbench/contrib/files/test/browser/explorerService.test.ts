@@ -86,6 +86,24 @@ suite('ExplorerService', () => {
 			projectionCalls: ['close:nested', 'input:nested'],
 		});
 
+		service.registerView(new class extends mock<IExplorerView>() {
+			override async closeFind(): Promise<void> {
+				projectionCalls.push(`close-failed:${service.visibleRoots.at(0)?.name}`);
+				throw new Error('find cleanup failed');
+			}
+			override async setTreeInput(): Promise<void> {
+				projectionCalls.push(`input-after-failure:${service.visibleRoots.at(0)?.name}`);
+			}
+		});
+		await assert.rejects(service.setActiveRoot(parentFolder.uri), /find cleanup failed/);
+		assert.deepStrictEqual({
+			activeRoot: service.visibleRoots.at(0)?.name,
+			lastCalls: projectionCalls.slice(-2),
+		}, {
+			activeRoot: parentFolder.name,
+			lastCalls: ['close-failed:workspace', 'input-after-failure:workspace'],
+		});
+
 		store.dispose();
 	});
 });

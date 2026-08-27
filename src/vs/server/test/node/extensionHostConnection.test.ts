@@ -105,10 +105,12 @@ suite('ExtensionHostConnection', () => {
 		));
 
 		await connection.start({ language: 'en' });
+		assert.strictEqual(initial.server.socket.socket.isPaused(), true);
 		const initialSocketPromise = childProcess.nextSocket();
 		childProcess.emitReady();
+		initial.client.write(VSBuffer.fromString('initial-from-browser'));
 		const initialSocket = await initialSocketPromise;
-		await assertBridge(initial, initialSocket, 'initial');
+		await assertBridge(initial, initialSocket, 'initial', 'initial-from-browser');
 
 		const initialBridgeEnded = onceSocketEnd(initialSocket.socket);
 		initial.client.end();
@@ -117,29 +119,32 @@ suite('ExtensionHostConnection', () => {
 		const reconnected = await createTlsWebSocketPair(disposables, certificate);
 		const reconnectedSocketPromise = childProcess.nextSocket();
 		connection.acceptReconnection('127.0.0.2', reconnected.server, VSBuffer.fromString('reconnected-chunk'));
+		assert.strictEqual(reconnected.server.socket.socket.isPaused(), true);
+		reconnected.client.write(VSBuffer.fromString('reconnected-from-browser'));
 		const reconnectedSocket = await reconnectedSocketPromise;
-		await assertBridge(reconnected, reconnectedSocket, 'reconnected');
+		await assertBridge(reconnected, reconnectedSocket, 'reconnected', 'reconnected-from-browser');
 
 		assert.notStrictEqual(initialSocket.socket, reconnectedSocket.socket);
 	});
 });
 
-async function assertBridge(pair: ITlsWebSocketPair, sent: ISentSocket, phase: string): Promise<void> {
+async function assertBridge(pair: ITlsWebSocketPair, sent: ISentSocket, phase: string, earlyBrowserData: string): Promise<void> {
 	assert.deepStrictEqual({
 		initialDataChunk: Buffer.from(sent.message.initialDataChunk, 'base64').toString(),
 		skipWebSocketFrames: sent.message.skipWebSocketFrames,
 		sentTlsSocket: sent.socket instanceof tls.TLSSocket,
 		sourceTlsSocket: pair.server.socket.socket instanceof tls.TLSSocket,
+		sourcePaused: pair.server.socket.socket.isPaused(),
 	}, {
 		initialDataChunk: `${phase}-chunk`,
 		skipWebSocketFrames: true,
 		sentTlsSocket: false,
 		sourceTlsSocket: true,
+		sourcePaused: false,
 	});
 
 	const childReceived = onceSocketData(sent.socket);
-	pair.client.write(VSBuffer.fromString(`${phase}-from-browser`));
-	assert.strictEqual((await childReceived).toString(), `${phase}-from-browser`);
+	assert.strictEqual((await childReceived).toString(), earlyBrowserData);
 
 	const browserReceived = Event.toPromise<VSBuffer>(listener => pair.client.onData(listener));
 	sent.socket.write(Buffer.from(`${phase}-from-extension-host`));

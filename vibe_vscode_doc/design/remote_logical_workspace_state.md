@@ -10,7 +10,8 @@ Logical Workspace 保存的是可覆盖的 Workbench 视图状态，不是资源
 
 | 状态 | Authority | 可见性与冲突规则 |
 | --- | --- | --- |
-| Workspace catalog、layout、editor working set | Remote SQLite | 当前页面 optimistic；其他页面刷新/重连后可见；Server 到达顺序 LWW |
+| Workspace catalog identity | Remote SQLite | durable 确认后才可激活；其他页面刷新/重连后可见 |
+| layout、editor working set | Remote SQLite | 当前页面 optimistic；其他页面刷新/重连后可见；Server 到达顺序 LWW |
 | `activeWorkspaceId` | 页面 `sessionStorage` | 仅当前页面 |
 | Terminal identity 与 ownership | Terminal/PTY process metadata | Terminal 恢复后立即可用 |
 | Agent Session catalog | Session provider/history | 保持 VS Code 全局语义 |
@@ -44,7 +45,7 @@ Server 保留三个 command：
 
 ## 失败与 LWW
 
-每个 view-state mutation 只发送一次。
+每个 layout/editor view-state mutation 只发送一次。
 
 如果 response 丢失，客户端无法判断 Server 是否已提交，因此：
 
@@ -55,6 +56,8 @@ Server 保留三个 command：
 ```
 
 禁止自动重放结果未知的旧 mutation。这样 A 的旧写不会在 B 的更新之后再次执行，也不需要 operation ID 或服务端去重表。代价是写入可能在传输失败时丢失；layout/editor 等视图状态允许这一取舍。
+
+`createWorkspace` 不属于可丢弃的覆盖型视图写。客户端不 optimistic 发布新 UUID；response 丢失时先 `read`：snapshot 已包含该 UUID 就完成创建，否则才重试同一个 additive、idempotent create。调用方只能在创建 Promise 完成后激活它，因此 Terminal 等 durable resource 不会获得不可达 owner。
 
 同一字段的多个已到达写入按 Server 到达顺序生效，即 Last Write Wins。
 
@@ -74,6 +77,7 @@ Terminal 关闭或 detach 不再修改 Workspace 远端视图状态。
 
 1. SQLite update 失败后 confirmed revision 不推进；关闭并重开只能读到成功落盘的状态。
 2. A mutation 已提交但 response 丢失，B 随后更新同一字段；A 不重放，Server 最终保持 B。
-3. 另一页面在收到刷新前保持旧值，显式 refresh 后读取最新 Server 状态。
-4. 新建 Terminal 的 `logicalWorkspaceId` 在异步 profile 创建期间不随 active Workspace 改变。
-5. Persistent Terminal 重连后从 PTY metadata 恢复 owner；旧 `terminalIds` 可迁移并写回 process metadata。
+3. Workspace create 未提交时 identity 不可激活；已提交但 response 丢失时 read 确认同一 UUID且不重复创建。
+4. 另一页面在收到刷新前保持旧值，显式 refresh 后读取最新 Server 状态。
+5. 新建 Terminal 的 `logicalWorkspaceId` 在异步 profile 创建期间不随 active Workspace 改变。
+6. Persistent Terminal 重连后从 PTY metadata 恢复 owner；旧 `terminalIds` 可迁移并写回 process metadata。

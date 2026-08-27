@@ -72,7 +72,7 @@ Project Context 与 Logical Workspace 是正交维度：切 Project 不应关闭
 ### 4.1 Authority 与 projection 分离
 
 - 远程 `RemoteLogicalWorkspaceStateStorage` 只持久化 Workspace catalog、布局快照和 serialized editor working set。
-- `LogicalWorkspaceService` 持有当前页面的 confirmed/optimistic projection，不生成服务端 revision，也不裁决页面间冲突。
+- `LogicalWorkspaceService` 持有当前页面的 projection，不生成服务端 revision，也不裁决页面间冲突；新 Workspace identity 只在 Server durable 确认后进入可激活 catalog，layout/editor 仍可 optimistic。
 - Chat Sessions Service/provider history 是 Session catalog authority；`LogicalWorkspaceService` 不保存 Session owner，不创建、过滤或删除 Session 本体。
 - Terminal process metadata 是 Terminal identity/ownership authority；Terminal Adapter 只据此投影前后台实例。
 - Editor、Explorer 和 Workbench Layout 只投影各自 authority，不保存平行的关系集合。
@@ -96,6 +96,7 @@ Project Context 与 Logical Workspace 是正交维度：切 Project 不应关闭
 
 - UI projection 通过 `AsyncProjectionCoordinator` 串行化，并以 `context.isCurrent()` 拒绝过期 generation。
 - Coordinator 以 projection target identity 区分“同一目标刷新”和“目标切换”：同一目标的 change event 合并为 transaction 尾部的一次刷新，不使当前 generation 失效；新的 Workspace activation 才立即 supersede 当前 generation。
+- `createWorkspace()` 是 identity transaction：UUID 由页面生成，但创建 Promise 只有在权威 snapshot 包含该 UUID 后才完成；完成前不能激活或让 durable resource 归属它。
 - Terminal 创建入口捕获 immutable identity，并在创建前写入 Shell launch config；不存在额外 Workspace ownership commit。
 - Editor working-set capture/restore 使用统一 projection generation；未来 Session Tab 依赖这一层恢复，不建立 Session owner API。
 
@@ -118,8 +119,8 @@ Session catalog 的 refresh 只有在取得完整结果后才能发布权威 rem
 - 浏览器 IndexedDB 不是共享业务状态 authority；旧值只允许作为首次远程初始化的 migration candidate。
 - 服务端以 `initialize-if-absent` 原子建立首份状态，并独占 revision 分配。
 - 页面只提交 `createWorkspace`、layout 和 editor 更新；Terminal bind/unbind 不属于该协议。
-- 服务端按到达顺序串行持久化，冲突字段采用 Last Write Wins；页面 optimistic projection 可由 `read` 重建。
-- mutation transport outcome 未知时丢弃该写并重新读取，禁止自动重放旧 mutation；初始化和读取失败可以退避重试。
+- 服务端按到达顺序串行持久化，layout/editor 冲突字段采用 Last Write Wins；页面 optimistic projection 可由 `read` 重建。
+- layout/editor mutation transport outcome 未知时丢弃该写并重新读取，禁止自动重放旧视图写；`createWorkspace` 先读取对账，snapshot 缺少同一 UUID 时才重试这个幂等创建。
 
 完整协议、迁移与失败边界见 [Logical Workspace 远程权威状态](./remote_logical_workspace_state.md)。
 durable write 的最小接口、上游复用边界和测试要求见 [远端持久化状态最小接口设计](./remote_persistent_state_minimal_interfaces.md)。
@@ -189,10 +190,11 @@ State Store 通过 Remote Agent IPC 访问按 Physical Workspace ID 隔离的服
 
 - `initialize` 是服务端原子的 create-if-absent；已有 snapshot 永远优先于页面 candidate；
 - revision 只由服务端单调递增，浏览器不再生成 UUID source；
-- 页面提交 best-effort 视图 mutation，服务端串行应用并等待持久化后返回 snapshot；
-- 页面以“最新 authoritative snapshot + pending mutations”计算 optimistic projection；
+- 页面提交 mutation，服务端串行应用并等待持久化后返回 snapshot；
+- 页面以“最新 authoritative snapshot + pending layout/editor mutations”计算 optimistic projection；pending Workspace creation 不提前发布；
 - 其他页面不接收 committed event；刷新、重新打开或 Remote Agent 重连后主动 `read`；
-- mutation response 丢失时移除该 pending mutation，再读取 Server truth，不重放旧写；
+- layout/editor response 丢失时移除 pending mutation 并读取 Server truth，不重放旧写；create response 丢失时先 read，已存在即确认，不存在才重试相同 UUID；
+- 初始化结果应用前再次读取 State Store 的最新权威 snapshot，再校验并写回 page-local active ID；reentrant refresh 不能让过期初始化结果覆盖页面选择；
 - BroadcastChannel、页面间 Request/State anti-entropy 和整包 last-write-wins 均已移除。
 
 这从结构上关闭了“空持久层、已有页面持有 revision `1`、新页面立即写默认值”的覆盖窗口。
@@ -219,6 +221,8 @@ State Store 通过 Remote Agent IPC 访问按 Physical Workspace ID 隔离的服
 
 `LogicalWorkspaceProjectionCoordinator` 统一负责初始恢复、切换前 capture、切换后 restore 和页面保存。`AsyncProjectionCoordinator` 合并 pending intent；同 target 的反馈保留当前 generation 并在尾部收敛，不同 target 才使旧事务过期。调用方若需要最终稳定状态，应等待自己关心的最新请求，不能假定旧 generation 的 Promise 代表后续所有请求都已完成。所有被投影 Service 的 Promise 必须表达真实 UI commit，例如 editor terminal 的 restore 只有在 `openEditor()` 完成后才能 resolve。
 
+每个 Adapter 声明自身完整且最小的 active state slice；active ID 不变但 slice 内容更新时仍需排队 reconcile。只有 restore 成功才能推进 projected snapshot；capture 仅在 projected slice 与当前 authority slice 相同时执行，失败或 pending restore 不能把旧 UI 反写覆盖新状态。初始 editor projection 暴露独立 readiness，Workbench 在打开后续 startup editors 前等待它及其同 target 尾部刷新全部完成。
+
 ### 7.2 Shell layout
 
 Layout Adapter 保存三个 shell part 的 `visible`、`width`、`height` 与 `activeCompositeId`。恢复时先恢复 composite 和尺寸，再提交最终可见性；目标为隐藏的 part 也必须恢复自己的尺寸，避免以后显示时继承另一个 Workspace 的布局。
@@ -226,6 +230,9 @@ Layout Adapter 保存三个 shell part 的 `visible`、`width`、`height` 与 `a
 ### 7.3 Editor working set
 
 `LogicalWorkspaceEditorAdapter` 通过 Editor Groups Service 序列化和恢复 editor working set，并监听 Webview state 更新补充 capture。它只处理 editor input 的通用恢复 identity，不读取 Agent Session catalog，也不建立 Session owner。
+
+Terminal editor 的 tab 位置也由 editor working set 恢复；Terminal serializer 复用 Terminal/PTY authority 已保留或已 revive 的同一实例，不创建第二个 attach client。Terminal layout 的 background 列表只恢复 Panel Terminal，不同时持有 editor Terminal 的恢复权。
+切换事务中 Terminal projection 必须先把旧 editor Terminal detach 到 background，随后 editor working set 才能关闭/替换 groups；否则通用 editor close 会误终止仍应保留的 PTY。
 
 具备可恢复 editor identity 的 Session Tab 可以自然包含在 serialized working set 中；但 PR #1 尚未为 Session Tab 单独完成 open/close、多 Workspace 重复打开和恢复正文的产品验收，因此 README 仍标记为 Planned。window geometry、panel split 和 active terminal 不属于 editor working set。
 
@@ -239,7 +246,7 @@ Terminal 创建与投影遵循以下目标流程：
 2. 沿既有创建链传递 identity，不重新读取 active Workspace；
 3. 将 `logicalWorkspaceId` 和 `logicalTerminalId` 写入 Shell launch config 与 persistent PTY metadata；
 4. 非当前 Workspace 的实例移到 background，不关闭 PTY；
-5. 切回 owner Workspace 时把 background instance 挂回原 panel/editor 位置。
+5. 切回 owner Workspace 时，Panel Terminal 由 Terminal Adapter 挂回；editor Terminal 由 editor working set 在原 group 中领养同一 background instance。
 
 `ITerminalCreationContext` 是只携带 initiating Workspace 与稳定 Logical Terminal ID 的小型 immutable value object。普通创建、Extension Host contributed profile 和 Agent Host profile 都沿已有调用链转发它。Terminal 创建失败只留下未使用的局部 config，不写 Workspace 共享状态，因此不会发布 ghost owner。
 
@@ -337,7 +344,7 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 | Logical Workspace API、slice selector、schema 与 mutation reducer | [`logicalWorkspace.ts`](../../src/vs/workbench/services/logicalWorkspace/common/logicalWorkspace.ts) |
 | Registry 与页面投影快照 | [`logicalWorkspaceService.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceService.ts) |
 | Remote IPC protocol | [`logicalWorkspaceRemote.ts`](../../src/vs/workbench/services/logicalWorkspace/common/logicalWorkspaceRemote.ts) |
-| 页面 optimistic mutation、单次发送与 refresh reconcile | [`logicalWorkspaceRemoteStateClient.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceRemoteStateClient.ts) |
+| 页面 view-state optimistic mutation、durable Workspace creation 与 refresh reconcile | [`logicalWorkspaceRemoteStateClient.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceRemoteStateClient.ts) |
 | Remote/local backend 选择、旧值迁移与 page-local selection | [`logicalWorkspaceStateStore.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceStateStore.ts) |
 | 远程权威 SQLite、revision 与 mutation serialization | [`logicalWorkspaceStateChannel.ts`](../../src/vs/server/node/logicalWorkspaceStateChannel.ts) |
 | 通用异步 projection 协议 | [`logicalWorkspaceProjection.ts`](../../src/vs/workbench/services/logicalWorkspace/browser/logicalWorkspaceProjection.ts) |

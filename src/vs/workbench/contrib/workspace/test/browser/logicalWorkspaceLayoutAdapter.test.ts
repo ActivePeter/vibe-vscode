@@ -29,10 +29,15 @@ suite('LogicalWorkspaceLayoutAdapter', () => {
 		};
 		const workspace = { id: 'workspace', name: 'Workspace', terminalIds: [], shellLayout: layout };
 		const logicalWorkspaceService = new class extends mock<ILogicalWorkspaceService>() {
+			override readonly state = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
+			override readonly workspaces = this.state.workspaces;
 			override readonly activeWorkspace = workspace;
 			override readonly activationSequence = 0;
+			override readonly isReady = true;
+			override readonly whenReady = Promise.resolve();
 			override readonly onWillChangeActiveWorkspace = Event.None;
 			override readonly onDidChangeActiveWorkspace = Event.None;
+			override readonly onDidChangeState = Event.None;
 			override setShellLayout(): void { }
 		};
 

@@ -471,6 +471,12 @@ export interface IEditorSerializer {
 	serialize(editor: EditorInput): string | undefined;
 
 	/**
+	 * Validates a serialized payload without creating or mutating an editor input. Serializers
+	 * whose deserialize path has external side effects should implement this method.
+	 */
+	canDeserialize?(serializedEditor: string): boolean;
+
+	/**
 	 * Returns an editor from the provided serialized form of the editor. This form matches
 	 * the value returned from the serialize() method.
 	 */

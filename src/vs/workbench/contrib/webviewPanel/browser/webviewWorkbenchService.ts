@@ -6,7 +6,7 @@
 import { CancelablePromise, createCancelablePromise, DeferredPromise } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { memoize } from '../../../../base/common/decorators.js';
-import { isCancellationError } from '../../../../base/common/errors.js';
+import { isCancellationError, onUnexpectedError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Iterable } from '../../../../base/common/iterator.js';
 import { combinedDisposable, Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -302,13 +302,13 @@ export class WebviewEditorService extends Disposable implements IWebviewWorkbenc
 	): void {
 		const topLevelEditor = this.findTopLevelEditorForWebview(webview);
 
-		this._editorService.openEditor(topLevelEditor, {
+		void this._editorService.openEditor(topLevelEditor, {
 			preserveFocus: showOptions.preserveFocus,
 			modal: showOptions.modal,
 			// preserve pre 1.38 behaviour to not make group active when preserveFocus: true
 			// but make sure to restore the editor to fix https://github.com/microsoft/vscode/issues/79633
 			activation: showOptions.preserveFocus ? EditorActivation.RESTORE : undefined
-		}, showOptions.group);
+		}, showOptions.group).catch(onUnexpectedError);
 	}
 
 	private findTopLevelEditorForWebview(webview: WebviewInput): EditorInput {

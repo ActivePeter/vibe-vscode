@@ -372,7 +372,7 @@ suite('AgentSessions', () => {
 
 				const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
 				await logicalWorkspaceService.whenReady;
-				const secondWorkspace = logicalWorkspaceService.createWorkspace('Second');
+				const secondWorkspace = await logicalWorkspaceService.createWorkspace('Second');
 				logicalWorkspaceService.activateWorkspace(secondWorkspace.id, LogicalWorkspaceActivationActor.Picker);
 
 				assert.deepStrictEqual({

@@ -15,12 +15,13 @@ Before running the deployment, tell the user that the skill is starting the 1808
 
 The script must remain the single automation entry for this skill. It:
 
-- keeps the active service on an immutable last-known-good runtime while compiling the canonical checkout;
+- keeps the active service on a self-contained, versioned last-known-good runtime while compiling the canonical checkout;
 - stages and validates a complete runtime snapshot before stopping the active service;
+- copies Node, runtime dependency trees, and server helpers into that snapshot, reusing unchanged files only from the previous versioned release rather than linking to mutable source;
 - switches to the candidate only after the build succeeds, and automatically restores the last-known-good runtime when startup or health checks fail;
 - builds and starts the service entirely from `/mnt/ceph/vibe-vscode`, without invoking another project's control code;
 - preserves the existing state under `/mnt/ceph/dever_for_dev/.dever/vscode-services/state/latest`;
-- waits for an HTTPS `200` response and verifies a `0.0.0.0:18080` listener before succeeding;
+- waits for an HTTPS `200` response, verifies a `0.0.0.0:18080` listener, and confirms the tmux session is running from the expected candidate root before succeeding;
 - fails instead of killing an unrecognized process when the port is not owned by the canonical tmux session.
 
 On failure, report the relevant tail from `latest.log` and leave the error visible. Do not invoke or fall back to `/mnt/ceph/dever_for_dev/third_party/vscode`, do not start an ad-hoc server, and do not touch port `18081` unless the user explicitly expands the deployment scope.

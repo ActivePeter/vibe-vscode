@@ -32,6 +32,7 @@ import { IModalEditorPartOptions } from '../../../../platform/editor/common/edit
 import { EditorPartModalVisibleContext } from '../../../common/contextkeys.js';
 import { ISerializedNode, Orientation } from '../../../../base/browser/ui/grid/grid.js';
 import { clearPreparedSerializedEditorInput, ISerializedEditorGroupModel, ISerializedEditorInput, prepareSerializedEditorInput } from '../../../common/editor/editorGroupModel.js';
+import { EditorInput } from '../../../common/editor/editorInput.js';
 
 interface IEditorPartsUIState {
 	readonly auxiliary: IAuxiliaryEditorPartState[];
@@ -911,7 +912,12 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 		try {
 			for (const input of serializedInputs) {
-				prepareSerializedEditorInput(input, this.instantiationService);
+				const editor = prepareSerializedEditorInput(input, this.instantiationService);
+				if (editor && this.containsEditorInput(editor)) {
+					// Some serializers deliberately return a cached live input. Do not carry that
+					// object across close/dispose; deserialize it again after the old groups close.
+					clearPreparedSerializedEditorInput(input);
+				}
 			}
 			return serializedInputs;
 		} catch {
@@ -922,8 +928,15 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 	private clearPreparedWorkingSetEditorInputs(serializedInputs: readonly ISerializedEditorInput[]): void {
 		for (const input of serializedInputs) {
-			clearPreparedSerializedEditorInput(input)?.dispose();
+			const editor = clearPreparedSerializedEditorInput(input);
+			if (editor && !this.containsEditorInput(editor)) {
+				editor.dispose();
+			}
 		}
+	}
+
+	private containsEditorInput(editor: EditorInput): boolean {
+		return this.parts.some(part => part.getGroups(GroupsOrder.CREATION_TIME).some(group => group.contains(editor)));
 	}
 
 	private indexOfWorkingSet(workingSet: IEditorWorkingSet): number | undefined {

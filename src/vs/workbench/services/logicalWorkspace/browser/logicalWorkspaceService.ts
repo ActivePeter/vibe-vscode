@@ -15,7 +15,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { ILogicalWorkspaceStateStore } from './logicalWorkspaceStateStore.js';
-import { createLogicalWorkspaceSharedState, ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceMutation, ILogicalWorkspaceService, ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, ILogicalWorkspaceStateChangeEvent, ILogicalWorkspaceStateSnapshot, LogicalWorkspaceActivationActor, LogicalWorkspaceMutationType, LogicalWorkspaceStateChangeKind, parseLogicalWorkspaceSharedState } from '../common/logicalWorkspace.js';
+import { createLogicalWorkspaceSharedState, ILogicalWorkspace, ILogicalWorkspaceActivationEvent, ILogicalWorkspaceService, ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, ILogicalWorkspaceStateChangeEvent, ILogicalWorkspaceStateSnapshot, ILogicalWorkspaceViewMutation, LogicalWorkspaceActivationActor, LogicalWorkspaceMutationType, LogicalWorkspaceStateChangeKind, parseLogicalWorkspaceSharedState } from '../common/logicalWorkspace.js';
 
 const LEGACY_LOGICAL_WORKSPACE_STORAGE_KEY = 'workbench.logicalWorkspace.state.v1';
 const LEGACY_PROJECT_CONTEXT_STORAGE_KEY = 'workbench.projectContext.logicalWorkspaces.v2';
@@ -75,6 +75,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 	private _state: ILogicalWorkspaceState;
 	private _activationSequence = 0;
 	private _isReady = false;
+	private acceptSharedStateAfterInitialization = false;
 	get isReady(): boolean { return this._isReady; }
 	readonly whenReady: Promise<void>;
 
@@ -91,7 +92,13 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		const waitForCompleteWorkspace = !configurationMigrated && workspaceContextService.getWorkbenchState() === WorkbenchState.WORKSPACE;
 		const loaded = this.loadState(configurationState);
 		this._state = loaded.state;
-		this._register(stateStore.onDidChangeSharedState(() => this.acceptSharedState()));
+		this._register(stateStore.onDidChangeSharedState(() => {
+			if (!this._isReady) {
+				this.acceptSharedStateAfterInitialization = true;
+				return;
+			}
+			this.acceptSharedState();
+		}));
 		this.whenReady = this.initializeAuthoritativeState(loaded, waitForCompleteWorkspace);
 	}
 
@@ -111,10 +118,14 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		return this._activationSequence;
 	}
 
-	createWorkspace(name: string): ILogicalWorkspace {
+	async createWorkspace(name: string): Promise<ILogicalWorkspace> {
 		const normalizedName = name.trim();
 		if (!normalizedName) {
 			throw new Error('Logical workspace name must not be empty');
+		}
+		await this.whenReady;
+		if (this._store.isDisposed) {
+			throw new Error('Logical workspace service was disposed');
 		}
 
 		const workspace: ILogicalWorkspace = {
@@ -123,8 +134,8 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			terminalIds: [],
 			shellLayout: undefined,
 		};
-		this.commitWorkspaces([...this._state.workspaces, workspace], { type: LogicalWorkspaceMutationType.CreateWorkspace, workspace });
-		return workspace;
+		await this.stateStore.createWorkspace(workspace);
+		return this.getWorkspace(workspace.id);
 	}
 
 	activateWorkspace(workspaceId: string, actor: LogicalWorkspaceActivationActor): void {
@@ -165,7 +176,7 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			: workspace), { type: LogicalWorkspaceMutationType.SetEditorWorkingSet, workspaceId, editorWorkingSet });
 	}
 
-	private commitWorkspaces(workspaces: readonly ILogicalWorkspace[], mutation: ILogicalWorkspaceMutation): void {
+	private commitWorkspaces(workspaces: readonly ILogicalWorkspace[], mutation: ILogicalWorkspaceViewMutation): void {
 		this.setState({ ...this._state, workspaces });
 		this.stateStore.applyMutation(mutation);
 		this._onDidChangeWorkspaces.fire();
@@ -268,16 +279,25 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 			candidate = configurationState || sharedState ? this.loadState(configurationState) : initial;
 		}
 
-		const authoritativeState = await this.stateStore.initializeSharedState(this.createSharedState(candidate.state.workspaces));
+		const initializedState = await this.stateStore.initializeSharedState(this.createSharedState(candidate.state.workspaces));
 		if (this._store.isDisposed) {
 			return;
 		}
+		// A reconnect or reentrant store event can publish a newer authoritative snapshot after the
+		// initialize result was captured. Validate the page-local selection against the latest store
+		// truth before writing it back, never against that now-obsolete result.
+		const authoritativeState = this.parseSharedState(this.stateStore.readSharedState()) ?? initializedState;
+		this.acceptSharedStateAfterInitialization = false;
 		const preferredActiveWorkspaceId = candidate.shouldMarkConfigurationMigrated ? candidate.state.activeWorkspaceId : undefined;
 		this.applyLoadedState({
 			state: this.withActiveWorkspace(authoritativeState, undefined, preferredActiveWorkspaceId),
 			shouldMarkConfigurationMigrated: candidate.shouldMarkConfigurationMigrated,
 		});
 		this._isReady = true;
+		if (this.acceptSharedStateAfterInitialization) {
+			this.acceptSharedStateAfterInitialization = false;
+			this.acceptSharedState();
+		}
 	}
 
 	private applyLoadedState(loaded: ILoadedLogicalWorkspaceState): void {

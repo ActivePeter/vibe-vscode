@@ -24,8 +24,8 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
   ```
 
 - ✅ **Logical Workspace（逻辑工作区）**：可从状态栏或命令面板创建、选择逻辑工作区，无需重新加载页面。切换时会保存并恢复主侧栏、底部面板和辅助侧栏的显隐、尺寸及活动视图。
-  - **远程权威状态**：Workspace catalog、终端归属、布局和编辑器工作集由远程服务端持久化，并在多个浏览器页面间同步；每个页面只在本地保存自己的当前 Workspace 选择。
-  - **终端隔离与持久化**：终端归属于创建它的逻辑工作区。切换工作区时，终端只在前台与后台之间迁移，不会被关闭；稳定的逻辑终端 ID 会贯穿本地/远程 PTY、持久化进程重连和页面恢复。
+  - **远程权威状态**：Workspace catalog、布局和编辑器工作集保存在 Remote SQLite；其他页面刷新或重连后读取最新快照，每个页面只在本地保存自己的当前 Workspace 选择。
+  - **终端隔离与持久化**：终端归属于创建它的逻辑工作区，归属随 PTY 进程 metadata 持久化。切换工作区时，终端只在前台与后台之间迁移，不会被关闭；稳定的逻辑终端 ID 会贯穿本地/远程 PTY、持久化进程重连和页面恢复。
   - ⬜ **Chat / Agent Session Tab 工作集**：Session catalog 与 Agent Sessions 列表保持全局，不归属于任何逻辑工作区。未来每个 Workspace 只恢复自己打开的 Session Tabs；相同 Session 可以同时出现在多个 Workspace，关闭 Tab 不会删除 Session。PR #1 已撤掉提前接入的单一 owner 与列表过滤，尚不把 Session Tab 恢复标为已实现。
 
   ![Logical Workspace 演示](vibe_vscode_doc/pics/vibe_vscode_workspace.gif)

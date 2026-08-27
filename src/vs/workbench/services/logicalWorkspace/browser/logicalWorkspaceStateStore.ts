@@ -14,7 +14,7 @@ import { PersistentConnectionEventType } from '../../../../platform/remote/commo
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IRemoteAgentService } from '../../remote/common/remoteAgentService.js';
-import { applyLogicalWorkspaceMutation, ILogicalWorkspaceMutation, ILogicalWorkspaceSharedState, parseLogicalWorkspaceSharedState } from '../common/logicalWorkspace.js';
+import { applyLogicalWorkspaceMutation, ILogicalWorkspace, ILogicalWorkspaceMutation, ILogicalWorkspaceSharedState, ILogicalWorkspaceViewMutation, LogicalWorkspaceMutationType, parseLogicalWorkspaceSharedState } from '../common/logicalWorkspace.js';
 import { REMOTE_LOGICAL_WORKSPACE_STATE_CHANNEL_NAME } from '../common/logicalWorkspaceRemote.js';
 import { RemoteLogicalWorkspaceStateClient } from './logicalWorkspaceRemoteStateClient.js';
 
@@ -34,7 +34,8 @@ export interface ILogicalWorkspaceStateStore {
 
 	readSharedState(): unknown;
 	initializeSharedState(state: ILogicalWorkspaceSharedState): Promise<ILogicalWorkspaceSharedState>;
-	applyMutation(mutation: ILogicalWorkspaceMutation): void;
+	createWorkspace(workspace: ILogicalWorkspace): Promise<void>;
+	applyMutation(mutation: ILogicalWorkspaceViewMutation): void;
 	readActiveWorkspaceId(physicalWorkspaceId: string): string | undefined;
 	writeActiveWorkspaceId(physicalWorkspaceId: string, workspaceId: string): void;
 }
@@ -106,7 +107,30 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 		return localState;
 	}
 
-	applyMutation(mutation: ILogicalWorkspaceMutation): void {
+	async createWorkspace(workspace: ILogicalWorkspace): Promise<void> {
+		if (this.remoteClient) {
+			await this.remoteClient.createWorkspace(workspace);
+			const state = this.remoteClient.state;
+			if (!state?.workspaces.some(candidate => candidate.id === workspace.id)) {
+				throw new Error(`The remote Logical Workspace '${workspace.id}' was not confirmed`);
+			}
+			this.acceptSharedState(state);
+			return;
+		}
+
+		const state = parseLogicalWorkspaceSharedState(this.sharedState);
+		if (!this.localInitialized || !state) {
+			throw new Error('The local Logical Workspace state is not initialized');
+		}
+		const next = applyLogicalWorkspaceMutation(state, { type: LogicalWorkspaceMutationType.CreateWorkspace, workspace });
+		if (next === state) {
+			return;
+		}
+		this.persistLocalState(next);
+		this.acceptSharedState(next);
+	}
+
+	applyMutation(mutation: ILogicalWorkspaceViewMutation): void {
 		if (this.remoteClient) {
 			this.remoteClient.mutate(mutation);
 			const projectedState = this.remoteClient.state;

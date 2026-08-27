@@ -5,6 +5,7 @@
 
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, dispose, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { EditorActivation } from '../../../../platform/editor/common/editor.js';
@@ -237,7 +238,18 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 
 	reviveInput(deserializedInput: IDeserializedTerminalEditorInput): EditorInput {
 		const newDeserializedInput = { ...deserializedInput, findRevivedId: true };
-		const instance = this._terminalInstanceService.createInstance({ attachPersistentProcess: newDeserializedInput }, TerminalLocation.Editor);
+		const backendCwd = deserializedInput.remoteAuthority === null
+			? URI.file(deserializedInput.cwd || '/')
+			: typeof deserializedInput.remoteAuthority === 'string'
+				? URI.from({ scheme: Schemas.vscodeRemote, authority: deserializedInput.remoteAuthority, path: deserializedInput.cwd || '/' })
+				: undefined;
+		const instance = this._terminalInstanceService.createInstance({
+			attachPersistentProcess: newDeserializedInput,
+			logicalWorkspaceId: newDeserializedInput.logicalWorkspaceId,
+			logicalTerminalId: newDeserializedInput.logicalTerminalId,
+			forcePersist: true,
+			cwd: backendCwd,
+		}, TerminalLocation.Editor);
 		const input = this._instantiationService.createInstance(TerminalEditorInput, instance.resource, instance);
 		this._registerInstance(instance.resource.path, input, instance);
 		return input;

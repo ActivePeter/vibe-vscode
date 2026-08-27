@@ -50,9 +50,9 @@ import { basename, dirname as uriDirname } from '../../../../base/common/resourc
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import './logicalWorkspace.contribution.js';
+import './logicalWorkspaceEditorAdapter.js';
+import './logicalWorkspaceTerminalAdapter.js';
 import { LogicalWorkspaceLayoutAdapter } from './logicalWorkspaceLayoutAdapter.js';
-import { LogicalWorkspaceEditorAdapter } from './logicalWorkspaceEditorAdapter.js';
-import { LogicalWorkspaceTerminalAdapter } from './logicalWorkspaceTerminalAdapter.js';
 import { WorkspaceProjectStatusbar } from './workspaceProjectStatusbar.js';
 
 const BANNER_RESTRICTED_MODE = 'workbench.banner.restrictedMode';
@@ -710,9 +710,7 @@ export class WorkspaceTrustUXHandler extends Disposable implements IWorkbenchCon
 registerWorkbenchContribution2(WorkspaceTrustRequestHandler.ID, WorkspaceTrustRequestHandler, WorkbenchPhase.BlockRestore);
 Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(WorkspaceTrustUXHandler, LifecyclePhase.Restored);
 registerWorkbenchContribution2(WorkspaceProjectStatusbar.ID, WorkspaceProjectStatusbar, WorkbenchPhase.BlockRestore);
-registerWorkbenchContribution2(LogicalWorkspaceTerminalAdapter.ID, LogicalWorkspaceTerminalAdapter, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(LogicalWorkspaceLayoutAdapter.ID, LogicalWorkspaceLayoutAdapter, WorkbenchPhase.AfterRestored);
-registerWorkbenchContribution2(LogicalWorkspaceEditorAdapter.ID, LogicalWorkspaceEditorAdapter, WorkbenchPhase.AfterRestored);
 
 
 /**

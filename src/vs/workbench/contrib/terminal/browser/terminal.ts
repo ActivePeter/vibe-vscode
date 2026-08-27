@@ -592,6 +592,8 @@ export interface ITerminalService extends ITerminalInstanceHost {
 	 * @param forceSaveState Used when the window is shutting down and we need to reveal and save hideFromUser terminals
 	 */
 	showBackgroundTerminal(instance: ITerminalInstance, suppressSetActive?: boolean): Promise<void>;
+	/** Reuses an already revived background/editor instance when restoring a Terminal editor tab. */
+	reviveTerminalEditorInput(input: IDeserializedTerminalEditorInput): EditorInput | undefined;
 	/**
 	 * Moves a visible terminal instance to the background. The terminal process
 	 * remains alive but the instance is removed from its group/editor and tracked
@@ -712,6 +714,10 @@ export const terminalEditorId = 'terminalEditor';
 
 interface ITerminalEditorInputObject {
 	readonly id: number;
+	readonly logicalWorkspaceId?: string;
+	readonly logicalTerminalId?: string;
+	/** `null` identifies the local backend; `undefined` is the legacy pre-namespace payload. */
+	readonly remoteAuthority?: string | null;
 	readonly pid: number;
 	readonly title: string;
 	readonly titleSource: TitleEventSource;

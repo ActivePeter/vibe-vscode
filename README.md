@@ -24,8 +24,8 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
   ```
 
 - ✅ **Logical Workspace**: Create and select logical workspaces from the status bar or Command Palette without reloading the page. Switching saves and restores the visibility, size, and active view of the primary sidebar, panel, and secondary sidebar.
-  - **Remote authoritative state**: The workspace catalog, terminal ownership, layouts, and editor working sets are persisted by the remote server and synchronized across browser pages. Each page keeps only its own active Workspace selection locally.
-  - **Terminal isolation and persistence**: A terminal belongs to the logical workspace in which it was created. Switching workspaces moves terminals between foreground and background without closing them. A stable logical terminal ID survives local or remote PTYs, persistent-process reconnection, and page restoration.
+  - **Remote authoritative state**: The workspace catalog, layouts, and editor working sets are stored in remote SQLite. Other pages read the latest snapshot after refresh or reconnect, while each page keeps its active Workspace selection locally.
+  - **Terminal isolation and persistence**: A terminal belongs to the logical workspace in which it was created, with ownership persisted in PTY process metadata. Switching workspaces moves terminals between foreground and background without closing them. A stable logical terminal ID survives local or remote PTYs, persistent-process reconnection, and page restoration.
   - ⬜ **Chat / Agent session-tab working sets**: The session catalog and Agent Sessions list remain global and are not owned by a logical workspace. A future workspace projection will restore only its open session tabs; the same session may appear in multiple workspaces, and closing a tab will not delete the session. PR #1 removes the premature single-owner filtering and does not claim session-tab restoration as implemented.
 
   ![Logical Workspace demo](vibe_vscode_doc/pics/vibe_vscode_workspace.gif)

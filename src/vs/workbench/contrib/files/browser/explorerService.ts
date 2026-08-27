@@ -166,8 +166,13 @@ export class ExplorerService implements IExplorerService {
 		}
 
 		this.activeRoot = resource;
-		await this.view?.closeFind();
-		await this.view?.setTreeInput();
+		try {
+			await this.view?.closeFind();
+		} finally {
+			// The Project authority has already changed. Even when provider cleanup fails, converge
+			// the tree now so a same-target retry cannot be suppressed by the early return above.
+			await this.view?.setTreeInput();
+		}
 	}
 
 	get sortOrderConfiguration(): ISortOrderConfiguration {

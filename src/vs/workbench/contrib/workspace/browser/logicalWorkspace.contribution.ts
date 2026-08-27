@@ -61,7 +61,7 @@ export class PickLogicalWorkspaceAction extends Action2 {
 				return;
 			}
 
-			const workspace = logicalWorkspaceService.createWorkspace(name);
+			const workspace = await logicalWorkspaceService.createWorkspace(name);
 			logicalWorkspaceService.activateWorkspace(workspace.id, LogicalWorkspaceActivationActor.Picker);
 			return;
 		}

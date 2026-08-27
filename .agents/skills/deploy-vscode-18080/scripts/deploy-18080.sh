@@ -398,10 +398,10 @@ require_command tmux
 require_source_tree
 require_service_state
 
-readonly workspace_path="$(resolve_workspace_path)"
-prepare_active_runtime "$workspace_path"
+readonly WORKSPACE_PATH="$(resolve_workspace_path)"
+prepare_active_runtime "$WORKSPACE_PATH"
 printf 'Building and deploying from %s...\n' "$SOURCE_ROOT"
 build_current
 candidate_runtime=
 create_runtime_snapshot candidate_runtime
-activate_candidate_runtime "$candidate_runtime" "$workspace_path"
+activate_candidate_runtime "$candidate_runtime" "$WORKSPACE_PATH"

@@ -222,6 +222,10 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 				{ serializeBuffersForPostMessage: initData.serializeBuffersForPostMessage },
 				fullscreen ? WebviewPanelPresentation.FullscreenModal : WebviewPanelPresentation.Editor,
 			);
+			// Opening the editor can emit its initial active/visible events before the handle is
+			// registered above. Publish the mounted state explicitly so ExtHost does not retain
+			// its optimistic construction defaults until an unrelated editor event occurs.
+			this.updateWebviewViewStates(this._editorService.activeEditor);
 		} catch (error) {
 			webview.dispose();
 			throw error;

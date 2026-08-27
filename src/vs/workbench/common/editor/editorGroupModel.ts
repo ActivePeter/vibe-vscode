@@ -40,6 +40,38 @@ export interface ISerializedEditorInput {
 	readonly value: string;
 }
 
+interface IPreparedSerializedEditorInput {
+	readonly editor: EditorInput | undefined;
+}
+
+const preparedSerializedEditorInputs = new WeakMap<ISerializedEditorInput, IPreparedSerializedEditorInput>();
+
+/**
+ * Deserializes an editor payload without yet attaching it to a group. The prepared input is
+ * consumed by the next EditorGroupModel restore, allowing callers to validate an entire state
+ * before they close or dispose any existing groups without deserializing the input twice.
+ */
+export function prepareSerializedEditorInput(serialized: ISerializedEditorInput, instantiationService: IInstantiationService): EditorInput | undefined {
+	const serializer = Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).getEditorSerializer(serialized.id);
+	const candidate = serializer?.deserialize(instantiationService, serialized.value);
+	const editor = candidate instanceof EditorInput ? candidate : undefined;
+	preparedSerializedEditorInputs.set(serialized, { editor });
+	return editor;
+}
+
+/** Clears a prepared payload that was not consumed by an EditorGroupModel restore. */
+export function clearPreparedSerializedEditorInput(serialized: ISerializedEditorInput): EditorInput | undefined {
+	const prepared = preparedSerializedEditorInputs.get(serialized);
+	preparedSerializedEditorInputs.delete(serialized);
+	return prepared?.editor;
+}
+
+function takePreparedSerializedEditorInput(serialized: ISerializedEditorInput): IPreparedSerializedEditorInput | undefined {
+	const prepared = preparedSerializedEditorInputs.get(serialized);
+	preparedSerializedEditorInputs.delete(serialized);
+	return prepared;
+}
+
 export interface ISerializedEditorGroupModel {
 	readonly id: number;
 	readonly locked?: boolean;
@@ -1233,13 +1265,16 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 		this.editors = coalesce(data.editors.map((e, index) => {
 			let editor: EditorInput | undefined;
 
-			const editorSerializer = registry.getEditorSerializer(e.id);
-			if (editorSerializer) {
-				const deserializedEditor = editorSerializer.deserialize(this.instantiationService, e.value);
-				if (deserializedEditor instanceof EditorInput) {
-					editor = deserializedEditor;
-					this.registerEditorListeners(editor);
-				}
+			const prepared = takePreparedSerializedEditorInput(e);
+			if (prepared) {
+				editor = prepared.editor;
+			} else {
+				const editorSerializer = registry.getEditorSerializer(e.id);
+				const deserializedEditor = editorSerializer?.deserialize(this.instantiationService, e.value);
+				editor = deserializedEditor instanceof EditorInput ? deserializedEditor : undefined;
+			}
+			if (editor) {
+				this.registerEditorListeners(editor);
 			}
 
 			if (!editor && typeof data.sticky === 'number' && index <= data.sticky) {

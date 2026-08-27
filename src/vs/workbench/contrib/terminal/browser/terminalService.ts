@@ -238,7 +238,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async showProfileQuickPick(type: 'setDefault' | 'createInstance', cwd?: string | URI): Promise<ITerminalInstance | undefined> {
-		const creationContext = this._captureTerminalCreationContext();
+		const creationContext = this._resolveTerminalCreationContext();
 		const quickPick = this._instantiationService.createInstance(TerminalProfileQuickpick);
 		const result = await quickPick.showAndGetResult(type);
 		if (!result) {
@@ -249,6 +249,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 		const keyMods: IKeyMods | undefined = result.keyMods;
 		if (type === 'createInstance') {
+			const resolvedCreationContext = await creationContext;
 			const activeInstance = this.getDefaultInstanceHost().activeInstance;
 			const defaultLocation = this._terminalConfigurationService.defaultLocation;
 			let instance;
@@ -259,15 +260,15 @@ export class TerminalService extends Disposable implements ITerminalService {
 					color: result.config.options?.color,
 					location: !!(keyMods?.alt && activeInstance) ? { splitActiveTerminal: true } : defaultLocation,
 					titleTemplate: result.config.titleTemplate,
-					creationContext: this._withLogicalTerminalIdentity(creationContext),
+					creationContext: this._withLogicalTerminalIdentity(resolvedCreationContext),
 				});
 				return;
 			} else if (result.config && hasKey(result.config, { profileName: true })) {
 				if (keyMods?.alt && activeInstance) {
 					// create split, only valid if there's an active instance
-					instance = await this.createTerminal({ location: { parentTerminal: activeInstance }, config: result.config, cwd, creationContext });
+					instance = await this.createTerminal({ location: { parentTerminal: activeInstance }, config: result.config, cwd, creationContext: resolvedCreationContext });
 				} else {
-					instance = await this.createTerminal({ location: defaultLocation, config: result.config, cwd, creationContext });
+					instance = await this.createTerminal({ location: defaultLocation, config: result.config, cwd, creationContext: resolvedCreationContext });
 				}
 			}
 
@@ -993,7 +994,9 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async createTerminal(options?: ICreateTerminalOptions): Promise<ITerminalInstance> {
-		const creationContext = this._captureTerminalCreationContext(options?.creationContext);
+		// Capture an already-authoritative owner synchronously so later profile/CWD awaits cannot
+		// retarget the operation. During startup, defer the implicit capture until the catalog is ready.
+		const creationContext = this._resolveTerminalCreationContext(options?.creationContext);
 
 		// Await the initialization of available profiles as long as this is not a pty terminal or a
 		// local terminal in a remote workspace as profile won't be used in those cases and these
@@ -1039,7 +1042,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		// If it's a custom pty implementation, we did not await the profiles ready, so
 		// we cannot launch the contributed profile and doing so would cause an error
 		if (!shellLaunchConfig.customPtyImplementation && contributedProfile) {
-			const delegatedCreationContext = this._withLogicalTerminalIdentity(creationContext);
+			const delegatedCreationContext = this._withLogicalTerminalIdentity(await creationContext);
 			const resolvedLocation = await this.resolveLocation(options?.location);
 			let location: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean } | undefined;
 			if (splitActiveTerminal) {
@@ -1065,7 +1068,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 
 		if (!shellLaunchConfig.customPtyImplementation && !this.isProcessSupportRegistered) {
-			const delegatedCreationContext = this._withLogicalTerminalIdentity(creationContext);
+			const delegatedCreationContext = this._withLogicalTerminalIdentity(await creationContext);
 			const resolvedLocation = await this.resolveLocation(options?.location);
 			let location: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean } | undefined;
 			if (splitActiveTerminal) {
@@ -1096,7 +1099,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 
 		await this._logicalWorkspaceService.whenReady;
-		this._prepareLogicalWorkspaceTerminal(shellLaunchConfig, creationContext);
+		this._prepareLogicalWorkspaceTerminal(shellLaunchConfig, await creationContext);
 		this._evaluateLocalCwd(shellLaunchConfig);
 		const location = await this.resolveLocation(options?.location) || this._terminalConfigurationService.defaultLocation;
 
@@ -1124,10 +1127,20 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return instance;
 	}
 
-	private _captureTerminalCreationContext(context?: ITerminalCreationContext): ITerminalCreationContext {
+	private _resolveTerminalCreationContext(context?: ITerminalCreationContext): ITerminalCreationContext | Promise<ITerminalCreationContext> {
+		if (context) {
+			return context;
+		}
+		if (!this._logicalWorkspaceService.isReady) {
+			return this._logicalWorkspaceService.whenReady.then(() => this._captureTerminalCreationContext());
+		}
+
+		return this._captureTerminalCreationContext();
+	}
+
+	private _captureTerminalCreationContext(): ITerminalCreationContext {
 		return {
-			logicalWorkspaceId: context?.logicalWorkspaceId ?? this._logicalWorkspaceService.activeWorkspace.id,
-			logicalTerminalId: context?.logicalTerminalId,
+			logicalWorkspaceId: this._logicalWorkspaceService.activeWorkspace.id,
 		};
 	}
 

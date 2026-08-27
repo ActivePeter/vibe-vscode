@@ -94,27 +94,42 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 			if (getChatSessionType(model.sessionResource) !== this.chatSessionType) {
 				return;
 			}
-
-			try {
-				await this.refresh(CancellationToken.None);
-			} catch {
-				// Throw-classified catalog failures are already logged. A later model/provider event can retry.
-				return;
-			}
 			if (this._isDisposed) {
 				return;
 			}
 
-			this.updateLiveSessionItem(model);
-
+			// Install the live projection before the fallible catalog reconciliation. A failed
+			// initial refresh must not permanently disconnect this already-created model.
+			let publishLiveChanges = false;
 			const requestChangeListener = model.lastRequestObs.map(last => last?.response && observableSignalFromEvent('chatSessions.modelRequestChangeListener', last.response.onDidChange));
 			const modelChangeListener = observableSignalFromEvent('chatSessions.modelChangeListener', model.onDidChange);
-			this._modelListeners.set(model.sessionResource, autorun(reader => {
+			const modelListener = autorun(reader => {
 				requestChangeListener.read(reader)?.read(reader);
 				modelChangeListener.read(reader);
 
+				if (publishLiveChanges) {
+					this.updateLiveSessionItem(model);
+				}
+			});
+			this._modelListeners.set(model.sessionResource, modelListener);
+
+			try {
+				await this.refresh(CancellationToken.None);
+			} catch {
+				// Throw-classified catalog failures are already logged. Live model events remain connected.
+				if (this._isDisposed || this._modelListeners.get(model.sessionResource) !== modelListener) {
+					return;
+				}
+				publishLiveChanges = true;
 				this.updateLiveSessionItem(model);
-			}));
+				return;
+			}
+			if (this._isDisposed || this._modelListeners.get(model.sessionResource) !== modelListener) {
+				return;
+			}
+
+			publishLiveChanges = true;
+			this.updateLiveSessionItem(model);
 		};
 
 		const registerModel = (model: IChatModel) => {

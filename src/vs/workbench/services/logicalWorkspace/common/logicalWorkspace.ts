@@ -243,6 +243,8 @@ export interface ILogicalWorkspaceService {
 	readonly workspaces: readonly ILogicalWorkspace[];
 	readonly activeWorkspace: ILogicalWorkspace;
 	readonly activationSequence: number;
+	/** Whether the authoritative catalog has been applied. Prefer `whenReady` when waiting is possible. */
+	readonly isReady: boolean;
 	readonly whenReady: Promise<void>;
 
 	createWorkspace(name: string): ILogicalWorkspace;

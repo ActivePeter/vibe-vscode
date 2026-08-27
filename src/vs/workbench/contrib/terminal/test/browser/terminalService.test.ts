@@ -7,6 +7,7 @@ import { deepStrictEqual, fail, rejects, strictEqual } from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
+import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
@@ -17,7 +18,7 @@ import { TerminalGroup } from '../../browser/terminalGroup.js';
 import { TerminalService } from '../../browser/terminalService.js';
 import { ITerminalProfileService, TERMINAL_CONFIG_SECTION } from '../../common/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../services/environment/common/environmentService.js';
-import { ILogicalWorkspaceService, LogicalWorkspaceActivationActor } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILogicalWorkspace, ILogicalWorkspaceService, LogicalWorkspaceActivationActor } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { IRemoteAgentService } from '../../../../services/remote/common/remoteAgentService.js';
 import { TestEnvironmentService, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import type { IConfigurationChangeEvent } from '../../../../../platform/configuration/common/configuration.js';
@@ -241,6 +242,114 @@ suite('Workbench - TerminalService', () => {
 	});
 
 	suite('logical workspace terminals', () => {
+		async function createServiceWithPendingLogicalWorkspaceAuthority() {
+			const authorityReady = new DeferredPromise<void>();
+			const provisionalWorkspace: ILogicalWorkspace = { id: 'provisional', name: 'Provisional', terminalIds: [], shellLayout: undefined };
+			const authoritativeWorkspace: ILogicalWorkspace = { id: 'authoritative', name: 'Authoritative', terminalIds: [], shellLayout: undefined };
+			let activeWorkspace = provisionalWorkspace;
+			let isReady = false;
+			const whenReady = (async () => {
+				await authorityReady.p;
+				activeWorkspace = authoritativeWorkspace;
+				isReady = true;
+			})();
+			const logicalWorkspaceService = new class extends mock<ILogicalWorkspaceService>() {
+				override get activeWorkspace(): ILogicalWorkspace { return activeWorkspace; }
+				override get workspaces(): readonly ILogicalWorkspace[] { return [activeWorkspace]; }
+				override get isReady(): boolean { return isReady; }
+				override readonly whenReady = whenReady;
+			}();
+
+			const controlledInstantiationService = workbenchInstantiationService({
+				configurationService: () => configurationService,
+			}, store);
+			controlledInstantiationService.stub(ILogicalWorkspaceService, logicalWorkspaceService);
+			controlledInstantiationService.stub(ITerminalInstanceService, 'getBackend', undefined);
+			controlledInstantiationService.stub(ITerminalInstanceService, 'getRegisteredBackends', []);
+			controlledInstantiationService.stub(IRemoteAgentService, 'getConnection', null);
+			const service = store.add(controlledInstantiationService.createInstance(TerminalService));
+			controlledInstantiationService.stub(ITerminalService, service);
+			await timeout(0); // Allow the service's deferred TerminalEditorStyle to register for disposal.
+
+			return { authorityReady, authoritativeWorkspace, instantiationService: controlledInstantiationService, service };
+		}
+
+		test('should wait for the authoritative Workspace before assigning a new terminal owner', async () => {
+			const controlled = await createServiceWithPendingLogicalWorkspaceAuthority();
+			const shellLaunchConfig: IShellLaunchConfig = { executable: '/bin/sh' };
+			controlled.instantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', () => shellLaunchConfig);
+			let terminalCreated = false;
+			const instance = { shellLaunchConfig, shellType: undefined } satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			controlled.instantiationService.stub(ITerminalGroupService, 'createGroup', () => {
+				terminalCreated = true;
+				return { terminalInstances: [instance] } satisfies Partial<ITerminalGroup> as ITerminalGroup;
+			});
+			controlled.service.registerProcessSupport(true);
+
+			const creation = controlled.service.createTerminal({
+				config: { executable: '/bin/sh' },
+				skipContributedProfileCheck: true,
+			});
+			await timeout(0);
+			strictEqual(terminalCreated, false);
+
+			await controlled.authorityReady.complete();
+			await creation;
+
+			deepStrictEqual({
+				logicalWorkspaceId: shellLaunchConfig.logicalWorkspaceId,
+				logicalTerminalId: typeof shellLaunchConfig.logicalTerminalId,
+			}, {
+				logicalWorkspaceId: controlled.authoritativeWorkspace.id,
+				logicalTerminalId: 'string',
+			});
+		});
+
+		test('should wait for the authoritative Workspace before delegating a contributed terminal', async () => {
+			const controlled = await createServiceWithPendingLogicalWorkspaceAuthority();
+			const shellLaunchConfig: IShellLaunchConfig = { executable: '/bin/sh' };
+			controlled.instantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', () => shellLaunchConfig);
+			const instance = {
+				shellLaunchConfig,
+				shellType: undefined,
+				focusWhenReady: async () => { },
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			controlled.instantiationService.stub(ITerminalGroupService, 'instances', [instance]);
+			controlled.instantiationService.stub(ITerminalGroupService, 'createGroup', () => ({ terminalInstances: [instance] } satisfies Partial<ITerminalGroup> as ITerminalGroup));
+			controlled.instantiationService.stub(ITerminalGroupService, 'setActiveInstanceByIndex', () => { });
+			let providerEntered = false;
+			controlled.instantiationService.stub(ITerminalProfileService, 'getContributedProfileProvider', () => ({
+				createContributedTerminalProfile: async (options: ICreateContributedTerminalProfileOptions) => {
+					providerEntered = true;
+					await controlled.service.createTerminal({
+						config: { executable: '/bin/sh' },
+						skipContributedProfileCheck: true,
+						creationContext: options.creationContext,
+					});
+				},
+			}));
+			controlled.service.registerProcessSupport(true);
+
+			const creation = controlled.service.createTerminal({
+				config: { title: 'Contributed', id: 'contributed', extensionIdentifier: 'test.extension' },
+			});
+			await timeout(0);
+			strictEqual(providerEntered, false);
+
+			await controlled.authorityReady.complete();
+			await creation;
+
+			deepStrictEqual({
+				providerEntered,
+				logicalWorkspaceId: shellLaunchConfig.logicalWorkspaceId,
+				logicalTerminalId: typeof shellLaunchConfig.logicalTerminalId,
+			}, {
+				providerEntered: true,
+				logicalWorkspaceId: controlled.authoritativeWorkspace.id,
+				logicalTerminalId: 'string',
+			});
+		});
+
 		test('should retain the initiating Workspace while terminal profiles resolve', async () => {
 			const profilesReady = new DeferredPromise<void>();
 			instantiationService.stub(ITerminalProfileService, 'profilesReady', profilesReady.p);

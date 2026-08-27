@@ -9,6 +9,8 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
+import { Registry } from '../../../../../platform/registry/common/platform.js';
+import { EditorExtensions, IEditorFactoryRegistry } from '../../../../common/editor.js';
 import { IAuxiliaryWindowService } from '../../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../workbenchTestServices.js';
 
@@ -40,16 +42,33 @@ suite('Editor Parts', () => {
 	test('rejects malformed serialized working sets without changing existing editors', async () => {
 		const instantiationService = createInstantiationService();
 		disposables.add(registerTestEditor(testEditorId, [new SyncDescriptor(TestFileEditorInput)], testEditorId));
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
 		const parts = await createEditorParts(instantiationService, disposables);
 		const editor = disposables.add(new TestFileEditorInput(URI.file('/working-set.txt'), testEditorId));
 		await parts.activeGroup.openEditor(editor, { pinned: true });
 
 		const workingSet = JSON.parse(parts.serializeWorkingSet()) as { readonly main: Record<string, unknown>; readonly auxiliary: Record<string, unknown> };
+		type SerializedNode = { type: 'branch'; data: SerializedNode[] } | { type: 'leaf'; data: { editors: { id: string; value: string }[]; mru: number[] } };
+		const malformedEditorPayload = JSON.parse(JSON.stringify(workingSet)) as { main: { serializedGrid: { root: SerializedNode } }; auxiliary: Record<string, unknown> };
+		const corruptFirstEditor = (node: SerializedNode): boolean => {
+			if (node.type === 'branch') {
+				return node.data.some(corruptFirstEditor);
+			}
+			if (node.data.editors.length) {
+				node.data.editors[0].value = '{';
+			} else {
+				node.data.editors.push({ id: testEditorId, value: '{' });
+				node.data.mru = [0];
+			}
+			return true;
+		};
+		assert.strictEqual(corruptFirstEditor(malformedEditorPayload.main.serializedGrid.root), true);
 		const malformedWorkingSets = [
 			{ ...workingSet, main: { ...workingSet.main, serializedGrid: {} } },
 			{ ...workingSet, main: { ...workingSet.main, mostRecentActiveGroups: 'invalid' } },
 			{ ...workingSet, auxiliary: { ...workingSet.auxiliary, mru: [0, 0] } },
 			{ ...workingSet, auxiliary: { auxiliary: [{ state: {} }], mru: [0, 1] } },
+			malformedEditorPayload,
 		];
 
 		const results = [];

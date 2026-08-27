@@ -29,6 +29,7 @@ class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorks
 
 	private sharedState: unknown;
 	private readonly activeWorkspaceIds = new Map<string, string>();
+	private initializeGate: DeferredPromise<ILogicalWorkspaceSharedState> | undefined;
 	writeCount = 0;
 
 	readSharedState(): unknown {
@@ -36,9 +37,10 @@ class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorks
 	}
 
 	async initializeSharedState(state: ILogicalWorkspaceSharedState): Promise<ILogicalWorkspaceSharedState> {
-		this.sharedState = state;
+		this.sharedState = this.initializeGate ? await this.initializeGate.p : state;
+		this.initializeGate = undefined;
 		this.writeCount++;
-		return state;
+		return this.sharedState as ILogicalWorkspaceSharedState;
 	}
 
 	applyMutation(mutation: ILogicalWorkspaceMutation): void {
@@ -62,6 +64,10 @@ class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorks
 	setSharedState(state: unknown): void {
 		this.sharedState = state;
 		this._onDidChangeSharedState.fire();
+	}
+
+	delayInitialize(): DeferredPromise<ILogicalWorkspaceSharedState> {
+		return this.initializeGate = new DeferredPromise<ILogicalWorkspaceSharedState>();
 	}
 }
 
@@ -359,6 +365,41 @@ suite('LogicalWorkspaceService', () => {
 		}, {
 			activeWorkspaceId: workspace.id,
 			sharedStateWrites: writesBeforeActivation,
+		});
+	});
+
+	test('preserves a valid page selection until the authoritative catalog is ready', async () => {
+		const physicalWorkspaceId = contextService.getWorkspace().id;
+		const selectedWorkspaceId = 'workspace-b';
+		stateStore.writeActiveWorkspaceId(physicalWorkspaceId, selectedWorkspaceId);
+		const initialize = stateStore.delayInitialize();
+		const service = createService();
+
+		assert.deepStrictEqual({
+			isReady: service.isReady,
+			storedActiveWorkspaceId: stateStore.readActiveWorkspaceId(physicalWorkspaceId),
+		}, {
+			isReady: false,
+			storedActiveWorkspaceId: selectedWorkspaceId,
+		});
+
+		await initialize.complete({
+			schemaVersion: 2,
+			workspaces: [
+				{ id: 'workspace-a', name: 'A', terminalIds: [], shellLayout: undefined },
+				{ id: selectedWorkspaceId, name: 'B', terminalIds: [], shellLayout: undefined },
+			],
+		});
+		await service.whenReady;
+
+		assert.deepStrictEqual({
+			isReady: service.isReady,
+			activeWorkspaceId: service.activeWorkspace.id,
+			storedActiveWorkspaceId: stateStore.readActiveWorkspaceId(physicalWorkspaceId),
+		}, {
+			isReady: true,
+			activeWorkspaceId: selectedWorkspaceId,
+			storedActiveWorkspaceId: selectedWorkspaceId,
 		});
 	});
 

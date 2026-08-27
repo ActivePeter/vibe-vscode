@@ -759,6 +759,28 @@ suite('LocalAgentsSessionsController', () => {
 	});
 
 	suite('Events', () => {
+		test('should keep model listeners after the initial catalog refresh fails', async () => {
+			const controller = createController();
+			let liveReadCount = 0;
+			mockChatService.getLiveSessionItems = async () => {
+				liveReadCount++;
+				throw new Error('initial live enumeration failed');
+			};
+			const sessionResource = LocalChatSessionUri.forSession('initial-refresh-failure');
+			const mockModel = createMockChatModel({ sessionResource, hasRequests: true });
+
+			mockChatService.addSession(mockModel);
+			await timeout(0);
+			const titleUpdated = Event.toPromise(Event.filter(controller.onDidChangeChatSessionItems, delta =>
+				(delta.addedOrUpdated ?? []).some(item => item.resource.toString() === sessionResource.toString() && item.label === 'Recovered Title')));
+
+			mockModel.setCustomTitle('Recovered Title');
+			await titleUpdated;
+
+			assert.ok(liveReadCount >= 1);
+			assert.strictEqual(controller.items.find(item => item.resource.toString() === sessionResource.toString())?.label, 'Recovered Title');
+		});
+
 		test('should fire onDidChangeChatSessionItems when model progress changes', async () => {
 			return runWithFakedTimers({}, async () => {
 				const controller = createController();

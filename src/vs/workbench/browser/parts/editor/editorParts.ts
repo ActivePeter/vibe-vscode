@@ -30,7 +30,8 @@ import { IStatusbarService } from '../../../services/statusbar/browser/statusbar
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IModalEditorPartOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorPartModalVisibleContext } from '../../../common/contextkeys.js';
-import { Orientation } from '../../../../base/browser/ui/grid/grid.js';
+import { ISerializedNode, Orientation } from '../../../../base/browser/ui/grid/grid.js';
+import { clearPreparedSerializedEditorInput, ISerializedEditorGroupModel, ISerializedEditorInput, prepareSerializedEditorInput } from '../../../common/editor/editorGroupModel.js';
 
 interface IEditorPartsUIState {
 	readonly auxiliary: IAuxiliaryEditorPartState[];
@@ -165,7 +166,7 @@ function isSerializedEditorGridNode(candidate: unknown, groupIds: Set<number>, r
 	return true;
 }
 
-function isSerializedEditorGroup(candidate: unknown): candidate is { readonly id: number } {
+function isSerializedEditorGroup(candidate: unknown): candidate is ISerializedEditorGroupModel {
 	if (!isRecord(candidate) || !isGroupIdentifier(candidate.id) || !Array.isArray(candidate.editors) || !Array.isArray(candidate.mru)) {
 		return false;
 	}
@@ -859,26 +860,70 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	}
 
 	private async doApplyWorkingSet(workingSetState: ISerializedEditorWorkingSetState | 'empty', options?: IEditorWorkingSetOptions): Promise<boolean> {
-		// Apply state: begin with auxiliary windows first because it helps to keep
-		// editors around that need confirmation by moving them into the main part.
-		// Also, in rare cases, the auxiliary part may not be able to apply the state
-		// for certain editors that cannot move to the main part.
-		const applied = await this.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.auxiliary);
-		if (!applied) {
+		const preparedInputs = workingSetState === 'empty' ? undefined : this.prepareWorkingSetEditorInputs(workingSetState);
+		if (preparedInputs === false) {
 			return false;
 		}
-		await this.mainPart.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.main, options);
 
-		// Restore Focus unless instructed otherwise
-		if (!options?.preserveFocus) {
-			const mostRecentActivePart = this.mostRecentActiveParts.at(0);
-			if (mostRecentActivePart) {
-				await mostRecentActivePart.whenReady;
-				mostRecentActivePart.activeGroup.focus();
+		try {
+			// Apply state: begin with auxiliary windows first because it helps to keep
+			// editors around that need confirmation by moving them into the main part.
+			// Also, in rare cases, the auxiliary part may not be able to apply the state
+			// for certain editors that cannot move to the main part.
+			const applied = await this.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.auxiliary);
+			if (!applied) {
+				return false;
+			}
+			await this.mainPart.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.main, options);
+
+			// Restore Focus unless instructed otherwise
+			if (!options?.preserveFocus) {
+				const mostRecentActivePart = this.mostRecentActiveParts.at(0);
+				if (mostRecentActivePart) {
+					await mostRecentActivePart.whenReady;
+					mostRecentActivePart.activeGroup.focus();
+				}
+			}
+
+			return true;
+		} finally {
+			if (preparedInputs) {
+				this.clearPreparedWorkingSetEditorInputs(preparedInputs);
 			}
 		}
+	}
 
-		return true;
+	private prepareWorkingSetEditorInputs(workingSetState: ISerializedEditorWorkingSetState): readonly ISerializedEditorInput[] | false {
+		const serializedInputs: ISerializedEditorInput[] = [];
+		const collect = (node: ISerializedNode): void => {
+			if (node.type === 'branch') {
+				for (const child of node.data) {
+					collect(child);
+				}
+			} else {
+				serializedInputs.push(...(node.data as ISerializedEditorGroupModel).editors);
+			}
+		};
+		collect(workingSetState.main.serializedGrid.root);
+		for (const auxiliary of workingSetState.auxiliary.auxiliary) {
+			collect(auxiliary.state.serializedGrid.root);
+		}
+
+		try {
+			for (const input of serializedInputs) {
+				prepareSerializedEditorInput(input, this.instantiationService);
+			}
+			return serializedInputs;
+		} catch {
+			this.clearPreparedWorkingSetEditorInputs(serializedInputs);
+			return false;
+		}
+	}
+
+	private clearPreparedWorkingSetEditorInputs(serializedInputs: readonly ISerializedEditorInput[]): void {
+		for (const input of serializedInputs) {
+			clearPreparedSerializedEditorInput(input)?.dispose();
+		}
 	}
 
 	private indexOfWorkingSet(workingSet: IEditorWorkingSet): number | undefined {

@@ -74,6 +74,8 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 	private readonly physicalWorkspaceId: string;
 	private _state: ILogicalWorkspaceState;
 	private _activationSequence = 0;
+	private _isReady = false;
+	get isReady(): boolean { return this._isReady; }
 	readonly whenReady: Promise<void>;
 
 	constructor(
@@ -89,7 +91,6 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		const waitForCompleteWorkspace = !configurationMigrated && workspaceContextService.getWorkbenchState() === WorkbenchState.WORKSPACE;
 		const loaded = this.loadState(configurationState);
 		this._state = loaded.state;
-		this.stateStore.writeActiveWorkspaceId(this.physicalWorkspaceId, this._state.activeWorkspaceId);
 		this._register(stateStore.onDidChangeSharedState(() => this.acceptSharedState()));
 		this.whenReady = this.initializeAuthoritativeState(loaded, waitForCompleteWorkspace);
 	}
@@ -271,10 +272,12 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		if (this._store.isDisposed) {
 			return;
 		}
+		const preferredActiveWorkspaceId = candidate.shouldMarkConfigurationMigrated ? candidate.state.activeWorkspaceId : undefined;
 		this.applyLoadedState({
-			state: this.withActiveWorkspace(authoritativeState),
+			state: this.withActiveWorkspace(authoritativeState, undefined, preferredActiveWorkspaceId),
 			shouldMarkConfigurationMigrated: candidate.shouldMarkConfigurationMigrated,
 		});
+		this._isReady = true;
 	}
 
 	private applyLoadedState(loaded: ILoadedLogicalWorkspaceState): void {
@@ -305,9 +308,9 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		}
 	}
 
-	private withActiveWorkspace(sharedState: ILogicalWorkspaceSharedState, legacyActiveWorkspaceId?: string): ILogicalWorkspaceState {
+	private withActiveWorkspace(sharedState: ILogicalWorkspaceSharedState, legacyActiveWorkspaceId?: string, preferredActiveWorkspaceId?: string): ILogicalWorkspaceState {
 		const storedActiveWorkspaceId = this.stateStore.readActiveWorkspaceId(this.physicalWorkspaceId);
-		const activeWorkspaceId = [storedActiveWorkspaceId, legacyActiveWorkspaceId]
+		const activeWorkspaceId = [preferredActiveWorkspaceId, storedActiveWorkspaceId, legacyActiveWorkspaceId]
 			.find(candidate => candidate && sharedState.workspaces.some(workspace => workspace.id === candidate))
 			?? sharedState.workspaces[0].id;
 		return { ...sharedState, activeWorkspaceId };

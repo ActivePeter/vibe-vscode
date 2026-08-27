@@ -13,8 +13,10 @@ import { TestConfigurationService } from '../../../../platform/configuration/tes
 import { ExtensionIdentifier, IExtensionDescription } from '../../../../platform/extensions/common/extensions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { TestInstantiationService } from '../../../../platform/instantiation/test/common/instantiationServiceMock.js';
+import { TestThemeService } from '../../../../platform/theme/test/common/testThemeService.js';
+import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
-import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService, MODAL_GROUP } from '../../../services/editor/common/editorService.js';
 import { IOverlayWebview, IWebviewService } from '../../../contrib/webview/browser/webview.js';
 import { WebviewInput } from '../../../contrib/webviewPanel/browser/webviewEditorInput.js';
@@ -30,6 +32,84 @@ import { SingleProxyRPCProtocol } from '../common/testRPCProtocol.js';
 
 suite('MainThreadWebviewPanels', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('publishes the initial inactive state after a preserve-focus panel is mounted', async () => {
+		const webviewDidDispose = disposables.add(new Emitter<void>());
+		const webview = new class extends mock<IOverlayWebview>() {
+			override readonly onDidDispose = webviewDidDispose.event;
+			override dispose(): void { webviewDidDispose.fire(); }
+		}();
+		const input = disposables.add(new WebviewInput({
+			viewType: 'mainThreadWebview-test.view',
+			providedId: 'test.view',
+			name: 'Test',
+			iconPath: undefined,
+		}, webview, new TestThemeService()));
+		const activeEditor = disposables.add(new class extends EditorInput {
+			override readonly typeId = 'test.activeEditor';
+			override readonly resource = undefined;
+		}());
+		const group = new class extends mock<IEditorGroup>() {
+			override readonly id = 1;
+			override readonly editors = [activeEditor, input];
+			override readonly activeEditor = activeEditor;
+		}();
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly onDidAddGroup = Event.None;
+			override readonly onDidRemoveGroup = Event.None;
+			override readonly onDidMoveGroup = Event.None;
+			override readonly groups = [group];
+			override readonly activeGroup = group;
+			override getGroups(): readonly IEditorGroup[] { return [group]; }
+			override getGroup(identifier: number): IEditorGroup | undefined { return identifier === group.id ? group : undefined; }
+		}();
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidActiveEditorChange = Event.None;
+			override readonly onDidVisibleEditorsChange = Event.None;
+			override readonly activeEditor = activeEditor;
+		}();
+		const webviewWorkbenchService = new class extends mock<IWebviewWorkbenchService>() {
+			override readonly onDidChangeActiveWebviewEditor = Event.None;
+			override async openWebview(): Promise<WebviewInput> { return input; }
+			override registerResolver(): IDisposable { return Disposable.None; }
+		}();
+		const extensionService = new class extends mock<IExtensionService>() {
+			override readonly extensions = [];
+			override async activateByEvent(): Promise<void> { }
+		}();
+		const mainThreadWebviews = new class extends mock<MainThreadWebviews>() {
+			override addWebview(): void { }
+		}();
+		const viewStates: unknown[] = [];
+		const extHostWebviewPanels = new class extends mock<ExtHostWebviewPanelsShape>() {
+			override async $onDidDisposeWebviewPanel(): Promise<void> { }
+			override $onDidChangeWebviewPanelViewStates(states: unknown): void { viewStates.push(states); }
+		}();
+		const panels = disposables.add(new MainThreadWebviewPanels(
+			SingleProxyRPCProtocol(extHostWebviewPanels),
+			mainThreadWebviews,
+			new TestConfigurationService(),
+			editorGroupsService,
+			editorService,
+			extensionService,
+			disposables.add(new TestStorageService()),
+			webviewWorkbenchService,
+		));
+
+		await panels.$createWebviewPanel(
+			{ id: new ExtensionIdentifier('test.extension'), location: URI.file('/test-extension') },
+			'preserve-focus-handle',
+			'test.view',
+			{ title: 'Test', webviewOptions: {}, panelOptions: {}, serializeBuffersForPostMessage: false },
+			{ preserveFocus: true },
+		);
+
+		assert.deepStrictEqual(viewStates, [{
+			'preserve-focus-handle': { visible: false, active: false, position: 0 },
+		}]);
+		input.dispose();
+		await Promise.resolve();
+	});
 
 	test('keeps fullscreen modal presentation options when revealing a panel', async () => {
 		const extensionLocation = URI.file('/builtin/vibe-vscode');

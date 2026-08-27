@@ -13,6 +13,11 @@ import { ExtHostLocalizationShape, IStringDetails, MainContext, MainThreadLocali
 import { IExtHostInitDataService } from './extHostInitDataService.js';
 import { IExtHostRpcService } from './extHostRpcService.js';
 
+interface IBundleLocation {
+	readonly uri: URI;
+	readonly isLanguagePack: boolean;
+}
+
 export class ExtHostLocalizationService implements ExtHostLocalizationShape {
 	readonly _serviceBrand: undefined;
 
@@ -69,38 +74,40 @@ export class ExtHostLocalizationService implements ExtHostLocalizationShape {
 		}
 
 		let contents: { [key: string]: string } | undefined;
-		const bundleUri = await this.getBundleLocation(extension);
-		if (!bundleUri) {
+		const bundleLocation = await this.getBundleLocation(extension);
+		if (!bundleLocation) {
 			this.logService.error(`No bundle location found for extension ${extension.identifier.value}`);
 			return;
 		}
 
 		try {
-			const response = await this._proxy.$fetchBundleContents(bundleUri);
+			const response = await this._proxy.$fetchBundleContents(bundleLocation.uri);
 			const result = JSON.parse(response);
 			// 'contents.bundle' is a well-known key in the language pack json file that contains the _code_ translations for the extension
-			contents = extension.isBuiltin ? result.contents?.bundle : result;
+			contents = bundleLocation.isLanguagePack ? result.contents?.bundle : result;
 		} catch (e) {
-			this.logService.error(`Failed to load translations for ${extension.identifier.value} from ${bundleUri}: ${e.message}`);
+			this.logService.error(`Failed to load translations for ${extension.identifier.value} from ${bundleLocation.uri}: ${e.message}`);
 			return;
 		}
 
 		if (contents) {
 			this.bundleCache.set(extension.identifier.value, {
 				contents,
-				uri: bundleUri
+				uri: bundleLocation.uri
 			});
 		}
 	}
 
-	private async getBundleLocation(extension: IExtensionDescription): Promise<URI | undefined> {
+	private async getBundleLocation(extension: IExtensionDescription): Promise<IBundleLocation | undefined> {
 		if (extension.isBuiltin) {
-			const uri = await this._proxy.$fetchBuiltInBundleUri(extension.identifier.value, this.currentLanguage);
-			return URI.revive(uri);
+			const languagePackUri = await this._proxy.$fetchBuiltInBundleUri(extension.identifier.value, this.currentLanguage);
+			if (languagePackUri) {
+				return { uri: URI.revive(languagePackUri), isLanguagePack: true };
+			}
 		}
 
 		return extension.l10n
-			? URI.joinPath(extension.extensionLocation, extension.l10n, `bundle.l10n.${this.currentLanguage}.json`)
+			? { uri: URI.joinPath(extension.extensionLocation, extension.l10n, `bundle.l10n.${this.currentLanguage}.json`), isLanguagePack: false }
 			: undefined;
 	}
 }

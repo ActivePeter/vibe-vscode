@@ -12,6 +12,7 @@
     "Other"
   ],
   "browser": "./dist/browser/extension.js",
+  "l10n": "./l10n",
   "extensionKind": [
     "ui"
   ],

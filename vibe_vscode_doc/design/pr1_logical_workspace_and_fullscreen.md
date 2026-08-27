@@ -221,7 +221,7 @@ State Store 通过 Remote Agent IPC 访问按 Physical Workspace ID 隔离的服
 
 `LogicalWorkspaceProjectionCoordinator` 统一负责初始恢复、切换前 capture、切换后 restore 和页面保存。`AsyncProjectionCoordinator` 合并 pending intent；同 target 的反馈保留当前 generation 并在尾部收敛，不同 target 才使旧事务过期。调用方若需要最终稳定状态，应等待自己关心的最新请求，不能假定旧 generation 的 Promise 代表后续所有请求都已完成。所有被投影 Service 的 Promise 必须表达真实 UI commit，例如 editor terminal 的 restore 只有在 `openEditor()` 完成后才能 resolve。
 
-每个 Adapter 声明自身完整且最小的 active state slice；active ID 不变但 slice 内容更新时仍需排队 reconcile。只有 restore 成功才能推进 projected snapshot；capture 仅在 projected slice 与当前 authority slice 相同时执行，失败或 pending restore 不能把旧 UI 反写覆盖新状态。初始 editor projection 暴露独立 readiness，Workbench 在打开后续 startup editors 前等待它及其同 target 尾部刷新全部完成。
+每个 Adapter 声明自身完整且最小的 active state slice；active ID 不变但 slice 内容更新时仍需排队 reconcile。只有 restore 成功才能推进 projected snapshot；capture 仅在 projected slice 与当前 authority slice 相同时执行，失败或 pending restore 不能把旧 UI 反写覆盖新状态。capture 写回的本地 slice 直接确认为当前 UI 已投影状态，不再对自身反馈执行破坏性 restore；外部 slice 更新仍走 reconcile。初始 editor projection 暴露独立 readiness，Workbench 在打开后续 startup editors 前等待它及其同 target 尾部刷新全部完成。
 
 ### 7.2 Shell layout
 

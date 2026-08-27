@@ -792,6 +792,32 @@ suite('LogicalWorkspaceService', () => {
 		assert.strictEqual(ready, true);
 	});
 
+	test('capture acknowledges locally-authored state without restoring the live UI', async () => {
+		const service = createService();
+		await service.whenReady;
+		const activeWorkspaceId = service.activeWorkspace.id;
+		const restored: Array<string | undefined> = [];
+		const projection: ILogicalWorkspaceProjection = {
+			id: 'localCaptureFeedback',
+			stateSlice: state => state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.editorWorkingSet,
+			capture: workspaceId => service.setEditorWorkingSet(workspaceId, 'captured'),
+			restore: async context => { restored.push(context.workspace.editorWorkingSet); },
+		};
+		const coordinator = disposables.add(new LogicalWorkspaceProjectionCoordinator(service, projection, storageService, new NullLogService()));
+		await coordinator.whenReady;
+
+		coordinator.captureProjectedState(activeWorkspaceId);
+		await timeout(0);
+
+		assert.deepStrictEqual({
+			restored,
+			editorWorkingSet: service.activeWorkspace.editorWorkingSet,
+		}, {
+			restored: [undefined],
+			editorWorkingSet: 'captured',
+		});
+	});
+
 	test('same active Workspace content refresh converges before a later capture', async () => {
 		const service = createService();
 		await service.whenReady;

@@ -164,6 +164,7 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 	private readonly asyncProjection: AsyncProjectionCoordinator<ILogicalWorkspaceProjectionIntent>;
 	private projectedWorkspaceId: string | undefined;
 	private projectedStateSlice: unknown;
+	private capturingProjection = false;
 	readonly whenReady: Promise<void>;
 
 	constructor(
@@ -186,6 +187,9 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 			}
 		}));
 		this._register(onDidChangeLogicalWorkspaceStateSlice(logicalWorkspaceService, state => this.getStateSlice(state))(() => {
+			if (this.capturingProjection) {
+				return;
+			}
 			void this.requestReconcile();
 		}));
 		if (projection.capture) {
@@ -220,10 +224,18 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 		if (!this.canCapture(workspaceId)) {
 			return;
 		}
+		this.capturingProjection = true;
 		try {
 			this.projection.capture?.(workspaceId);
+			if (this.projectedWorkspaceId === workspaceId && this.logicalWorkspaceService.activeWorkspace.id === workspaceId) {
+				// The capture wrote the state represented by the live UI. Acknowledge that local
+				// feedback instead of destructively restoring the same serialized state.
+				this.projectedStateSlice = this.getStateSlice();
+			}
 		} catch (error) {
 			this.logService.error(`${this.projection.id} projection capture failed`, error);
+		} finally {
+			this.capturingProjection = false;
 		}
 	}
 

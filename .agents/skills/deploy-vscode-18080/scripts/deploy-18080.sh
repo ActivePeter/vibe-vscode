@@ -151,7 +151,11 @@ validate_candidate_runtime_root() {
 	while IFS= read -r -d '' link_path; do
 		resolved_link="$(readlink -f -- "$link_path" 2>/dev/null || true)"
 		case "$resolved_link" in
-		"$SOURCE_ROOT" | "$SOURCE_ROOT"/*) return 1 ;;
+		"$runtime_root" | "$runtime_root"/*) ;;
+		"$SOURCE_ROOT" | "$SOURCE_ROOT"/*)
+			printf 'Runtime link escapes into mutable source: %s -> %s\n' "$link_path" "$resolved_link" >&2
+			return 1
+			;;
 		esac
 	done < <(find "$runtime_root" -type l -print0)
 }

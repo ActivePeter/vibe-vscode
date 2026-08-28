@@ -21,7 +21,7 @@ The script must remain the single automation entry for this skill. It:
 - switches to the candidate only after the build succeeds, and automatically restores the last-known-good runtime when startup or health checks fail;
 - builds and starts the service entirely from `/mnt/ceph/vibe-vscode`, without invoking another project's control code;
 - preserves the existing state under `/mnt/ceph/dever_for_dev/.dever/vscode-services/state/latest`;
-- preserves VS Code's native connection token, requires anonymous workbench requests to return `403`, waits for an authenticated HTTPS `200` response, verifies a `0.0.0.0:18080` listener, and confirms the tmux session is running from the expected candidate root before succeeding;
+- starts the development service without a connection token, waits for an anonymous HTTPS `200` response, verifies a `0.0.0.0:18080` listener, and confirms the tmux session is running from the expected candidate root before succeeding;
 - fails instead of killing an unrecognized process when the port is not owned by the canonical tmux session.
 
 On failure, report the relevant tail from `latest.log` and leave the error visible. Do not invoke or fall back to `/mnt/ceph/dever_for_dev/third_party/vscode`, do not start an ad-hoc server, and do not touch port `18081` unless the user explicitly expands the deployment scope.

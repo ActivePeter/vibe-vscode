@@ -445,16 +445,27 @@ export class Mangler {
 		// - Find exported symbols.
 
 		const fileIdents = new ShortIdent('$');
+		const stringAccessedMemberDefinitions = new Set<string>();
 
 		const visit = (node: ts.Node): void => {
 			if (this.config.manglePrivateFields) {
-				if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+				if ((ts.isClassDeclaration(node) || ts.isClassExpression(node)) && !node.getFullText().includes('@skipMangle')) {
 					const anchor = node.name ?? node;
 					const key = `${node.getSourceFile().fileName}|${anchor.getStart()}`;
 					if (this.allClassDataByKey.has(key)) {
 						throw new Error('DUPE?');
 					}
 					this.allClassDataByKey.set(key, new ClassData(node.getSourceFile().fileName, node));
+				}
+
+				// TypeScript's rename service intentionally omits private member accesses such as
+				// `value['member']`. Their spelling is observable at runtime, so preserve the
+				// declaration instead of renaming it while leaving the string unchanged.
+				if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) {
+					const definitions = service.getDefinitionAtPosition(node.getSourceFile().fileName, node.argumentExpression.getStart() + 1);
+					for (const definition of definitions ?? []) {
+						stringAccessedMemberDefinitions.add(`${definition.fileName}|${definition.textSpan.start}`);
+					}
 				}
 			}
 
@@ -506,7 +517,17 @@ export class Mangler {
 				ts.forEachChild(file, visit);
 			}
 		}
+		let preservedStringAccessedMembers = 0;
+		for (const data of this.allClassDataByKey.values()) {
+			for (const info of data.fields.values()) {
+				if (info.type !== FieldType.Public && stringAccessedMemberDefinitions.has(`${data.fileName}|${info.pos}`)) {
+					info.type = FieldType.Public;
+					preservedStringAccessedMembers++;
+				}
+			}
+		}
 		this.log(`Done collecting. Classes: ${this.allClassDataByKey.size}. Exported symbols: ${this.allExportedSymbols.size}`);
+		this.log(`Preserved string-accessed class members: ${preservedStringAccessedMembers}`);
 
 
 		//  STEP: connect sub and super-types

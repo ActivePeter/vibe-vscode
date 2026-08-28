@@ -80,7 +80,9 @@ export function isExpired(entry: { token: { expires_in?: number }; created_at: n
  * {@link vscode.AuthenticationProviderSessionOptions}.
  */
 export function XaaifyAuthProvider<TBase extends Ctor<DynamicAuthProvider>>(Base: TBase): TBase {
-	return class XaaAuthenticationProvider extends Base {
+	// The concrete superclass is supplied at runtime, so the production mangler cannot
+	// prove inherited member names are collision-free for this mixin.
+	return /** @skipMangle */ class XaaAuthenticationProvider extends Base {
 		private readonly _resourceTokens = new Map<string, IResourceCacheEntry>();
 		/**
 		 * Per-(resource, client_id) client secrets. Lazily populated via the main-thread

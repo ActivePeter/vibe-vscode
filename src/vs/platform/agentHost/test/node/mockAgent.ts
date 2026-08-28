@@ -477,6 +477,7 @@ export class MockAgent implements IAgent {
  */
 export const PRE_EXISTING_SESSION_URI = AgentSession.uri('mock', 'pre-existing-session');
 
+/** @skipMangle Dynamically imported by the Agent Host server. */
 export class ScriptedMockAgent implements IAgent {
 	private readonly _discoveredChatsEmitter = new Emitter<readonly IAgentDiscoveredChat[]>();
 	readonly onDidDiscoverChats = this._discoveredChatsEmitter.event;

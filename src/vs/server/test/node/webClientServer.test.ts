@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { getBuiltinExtensionPackageNLSCandidates } from '../../node/webClientServer.js';
+import { getBuiltinExtensionPackageNLSCandidates, getWebClientResourceScheme } from '../../node/webClientServer.js';
 
 suite('WebClientServer', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -26,6 +26,20 @@ suite('WebClientServer', () => {
 		}, {
 			english: ['package.nls.json'],
 			invalid: ['package.nls.json'],
+		});
+	});
+
+	test('uses only a valid public scheme from a reverse proxy', () => {
+		assert.deepStrictEqual({
+			directHttp: getWebClientResourceScheme(undefined),
+			forwardedHttps: getWebClientResourceScheme('https'),
+			forwardedChain: getWebClientResourceScheme(' HTTPS, http'),
+			invalid: getWebClientResourceScheme('javascript'),
+		}, {
+			directHttp: 'http',
+			forwardedHttps: 'https',
+			forwardedChain: 'https',
+			invalid: 'http',
 		});
 	});
 });

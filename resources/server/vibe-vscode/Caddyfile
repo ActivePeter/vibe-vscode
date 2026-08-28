@@ -1,0 +1,13 @@
+{
+	admin off
+	auto_https disable_redirects
+}
+
+:{$VIBE_VSCODE_PUBLIC_PORT} {
+	bind 0.0.0.0
+	tls {$VIBE_VSCODE_TLS_CERT_PATH} {$VIBE_VSCODE_TLS_KEY_PATH}
+
+	reverse_proxy {$VIBE_VSCODE_BACKEND_ADDRESS} {
+		header_up X-Forwarded-Proto https
+	}
+}

@@ -22,8 +22,6 @@ export const serverOptions: OptionDescriptions<Required<ServerParsedArgs>> = {
 	'host': { type: 'string', cat: 'o', args: 'ip-address', description: nls.localize('host', "The host name or IP address the server should listen to. If not set, defaults to 'localhost'.") },
 	'port': { type: 'string', cat: 'o', args: 'port | port range', description: nls.localize('port', "The port the server should listen to. If 0 is passed a random free port is picked. If a range in the format num-num is passed, a free port from the range (end inclusive) is selected.") },
 	'socket-path': { type: 'string', cat: 'o', args: 'path', description: nls.localize('socket-path', "The path to a socket file for the server to listen to.") },
-	'tls-key-path': { type: 'string', cat: 'o', args: 'path', description: nls.localize('tls-key-path', "The path to the TLS private key used by the HTTPS server.") },
-	'tls-cert-path': { type: 'string', cat: 'o', args: 'path', description: nls.localize('tls-cert-path', "The path to the TLS certificate used by the HTTPS server.") },
 	'server-base-path': { type: 'string', cat: 'o', args: 'path', description: nls.localize('server-base-path', "The path under which the web UI and the code server is provided. Defaults to '/'.`") },
 	'connection-token': { type: 'string', cat: 'o', args: 'token', deprecates: ['connectionToken'], description: nls.localize('connection-token', "A secret that must be included with all requests.") },
 	'connection-token-file': { type: 'string', cat: 'o', args: 'path', deprecates: ['connection-secret', 'connectionTokenFile'], description: nls.localize('connection-token-file', "Path to a file that contains the connection token.") },
@@ -119,8 +117,6 @@ export interface ServerParsedArgs {
 	 */
 	port?: string;
 	'socket-path'?: string;
-	'tls-key-path'?: string;
-	'tls-cert-path'?: string;
 
 	/**
 	 * The path under which the web UI and the code server is provided.

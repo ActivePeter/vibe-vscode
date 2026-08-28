@@ -130,6 +130,12 @@ export function getBuiltinExtensionPackageNLSCandidates(locale: string): readonl
 	return localeCandidates;
 }
 
+/** Returns the public HTTP scheme supplied by a trusted reverse proxy. */
+export function getWebClientResourceScheme(forwardedProto: string | undefined): 'http' | 'https' {
+	const publicScheme = forwardedProto?.split(',', 1)[0].trim().toLowerCase();
+	return publicScheme === Schemas.https ? Schemas.https : Schemas.http;
+}
+
 async function readBuiltinExtensionPackageNLS(extensionPath: string, locale: string): Promise<ITranslations> {
 	for (const candidate of getBuiltinExtensionPackageNLSCandidates(locale)) {
 		try {
@@ -356,7 +362,7 @@ export class WebClientServer {
 		}
 
 		if (this._logService.getLevel() === LogLevel.Trace) {
-			['x-original-host', 'x-forwarded-host', 'x-forwarded-port', 'host'].forEach(header => {
+			['x-original-host', 'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-proto', 'host'].forEach(header => {
 				const value = getFirstHeader(header);
 				if (value) {
 					this._logService.trace(`[WebClientServer] ${header}: ${value}`);
@@ -385,7 +391,7 @@ export class WebClientServer {
 			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
 				...this._productService.extensionsGallery,
 				resourceUrlTemplate: this._webExtensionResourceUrlTemplate.with({
-					scheme: 'http',
+					scheme: getWebClientResourceScheme(getFirstHeader('x-forwarded-proto')),
 					authority: remoteAuthority,
 					path: `${webExtensionRoute}/${this._webExtensionResourceUrlTemplate.authority}${this._webExtensionResourceUrlTemplate.path}`
 				}).toString(true)

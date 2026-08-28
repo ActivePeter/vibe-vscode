@@ -190,10 +190,11 @@ export class ExtensionHostConnection extends Disposable {
 		@IConfigurationService private readonly _configurationService: IConfigurationService
 	) {
 		super();
-		// A TLSSocket cannot be transferred through child-process IPC. Keep TLS/WebSocket
-		// processing here and give the extension host a fresh plain-socket bridge for each
-		// initial connection and reconnection.
-		this._useSocketBridge = Boolean(this._environmentService.args['tls-key-path']);
+		// A TLSSocket and a Windows named-pipe socket cannot be transferred through child-process
+		// IPC. Keep their transport processing here and give the extension host a fresh transferable
+		// plain-socket bridge for both the initial connection and every reconnection.
+		this._useSocketBridge = Boolean(this._environmentService.args['tls-key-path'])
+			|| (isWindows && Boolean(this._environmentService.args['socket-path']));
 		this._canSendSocket = !this._useSocketBridge && (!isWindows || !this._environmentService.args['socket-path']);
 		this._useSocketTransferProtocol = this._canSendSocket || this._useSocketBridge;
 		this._disposed = false;

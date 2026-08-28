@@ -62,6 +62,7 @@ function createMockChatModel(options: {
 			linesAdded: number;
 			linesRemoved: number;
 			modifiedURI: URI;
+			getDiffInfo?: () => Promise<void>;
 		}>;
 	};
 }): MockChatModel {
@@ -99,6 +100,7 @@ function createMockChatModel(options: {
 		linesRemoved: observableValue('linesRemoved', entry.linesRemoved),
 		originalURI: entry.modifiedURI,
 		modifiedURI: entry.modifiedURI,
+		getDiffInfo: entry.getDiffInfo,
 	}));
 
 	const mockEditingSession = options.editingSession ? {
@@ -759,6 +761,82 @@ suite('LocalAgentsSessionsController', () => {
 	});
 
 	suite('Events', () => {
+		test('should not let an older live update overwrite a newer model change', async () => {
+			const controller = createController();
+			const firstStats = new DeferredPromise<void>();
+			const secondStats = new DeferredPromise<void>();
+			const firstStatsStarted = new DeferredPromise<void>();
+			const secondStatsStarted = new DeferredPromise<void>();
+			let statsReadCount = 0;
+			const sessionResource = LocalChatSessionUri.forSession('out-of-order-live-update');
+			const mockModel = createMockChatModel({
+				sessionResource,
+				hasRequests: true,
+				customTitle: 'Older Title',
+				editingSession: {
+					entries: [{
+						state: ModifiedFileEntryState.Modified,
+						linesAdded: 1,
+						linesRemoved: 0,
+						modifiedURI: URI.file('/test/out-of-order.ts'),
+						getDiffInfo: () => {
+							statsReadCount++;
+							if (statsReadCount === 1) {
+								firstStatsStarted.complete();
+								return firstStats.p;
+							}
+							secondStatsStarted.complete();
+							return secondStats.p;
+						},
+					}],
+				},
+			});
+
+			mockChatService.addSession(mockModel);
+			await firstStatsStarted.p;
+			mockModel.setCustomTitle('Newer Title');
+			await secondStatsStarted.p;
+
+			secondStats.complete();
+			await timeout(0);
+			firstStats.complete();
+			await timeout(0);
+
+			assert.deepStrictEqual(controller.items.map(item => item.label), ['Newer Title']);
+		});
+
+		test('should not revive a deleted session from an in-flight live update', async () => {
+			const controller = createController();
+			const pendingStats = new DeferredPromise<void>();
+			const statsStarted = new DeferredPromise<void>();
+			const sessionResource = LocalChatSessionUri.forSession('deleted-during-live-update');
+			const mockModel = createMockChatModel({
+				sessionResource,
+				hasRequests: true,
+				editingSession: {
+					entries: [{
+						state: ModifiedFileEntryState.Modified,
+						linesAdded: 1,
+						linesRemoved: 0,
+						modifiedURI: URI.file('/test/deleted.ts'),
+						getDiffInfo: () => {
+							statsStarted.complete();
+							return pendingStats.p;
+						},
+					}],
+				},
+			});
+
+			mockChatService.addSession(mockModel);
+			await statsStarted.p;
+			mockChatService.fireDidDisposeSession([sessionResource]);
+			await timeout(0);
+			pendingStats.complete();
+			await timeout(0);
+
+			assert.deepStrictEqual(controller.items, []);
+		});
+
 		test('should keep model listeners after the initial catalog refresh fails', async () => {
 			const controller = createController();
 			let liveReadCount = 0;

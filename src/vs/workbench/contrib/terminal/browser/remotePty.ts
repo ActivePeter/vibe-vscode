@@ -45,7 +45,7 @@ export class RemotePty extends BasePty implements ITerminalChildProcess {
 		return startResult;
 	}
 
-	async detach(forcePersist?: boolean): Promise<boolean> {
+	async detach(forcePersist?: boolean): Promise<void> {
 		await this._startBarrier.wait();
 		return this._remoteTerminalChannel.detachFromProcess(this.id, forcePersist);
 	}

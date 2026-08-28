@@ -44,6 +44,7 @@ export class ExplorerService implements IExplorerService {
 	private decorationsProviderRegistered = false;
 	private model: ExplorerModel;
 	private activeRoot: URI | undefined;
+	private activeRootProjectionValid = true;
 	private onFileChangesScheduler: RunOnceScheduler;
 	private fileChangeEvents: FileChangesEvent[] = [];
 	private revealExcludeMatcher: ResourceGlobMatcher;
@@ -161,17 +162,23 @@ export class ExplorerService implements IExplorerService {
 	}
 
 	async setActiveRoot(resource: URI | undefined): Promise<void> {
-		if ((!this.activeRoot && !resource) || (this.activeRoot && resource && this.uriIdentityService.extUri.isEqual(this.activeRoot, resource))) {
+		const sameTarget = (!this.activeRoot && !resource) || (this.activeRoot && resource && this.uriIdentityService.extUri.isEqual(this.activeRoot, resource));
+		if (sameTarget && this.activeRootProjectionValid) {
 			return;
 		}
 
-		this.activeRoot = resource;
+		if (!sameTarget) {
+			this.activeRoot = resource;
+			this.activeRootProjectionValid = false;
+		}
+		const requestedRoot = resource;
 		try {
 			await this.view?.closeFind();
 		} finally {
-			// The Project authority has already changed. Even when provider cleanup fails, converge
-			// the tree now so a same-target retry cannot be suppressed by the early return above.
 			await this.view?.setTreeInput();
+			if ((!this.activeRoot && !requestedRoot) || (this.activeRoot && requestedRoot && this.uriIdentityService.extUri.isEqual(this.activeRoot, requestedRoot))) {
+				this.activeRootProjectionValid = true;
+			}
 		}
 	}
 

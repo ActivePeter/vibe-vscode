@@ -156,8 +156,8 @@ export class LogicalWorkspaceStateStore extends Disposable implements ILogicalWo
 	readActiveWorkspaceId(physicalWorkspaceId: string): string | undefined {
 		const key = this.activeWorkspaceKey(physicalWorkspaceId);
 		try {
-			return mainWindow.sessionStorage.getItem(this.legacyActiveWorkspaceKey(physicalWorkspaceId))
-				?? mainWindow.sessionStorage.getItem(key)
+			return mainWindow.sessionStorage.getItem(key)
+				?? mainWindow.sessionStorage.getItem(this.legacyActiveWorkspaceKey(physicalWorkspaceId))
 				?? this.fallbackSessionState.get(key);
 		} catch {
 			return this.fallbackSessionState.get(key);

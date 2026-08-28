@@ -14,6 +14,7 @@ readonly SERVICE_CURRENT_LINK="$SERVICE_RUNTIME_ROOT/last-known-good"
 readonly SERVICE_PREVIOUS_LINK="$SERVICE_RUNTIME_ROOT/previous"
 readonly TLS_KEY_PATH=/mnt/ceph/dever_for_dev/.dever/https/localhost-key.pem
 readonly TLS_CERT_PATH=/mnt/ceph/dever_for_dev/.dever/https/localhost-cert.pem
+readonly CONNECTION_TOKEN_PATH="$SERVICE_STATE_ROOT/server/data/token"
 readonly DEPLOY_TIMEOUT_SECONDS="${VIBE_VSCODE_DEPLOY_TIMEOUT_SECONDS:-900}"
 readonly SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
 readonly NODE_VERSION="$(tr -d '[:space:]' < "$SOURCE_ROOT/.nvmrc")"
@@ -38,6 +39,21 @@ require_command() {
 }
 
 health_status() {
+	local connection_token=
+	if [[ -r "$CONNECTION_TOKEN_PATH" ]]; then
+		connection_token="$(tr -d '\r\n' < "$CONNECTION_TOKEN_PATH")"
+	fi
+	if [[ "$connection_token" =~ ^[0-9A-Za-z_-]+$ ]]; then
+		curl --insecure --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 2 \
+			--cookie "vscode-tkn=$connection_token" "$SERVICE_URL" 2>/dev/null || true
+	else
+		# Compatibility while migrating a running legacy service that did not use a token. A newly
+		# started candidate is not accepted until its generated token file becomes readable below.
+		anonymous_health_status
+	fi
+}
+
+anonymous_health_status() {
 	curl --insecure --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 2 "$SERVICE_URL" 2>/dev/null || true
 }
 
@@ -311,7 +327,6 @@ run_server() {
 		--port "$SERVICE_PORT" \
 		--tls-key-path "$TLS_KEY_PATH" \
 		--tls-cert-path "$TLS_CERT_PATH" \
-		--without-connection-token \
 		--server-data-dir "$SERVICE_STATE_ROOT/server" \
 		--default-workspace "$workspace_path" \
 		--disable-telemetry \
@@ -348,12 +363,20 @@ wait_until_ready() {
 		fi
 
 		if [[ "$(health_status)" == '200' ]]; then
+			if [[ ! -r "$CONNECTION_TOKEN_PATH" ]]; then
+				printf 'Service is healthy but did not create its connection token at %s.\n' "$CONNECTION_TOKEN_PATH" >&2
+				return 1
+			fi
+			if [[ "$(anonymous_health_status)" != '403' ]]; then
+				printf 'Service accepted an anonymous workbench request; connection-token protection is not active.\n' >&2
+				return 1
+			fi
 			if ! has_public_listener; then
 				printf 'Observed listener addresses:\n%s\n' "$(listener_addresses)" >&2
 				printf 'Service is healthy on localhost but is not listening on 0.0.0.0:%s.\n' "$SERVICE_PORT" >&2
 				return 1
 			fi
-			printf 'Vibe VS Code runtime is ready: %s (%s, 0.0.0.0:%s)\n' "$runtime_label" "$SERVICE_URL" "$SERVICE_PORT"
+			printf 'Vibe VS Code runtime is ready: %s (%s, token protected, 0.0.0.0:%s)\n' "$runtime_label" "$SERVICE_URL" "$SERVICE_PORT"
 			return 0
 		fi
 
@@ -476,6 +499,7 @@ require_command rsync
 require_command ss
 require_command tee
 require_command tmux
+require_command tr
 require_source_tree
 require_service_state
 

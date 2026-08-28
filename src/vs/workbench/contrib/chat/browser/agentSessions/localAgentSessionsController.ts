@@ -45,6 +45,7 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 	readonly onDidChangeChatSessionItems = this._onDidChangeChatSessionItems.event;
 
 	private readonly _modelListeners = this._register(new DisposableResourceMap());
+	private readonly _liveUpdateGenerations = new WeakMap<IChatModel, number>();
 	private readonly _catalog: AgentSessionCatalog<LocalChatSessionItem>;
 
 	private _isDisposed = false;
@@ -97,6 +98,8 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 			if (this._isDisposed) {
 				return;
 			}
+			// Supersede any projection still running for an earlier registration of this model.
+			this._liveUpdateGenerations.set(model, (this._liveUpdateGenerations.get(model) ?? 0) + 1);
 
 			// Install the live projection before the fallible catalog reconciliation. A failed
 			// initial refresh must not permanently disconnect this already-created model.
@@ -156,11 +159,19 @@ export class LocalAgentsSessionsController extends Disposable implements IChatSe
 	}
 
 	private updateLiveSessionItem(model: IChatModel): void {
-		void this.tryUpdateLiveSessionItem(model).catch(error => this.logService.error('[LocalAgentSessions] Failed to update live session item', error));
+		const generation = (this._liveUpdateGenerations.get(model) ?? 0) + 1;
+		this._liveUpdateGenerations.set(model, generation);
+		void this.tryUpdateLiveSessionItem(model, generation).catch(error => this.logService.error('[LocalAgentSessions] Failed to update live session item', error));
 	}
 
-	private async tryUpdateLiveSessionItem(model: IChatModel): Promise<void> {
+	private async tryUpdateLiveSessionItem(model: IChatModel, generation: number): Promise<void> {
 		const updated = this.toChatSessionItem(await chatModelToChatDetail(model));
+		if (this._isDisposed
+			|| this._liveUpdateGenerations.get(model) !== generation
+			|| this.chatService.getSession(model.sessionResource) !== model
+			|| !this._modelListeners.get(model.sessionResource)) {
+			return;
+		}
 		if (!updated) {
 			// The session no longer qualifies as a list item (e.g. it has no requests
 			// yet, or its requests were removed). Drop any stale item we were showing.

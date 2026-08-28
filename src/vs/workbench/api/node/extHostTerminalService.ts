@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { generateUuid } from '../../../base/common/uuid.js';
+import { onUnexpectedError } from '../../../base/common/errors.js';
 import { IExtHostRpcService } from '../common/extHostRpcService.js';
 import { BaseExtHostTerminalService, ExtHostTerminal, ITerminalInternalOptions } from '../common/extHostTerminalService.js';
 import type * as vscode from 'vscode';
@@ -23,9 +23,12 @@ export class ExtHostTerminalService extends BaseExtHostTerminalService {
 	}
 
 	public createTerminalFromOptions(options: vscode.TerminalOptions, internalOptions?: ITerminalInternalOptions): vscode.Terminal {
-		const terminal = new ExtHostTerminal(this._proxy, generateUuid(), options, options.name);
-		this._terminals.push(terminal);
-		terminal.create(options, this._serializeParentTerminal(options, internalOptions));
+		const { terminal, creation } = this.createTerminalFromOptionsWithPromise(options, internalOptions);
+		void creation.catch(onUnexpectedError);
 		return terminal.value;
+	}
+
+	protected override createTerminalFromOptionsWithPromise(options: vscode.TerminalOptions, internalOptions?: ITerminalInternalOptions): { terminal: ExtHostTerminal; creation: Promise<void> } {
+		return this.doCreateTerminalFromOptions(options, internalOptions);
 	}
 }

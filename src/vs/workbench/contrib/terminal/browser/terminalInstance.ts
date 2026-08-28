@@ -164,7 +164,6 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	private _hadFocusOnExit: boolean;
 	private _exitCode: number | undefined;
 	private _exitReason: TerminalExitReason | undefined;
-	private _processWasDetached = false;
 	private _shellType: TerminalShellType | undefined;
 	private _agentShellTypeFromSequence: GeneralShellType | undefined;
 	private _title: string = '';
@@ -284,7 +283,6 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	get initialDataEvents(): string[] | undefined { return this._initialDataEvents; }
 	get exitCode(): number | undefined { return this._exitCode; }
 	get exitReason(): TerminalExitReason | undefined { return this._exitReason; }
-	get processWasDetached(): boolean { return this._processWasDetached; }
 	get hadFocusOnExit(): boolean { return this._hadFocusOnExit; }
 	get isTitleSetByProcess(): boolean { return !!this._messageTitleDisposable.value; }
 	get shellLaunchConfig(): IShellLaunchConfig { return this._shellLaunchConfig; }
@@ -1372,7 +1370,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	async detachProcessAndDispose(reason: TerminalExitReason): Promise<void> {
 		// Detach the process and dispose the instance, without the instance dispose the terminal
 		// won't go away. Force persist if the detach was requested by the user (not shutdown).
-		this._processWasDetached = await this._processManager.detachFromProcess(reason === TerminalExitReason.User);
+		await this._processManager.detachFromProcess(reason === TerminalExitReason.User);
 		this.dispose(reason);
 	}
 

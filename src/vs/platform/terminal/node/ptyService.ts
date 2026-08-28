@@ -400,7 +400,7 @@ export class PtyService extends Disposable implements IPtyService {
 	}
 
 	@traceRpc
-	async detachFromProcess(id: number, forcePersist?: boolean): Promise<boolean> {
+	async detachFromProcess(id: number, forcePersist?: boolean): Promise<void> {
 		return this._throwIfNoPty(id).detach(forcePersist);
 	}
 
@@ -833,15 +833,13 @@ class PersistentTerminalProcess extends Disposable {
 		this._disconnectRunner2.cancel();
 	}
 
-	async detach(forcePersist?: boolean): Promise<boolean> {
+	async detach(forcePersist?: boolean): Promise<void> {
 		// Keep the process around if it was indicated to persist and it has had some interaction or
 		// was replayed
 		if (this.shouldPersistTerminal && (this._interactionState.value !== InteractionState.None || forcePersist)) {
 			this._disconnectRunner1.schedule();
-			return true;
 		} else {
 			this.shutdown(true);
-			return false;
 		}
 	}
 

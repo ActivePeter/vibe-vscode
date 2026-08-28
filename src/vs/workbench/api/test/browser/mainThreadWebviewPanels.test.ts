@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { DeferredPromise } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -16,7 +17,7 @@ import { TestInstantiationService } from '../../../../platform/instantiation/tes
 import { TestThemeService } from '../../../../platform/theme/test/common/testThemeService.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
-import { IEditorGroup, IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
+import { IEditorGroup, IEditorGroupsService, IModalEditorPart } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService, MODAL_GROUP } from '../../../services/editor/common/editorService.js';
 import { IOverlayWebview, IWebviewService } from '../../../contrib/webview/browser/webview.js';
 import { WebviewInput } from '../../../contrib/webviewPanel/browser/webviewEditorInput.js';
@@ -308,5 +309,203 @@ suite('MainThreadWebviewPanels', () => {
 			error => error === expectedError,
 		);
 		assert.strictEqual(inputDisposed, true);
+	});
+
+	test('reserves the fullscreen host while its first panel is still opening', async () => {
+		const extensionLocation = URI.file('/builtin/vibe-vscode');
+		const extensionId = new ExtensionIdentifier('vibe-vscode.project-switcher');
+		const extensionService = new class extends mock<IExtensionService>() {
+			override readonly extensions = [upcastPartial<IExtensionDescription>({
+				identifier: extensionId,
+				extensionLocation,
+				isBuiltin: true,
+			})];
+			override async activateByEvent(): Promise<void> { }
+		}();
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly activeModalEditorPart = undefined;
+			override readonly onDidAddGroup = Event.None;
+			override readonly onDidRemoveGroup = Event.None;
+			override readonly onDidMoveGroup = Event.None;
+			override readonly groups = [];
+			override registerContextKeyProvider(): IDisposable { return Disposable.None; }
+		}();
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidActiveEditorChange = Event.None;
+			override readonly onDidVisibleEditorsChange = Event.None;
+		}();
+		const webviewDidDispose = disposables.add(new Emitter<void>());
+		const webview = new class extends mock<IOverlayWebview>() {
+			override readonly onDidDispose = webviewDidDispose.event;
+		}();
+		const input = new class extends mock<WebviewInput>() {
+			override get webview(): IOverlayWebview { return webview; }
+		}();
+		const openStarted = new DeferredPromise<void>();
+		const releaseOpen = new DeferredPromise<void>();
+		let openCount = 0;
+		const webviewWorkbenchService = new class extends mock<IWebviewWorkbenchService>() {
+			override readonly onDidChangeActiveWebviewEditor = Event.None;
+			override registerResolver(): IDisposable { return Disposable.None; }
+			override async openWebview(): Promise<WebviewInput> {
+				openCount++;
+				await openStarted.complete();
+				await releaseOpen.p;
+				return input;
+			}
+		}();
+		const panels = disposables.add(new MainThreadWebviewPanels(
+			SingleProxyRPCProtocol(new class extends mock<ExtHostWebviewPanelsShape>() {
+				override async $onDidDisposeWebviewPanel(): Promise<void> { }
+			}()),
+			new class extends mock<MainThreadWebviews>() { override addWebview(): void { } }(),
+			new TestConfigurationService(),
+			editorGroupsService,
+			editorService,
+			extensionService,
+			disposables.add(new TestStorageService()),
+			webviewWorkbenchService,
+		));
+		const initData: IWebviewInitData = {
+			title: 'Sessions',
+			webviewOptions: {},
+			panelOptions: { vibeVscodeFullscreen: true },
+			serializeBuffersForPostMessage: false,
+		};
+		const createFirst = panels.$createWebviewPanel(
+			{ id: extensionId, location: extensionLocation },
+			'fullscreen-first',
+			'vibe-vscode.projectSwitcher.fullscreen',
+			initData,
+			{ preserveFocus: false },
+		);
+		await openStarted.p;
+
+		await assert.rejects(panels.$createWebviewPanel(
+			{ id: extensionId, location: extensionLocation },
+			'fullscreen-second',
+			'vibe-vscode.projectSwitcher.fullscreen',
+			initData,
+			{ preserveFocus: false },
+		), /Close the current modal editor/);
+		await releaseOpen.complete();
+		await createFirst;
+
+		assert.strictEqual(openCount, 1);
+		webviewDidDispose.fire();
+		await Promise.resolve();
+	});
+
+	test('rejects a fullscreen webview that resolves without mounting an editor', async () => {
+		let activeModalEditorPart: IModalEditorPart | undefined;
+		let modalClosed = false;
+		const modalGroup = new class extends mock<IEditorGroup>() {
+			override readonly isEmpty = true;
+		}();
+		const modalEditorPart = new class extends mock<IModalEditorPart>() {
+			override readonly activeGroup = modalGroup;
+			override async close(): Promise<boolean> {
+				modalClosed = true;
+				activeModalEditorPart = undefined;
+				return true;
+			}
+		}();
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override get activeModalEditorPart(): IModalEditorPart | undefined { return activeModalEditorPart; }
+			override readonly onDidAddGroup = Event.None;
+			override readonly onDidRemoveGroup = Event.None;
+			override readonly onDidMoveGroup = Event.None;
+			override registerContextKeyProvider(): IDisposable { return Disposable.None; }
+		}();
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidActiveEditorChange = Event.None;
+			override readonly onDidVisibleEditorsChange = Event.None;
+			override readonly editors = [];
+			override async openEditor(): Promise<undefined> {
+				activeModalEditorPart = modalEditorPart;
+				return undefined;
+			}
+		}();
+		const webviewDidDispose = disposables.add(new Emitter<void>());
+		const webview = new class extends mock<IOverlayWebview>() {
+			override readonly onDidDispose = webviewDidDispose.event;
+		}();
+		let inputDisposed = false;
+		const input = new class extends mock<WebviewInput>() {
+			override get webview(): IOverlayWebview { return webview; }
+			override dispose(): void { inputDisposed = true; }
+		}();
+		const instantiationService = disposables.add(new TestInstantiationService());
+		instantiationService.stubInstance(WebviewInput, input);
+		const webviewService = new class extends mock<IWebviewService>() {
+			override readonly onDidChangeActiveWebview = Event.None;
+			override createWebviewOverlay(): IOverlayWebview { return webview; }
+		}();
+		const webviewWorkbenchService = disposables.add(new WebviewEditorService(
+			editorGroupsService,
+			editorService,
+			instantiationService,
+			webviewService,
+		));
+
+		await assert.rejects(webviewWorkbenchService.openWebview({
+			providedViewType: 'vibe-vscode.projectSwitcher.fullscreen',
+			title: 'Sessions',
+			options: {},
+			contentOptions: {},
+			extension: undefined,
+		}, 'mainThreadWebview-vibe-vscode.projectSwitcher.fullscreen', 'Sessions', undefined, {
+			group: MODAL_GROUP,
+			preserveFocus: false,
+			modal: { fullscreen: true },
+		}), /could not be opened/);
+		assert.deepStrictEqual({ inputDisposed, modalClosed }, { inputDisposed: true, modalClosed: true });
+	});
+
+	test('accepts a preserve-focus webview mounted without an active editor pane', async () => {
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly onDidAddGroup = Event.None;
+			override readonly onDidRemoveGroup = Event.None;
+			override readonly onDidMoveGroup = Event.None;
+			override registerContextKeyProvider(): IDisposable { return Disposable.None; }
+		}();
+		const webviewDidDispose = disposables.add(new Emitter<void>());
+		const webview = new class extends mock<IOverlayWebview>() {
+			override readonly onDidDispose = webviewDidDispose.event;
+		}();
+		const input = new class extends mock<WebviewInput>() {
+			override get webview(): IOverlayWebview { return webview; }
+		}();
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidActiveEditorChange = Event.None;
+			override readonly onDidVisibleEditorsChange = Event.None;
+			override readonly editors = [input];
+			override async openEditor(): Promise<undefined> { return undefined; }
+		}();
+		const instantiationService = disposables.add(new TestInstantiationService());
+		instantiationService.stubInstance(WebviewInput, input);
+		const webviewService = new class extends mock<IWebviewService>() {
+			override readonly onDidChangeActiveWebview = Event.None;
+			override createWebviewOverlay(): IOverlayWebview { return webview; }
+		}();
+		const webviewWorkbenchService = disposables.add(new WebviewEditorService(
+			editorGroupsService,
+			editorService,
+			instantiationService,
+			webviewService,
+		));
+
+		const opened = await webviewWorkbenchService.openWebview({
+			providedViewType: 'test.preserveFocus',
+			title: 'Preserved',
+			options: {},
+			contentOptions: {},
+			extension: undefined,
+		}, 'mainThreadWebview-test.preserveFocus', 'Preserved', undefined, {
+			group: 1,
+			preserveFocus: true,
+		});
+
+		assert.strictEqual(opened, input);
 	});
 });

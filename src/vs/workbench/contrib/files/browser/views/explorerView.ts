@@ -772,7 +772,12 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 
 		// Wait for the last execution to complete before executing
 		if (this.setTreeInputPromise) {
-			await this.setTreeInputPromise;
+			try {
+				await this.setTreeInputPromise;
+			} catch {
+				// The caller that owned the failed projection observes its error. A later projection
+				// must still be able to derive and apply the newest Explorer input.
+			}
 		}
 
 		const initialInputSetup = !this.tree.getInput();
@@ -832,7 +837,13 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 			delay: this.layoutService.isRestored() ? 800 : 1500 // reduce progress visibility when still restoring
 		}, _progress => promise);
 
-		await promise;
+		try {
+			await promise;
+		} finally {
+			if (this.setTreeInputPromise === promise) {
+				this.setTreeInputPromise = undefined;
+			}
+		}
 	}
 
 	async closeFind(): Promise<void> {

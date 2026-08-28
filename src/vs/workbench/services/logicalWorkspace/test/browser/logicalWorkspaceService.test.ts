@@ -11,7 +11,7 @@ import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { StorageScope, WillSaveStateReason } from '../../../../../platform/storage/common/storage.js';
+import { StorageScope, StorageTarget, WillSaveStateReason } from '../../../../../platform/storage/common/storage.js';
 import { WorkbenchState, Workspace } from '../../../../../platform/workspace/common/workspace.js';
 import { TestContextService, TestStorageService } from '../../../../test/common/workbenchTestServices.js';
 import { TestRemoteAgentService } from '../../../../test/browser/workbenchTestServices.js';
@@ -467,6 +467,29 @@ suite('LogicalWorkspaceService', () => {
 			isReady: true,
 			activeWorkspaceId: selectedWorkspaceId,
 			storedActiveWorkspaceId: selectedWorkspaceId,
+		});
+	});
+
+	test('preserves a valid legacy selection after the authoritative catalog is ready', async () => {
+		const firstWorkspace = { id: 'workspace-a', name: 'A', terminalIds: [], shellLayout: undefined };
+		const selectedWorkspace = { id: 'workspace-b', name: 'B', terminalIds: [], shellLayout: undefined };
+		storageService.store('workbench.logicalWorkspace.state.v1', JSON.stringify({
+			schemaVersion: 1,
+			activeWorkspaceId: selectedWorkspace.id,
+			workspaces: [firstWorkspace, selectedWorkspace],
+		}), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		const initialize = stateStore.delayInitialize();
+		const service = createService();
+
+		await initialize.complete({ schemaVersion: 2, workspaces: [firstWorkspace, selectedWorkspace] });
+		await service.whenReady;
+
+		assert.deepStrictEqual({
+			activeWorkspaceId: service.activeWorkspace.id,
+			storedActiveWorkspaceId: stateStore.readActiveWorkspaceId(contextService.getWorkspace().id),
+		}, {
+			activeWorkspaceId: selectedWorkspace.id,
+			storedActiveWorkspaceId: selectedWorkspace.id,
 		});
 	});
 
@@ -1037,6 +1060,37 @@ suite('LogicalWorkspaceService', () => {
 		assert.deepStrictEqual({ applied, firstCurrentAfterAsyncBoundary }, {
 			applied: ['workspace', 'workspace'],
 			firstCurrentAfterAsyncBoundary: true,
+		});
+	});
+
+	test('synchronous projection feedback cannot start a concurrent runner', async () => {
+		const releaseFirst = new DeferredPromise<void>();
+		const firstStarted = new DeferredPromise<void>();
+		const applied: string[] = [];
+		let activeApplyCount = 0;
+		let maximumActiveApplyCount = 0;
+		const coordinator = disposables.add(new AsyncProjectionCoordinator<string>('test', async context => {
+			activeApplyCount++;
+			maximumActiveApplyCount = Math.max(maximumActiveApplyCount, activeApplyCount);
+			applied.push(context.value);
+			if (applied.length === 1) {
+				void coordinator.request('workspace');
+				await firstStarted.complete();
+				await releaseFirst.p;
+			}
+			activeApplyCount--;
+		}, new NullLogService(), (current, next) => current === next));
+
+		const first = coordinator.request('workspace');
+		await firstStarted.p;
+		assert.strictEqual(maximumActiveApplyCount, 1);
+		await releaseFirst.complete();
+		await first;
+		await coordinator.whenIdle();
+
+		assert.deepStrictEqual({ applied, maximumActiveApplyCount }, {
+			applied: ['workspace', 'workspace'],
+			maximumActiveApplyCount: 1,
 		});
 	});
 });

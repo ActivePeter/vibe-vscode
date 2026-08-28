@@ -78,6 +78,8 @@ export class ProjectContextService extends Disposable implements IProjectContext
 			'Project Context',
 			context => this.applyProjectContext(context),
 			logService,
+			(current, next) => current.folderUri === next.folderUri
+				|| (current.folderUri !== undefined && next.folderUri !== undefined && isEqual(current.folderUri, next.folderUri)),
 		));
 
 		const updateProjectContext = () => this.synchronizeAvailableFolders();
@@ -85,10 +87,9 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		this._register(this.workspaceContextService.onDidChangeWorkbenchState(updateProjectContext));
 		this._register(this.workspaceContextService.onDidChangeWorkspaceName(() => this._onDidChangeProjectContext.fire()));
 		const requestSCMProjection = () => {
-			const folder = this.selectedFolder;
-			if (folder) {
-				void this.requestProjectContextProjection(folder);
-			}
+			// An empty Project is also an authoritative target. Keep reprojecting its empty SCM set
+			// when repository discovery or a user visibility change tries to repopulate the view.
+			void this.requestProjectContextProjection(this.selectedFolder);
 		};
 		// SCM adds every newly discovered repository to the visible set in multiple mode.
 		// Reproject for every catalog change, including repositories outside this Project.
@@ -214,12 +215,16 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		if (folderUri && !folder) {
 			return;
 		}
-		await this.explorerService.setActiveRoot(folder?.uri);
-		if (!context.isCurrent()) {
-			return;
+		try {
+			await this.explorerService.setActiveRoot(folder?.uri);
+		} finally {
+			// Explorer and SCM are independent projections of the same Project authority. A failed
+			// Find/tree cleanup must not prevent the current SCM repository set from converging.
+			if (context.isCurrent()) {
+				this.applySCMProjection(folder);
+			}
 		}
-
-		if (!folder) {
+		if (!context.isCurrent() || !folder) {
 			return;
 		}
 
@@ -235,12 +240,12 @@ export class ProjectContextService extends Disposable implements IProjectContext
 			this.pendingRevealFolderUri = undefined;
 		}
 
-		this.applySCMProjection(folder);
 	}
 
-	private applySCMProjection(folder: IWorkspaceFolder): void {
-		const projectRepositories = Array.from(this.scmService.repositories)
-			.filter(repository => repository.provider.isHidden !== true && this.belongsToProject(repository, folder));
+	private applySCMProjection(folder: IWorkspaceFolder | undefined): void {
+		const projectRepositories = folder
+			? Array.from(this.scmService.repositories).filter(repository => repository.provider.isHidden !== true && this.belongsToProject(repository, folder))
+			: [];
 		const primaryRepository = [...projectRepositories]
 			.sort((left, right) => left.provider.rootUri!.path.length - right.provider.rootUri!.path.length)[0];
 		const visibleRepositories = this.scmViewService.selectionModeConfig.get() === ISCMRepositorySelectionMode.Single

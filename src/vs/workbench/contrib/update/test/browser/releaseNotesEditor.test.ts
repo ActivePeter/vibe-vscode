@@ -82,17 +82,73 @@ suite('ReleaseNotesManager', () => {
 			loadReleaseNotes(version: string, useCurrentFile: boolean): Promise<string>;
 			getBase(useCurrentFile: boolean): Promise<URI>;
 			renderBody(meta: { text: string; base: URI }): Promise<string>;
+			updateHtml(): Promise<void>;
 		};
-		internals.loadReleaseNotes = async version => version;
+		const delayedLoadStarted = new DeferredPromise<void>();
+		const releaseDelayedLoad = new DeferredPromise<void>();
+		const delayedLoadVersion = '1.2.5';
+		internals.loadReleaseNotes = async version => {
+			if (version === delayedLoadVersion) {
+				await delayedLoadStarted.complete();
+				await releaseDelayedLoad.p;
+			}
+			return version;
+		};
 		internals.getBase = async () => URI.file('/release-notes');
-		internals.renderBody = async meta => `<html>${meta.text}</html>`;
+		const delayedRenderStarted = new DeferredPromise<void>();
+		const releaseDelayedRender = new DeferredPromise<void>();
+		const delayedVersion = '1.2.7';
+		internals.renderBody = async meta => {
+			if (meta.text === delayedVersion) {
+				await delayedRenderStarted.complete();
+				await releaseDelayedRender.p;
+			}
+			return `<html>${meta.text}</html>`;
+		};
 
 		const firstWave = [manager.show('1.2.3', false), manager.show('1.2.4', false)];
 		await timeout(0);
 		assert.strictEqual(openCount, 1);
 		await openGates[0].complete();
 		await Promise.all(firstWave);
-		assert.deepStrictEqual({ htmlWrites: inputs[0].html.length, titleWrites: inputs[0].titles.length }, { htmlWrites: 2, titleWrites: 2 });
+		assert.deepStrictEqual({ htmlWrites: inputs[0].html.length, titleWrites: inputs[0].titles.length }, { htmlWrites: 1, titleWrites: 1 });
+
+		const olderLoad = manager.show(delayedLoadVersion, false);
+		await delayedLoadStarted.p;
+		await manager.show('1.2.6', false);
+		await releaseDelayedLoad.complete();
+		await olderLoad;
+		assert.strictEqual(inputs[0].html.at(-1), '<html>1.2.6</html>');
+
+		const olderRender = manager.show(delayedVersion, false);
+		await delayedRenderStarted.p;
+		await manager.show('1.2.8', false);
+		await releaseDelayedRender.complete();
+		await olderRender;
+		assert.strictEqual(inputs[0].html.at(-1), '<html>1.2.8</html>');
+
+		const interleavedRenderStarted = new DeferredPromise<void>();
+		const releaseInterleavedRender = new DeferredPromise<void>();
+		let interleavedRenderCount = 0;
+		internals.renderBody = async meta => {
+			if (meta.text === '1.2.9' && interleavedRenderCount++ === 0) {
+				await interleavedRenderStarted.complete();
+				await releaseInterleavedRender.p;
+			}
+			return `<html>${meta.text}</html>`;
+		};
+		const interleavedShow = manager.show('1.2.9', false);
+		await interleavedRenderStarted.p;
+		await internals.updateHtml();
+		await releaseInterleavedRender.complete();
+		await interleavedShow;
+		assert.deepStrictEqual({
+			title: inputs[0].titles.at(-1),
+			html: inputs[0].html.at(-1),
+		}, {
+			title: 'Release Notes: 1.2.9',
+			html: '<html>1.2.9</html>',
+		});
 
 		inputs[0].dispose();
 		const secondWave = [manager.show('1.3.0', false), manager.show('1.3.1', false)];
@@ -107,8 +163,8 @@ suite('ReleaseNotesManager', () => {
 			titleWrites: inputs[1].titles.length,
 		}, {
 			openCount: 2,
-			htmlWrites: 2,
-			titleWrites: 2,
+			htmlWrites: 1,
+			titleWrites: 1,
 		});
 		inputs[1].dispose();
 	});

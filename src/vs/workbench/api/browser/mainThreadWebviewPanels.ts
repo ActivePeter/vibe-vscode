@@ -109,6 +109,7 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 	private readonly _proxy: extHostProtocol.ExtHostWebviewPanelsShape;
 
 	private readonly _webviewInputs = new WebviewInputStore();
+	private _pendingFullscreenHandle: extHostProtocol.WebviewHandle | undefined;
 
 	private readonly _revivers = this._register(new DisposableMap<string>());
 
@@ -197,38 +198,46 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 			if (!isTrustedFullscreenExtension) {
 				throw new Error(localize('vibeVscodeFullscreenPanelUnauthorized', "Only the built-in vibe vscode extension can open the vibe vscode fullscreen panel."));
 			}
-			if (this._editorGroupService.activeModalEditorPart) {
+			if (this._editorGroupService.activeModalEditorPart || this._pendingFullscreenHandle) {
 				throw new Error(localize('vibeVscodeFullscreenPanelModalConflict', "Close the current modal editor before opening the vibe vscode fullscreen panel."));
 			}
+			this._pendingFullscreenHandle = handle;
 		}
 
-		const mainThreadShowOptions = this.getWorkbenchShowOptions(showOptions, fullscreen);
-
-		const origin = this.webviewOriginStore.getOrigin(viewType, extension.id);
-
-		const webview = await this._webviewWorkbenchService.openWebview({
-			origin,
-			providedViewType: viewType,
-			title: initData.title,
-			options: reviveWebviewOptions(initData.panelOptions),
-			contentOptions: reviveWebviewContentOptions(initData.webviewOptions),
-			extension
-		}, this.webviewPanelViewType.fromExternal(viewType), initData.title, undefined, mainThreadShowOptions);
-
 		try {
-			this.addWebviewInput(
-				handle,
-				webview,
-				{ serializeBuffersForPostMessage: initData.serializeBuffersForPostMessage },
-				fullscreen ? WebviewPanelPresentation.FullscreenModal : WebviewPanelPresentation.Editor,
-			);
-			// Opening the editor can emit its initial active/visible events before the handle is
-			// registered above. Publish the mounted state explicitly so ExtHost does not retain
-			// its optimistic construction defaults until an unrelated editor event occurs.
-			this.updateWebviewViewStates(this._editorService.activeEditor);
-		} catch (error) {
-			webview.dispose();
-			throw error;
+			const mainThreadShowOptions = this.getWorkbenchShowOptions(showOptions, fullscreen);
+			const origin = this.webviewOriginStore.getOrigin(viewType, extension.id);
+			const webview = await this._webviewWorkbenchService.openWebview({
+				origin,
+				providedViewType: viewType,
+				title: initData.title,
+				options: reviveWebviewOptions(initData.panelOptions),
+				contentOptions: reviveWebviewContentOptions(initData.webviewOptions),
+				extension
+			}, this.webviewPanelViewType.fromExternal(viewType), initData.title, undefined, mainThreadShowOptions);
+
+			try {
+				this.addWebviewInput(
+					handle,
+					webview,
+					{ serializeBuffersForPostMessage: initData.serializeBuffersForPostMessage },
+					fullscreen ? WebviewPanelPresentation.FullscreenModal : WebviewPanelPresentation.Editor,
+				);
+				// Opening the editor can emit its initial active/visible events before the handle is
+				// registered above. Publish the mounted state explicitly so ExtHost does not retain
+				// its optimistic construction defaults until an unrelated editor event occurs.
+				this.updateWebviewViewStates(this._editorService.activeEditor);
+			} catch (error) {
+				webview.dispose();
+				if (fullscreen) {
+					await this.closeEmptyFullscreenModal();
+				}
+				throw error;
+			}
+		} finally {
+			if (this._pendingFullscreenHandle === handle) {
+				this._pendingFullscreenHandle = undefined;
+			}
 		}
 	}
 
@@ -267,6 +276,18 @@ export class MainThreadWebviewPanels extends Disposable implements extHostProtoc
 			group: fullscreen ? MODAL_GROUP : this.getTargetGroupFromShowOptions(showOptions),
 			modal: fullscreen ? { fullscreen: true } : undefined,
 		};
+	}
+
+	private async closeEmptyFullscreenModal(): Promise<void> {
+		const modalEditorPart = this._editorGroupService.activeModalEditorPart;
+		if (!modalEditorPart?.fullscreen || !modalEditorPart.activeGroup.isEmpty) {
+			return;
+		}
+		try {
+			await modalEditorPart.close();
+		} catch (error) {
+			onUnexpectedError(error);
+		}
 	}
 
 	private getTargetGroupFromShowOptions(showOptions: extHostProtocol.WebviewPanelShowOptions): PreferredGroup {

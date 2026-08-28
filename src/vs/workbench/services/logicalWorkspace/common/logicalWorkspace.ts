@@ -98,7 +98,12 @@ export function parseLogicalWorkspaceMutation(raw: unknown): ILogicalWorkspaceMu
 	switch (candidate.type) {
 		case LogicalWorkspaceMutationType.CreateWorkspace: {
 			const state = parseLogicalWorkspaceSharedState({ schemaVersion: LOGICAL_WORKSPACE_SHARED_SCHEMA_VERSION, workspaces: [candidate.workspace] });
-			return state ? { type: candidate.type, workspace: state.workspaces[0] } : undefined;
+			const workspace = state?.workspaces[0];
+			// terminalIds is migration-only. Accepting it on new identities would reintroduce a
+			// second ownership writer and can violate catalog-wide legacy ID uniqueness.
+			return workspace && workspace.terminalIds.length === 0
+				? { type: candidate.type, workspace }
+				: undefined;
 		}
 		case LogicalWorkspaceMutationType.SetShellLayout:
 			return typeof candidate.workspaceId === 'string' && candidate.workspaceId && candidate.shellLayout !== undefined && isLogicalWorkspaceShellLayout(candidate.shellLayout)

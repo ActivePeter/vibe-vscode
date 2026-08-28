@@ -143,6 +143,34 @@ suite('RemoteLogicalWorkspaceStateChannel', () => {
 		});
 	});
 
+	test('rejects new Workspace mutations that write migration-only Terminal ownership', async () => {
+		const channel = createChannel();
+		const physicalWorkspaceId = 'physical';
+		const initial: ILogicalWorkspaceSharedState = {
+			schemaVersion: 2,
+			workspaces: [{ id: 'existing', name: 'existing', terminalIds: ['legacy-terminal'], shellLayout: undefined }],
+		};
+		await callForSnapshot(channel, RemoteLogicalWorkspaceStateCommand.Initialize, { physicalWorkspaceId, state: initial });
+
+		const rejected = await channel.call<IRemoteLogicalWorkspaceStateResult<IRemoteLogicalWorkspaceStateSnapshot>>(undefined, RemoteLogicalWorkspaceStateCommand.Mutate, {
+			physicalWorkspaceId,
+			mutation: {
+				type: LogicalWorkspaceMutationType.CreateWorkspace,
+				workspace: { id: 'new', name: 'new', terminalIds: ['legacy-terminal'], shellLayout: undefined },
+			},
+		});
+		const afterRejectedMutation = await callForSnapshot(channel, RemoteLogicalWorkspaceStateCommand.Read, { physicalWorkspaceId });
+
+		assert.deepStrictEqual({ rejected, afterRejectedMutation }, {
+			rejected: {
+				status: 'error',
+				code: 'invalidRequest',
+				message: 'A valid Logical Workspace mutation is required',
+			},
+			afterRejectedMutation: { revision: 1, state: initial },
+		});
+	});
+
 	test('does not confirm a failed database update', async function () {
 		this.timeout(10000);
 		const testDir = getRandomTestPath(os.tmpdir(), 'vsctests', 'logical-workspace-state');

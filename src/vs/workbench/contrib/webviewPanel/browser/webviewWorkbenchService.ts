@@ -10,6 +10,7 @@ import { isCancellationError, onUnexpectedError } from '../../../../base/common/
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Iterable } from '../../../../base/common/iterator.js';
 import { combinedDisposable, Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { localize } from '../../../../nls.js';
 import { EditorActivation, IModalEditorPartOptions } from '../../../../platform/editor/common/editor.js';
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -208,14 +209,14 @@ export class WebviewEditorService extends Disposable implements IWebviewWorkbenc
 	private readonly _revivalPool = new RevivalPool();
 
 	constructor(
-		@IEditorGroupsService editorGroupsService: IEditorGroupsService,
+		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IWebviewService private readonly _webviewService: IWebviewService,
 	) {
 		super();
 
-		this._register(editorGroupsService.registerContextKeyProvider({
+		this._register(this._editorGroupsService.registerContextKeyProvider({
 			contextKey: CONTEXT_ACTIVE_WEBVIEW_PANEL_ID,
 			getGroupContextKeyValue: (group) => this.getWebviewId(group.activeEditor),
 		}));
@@ -280,6 +281,7 @@ export class WebviewEditorService extends Disposable implements IWebviewWorkbenc
 	): Promise<WebviewInput> {
 		const webview = this._webviewService.createWebviewOverlay(webviewInitInfo);
 		const webviewInput = this._instantiationService.createInstance(WebviewInput, { viewType, name: title, providedId: webviewInitInfo.providedViewType, iconPath }, webview);
+		const previousModalEditorPart = this._editorGroupsService.activeModalEditorPart;
 		try {
 			await this._editorService.openEditor(webviewInput, {
 				pinned: true,
@@ -289,9 +291,20 @@ export class WebviewEditorService extends Disposable implements IWebviewWorkbenc
 				// but make sure to restore the editor to fix https://github.com/microsoft/vscode/issues/79633
 				activation: showOptions.preserveFocus ? EditorActivation.RESTORE : undefined
 			}, showOptions.group);
+			if (!this._editorService.editors.includes(webviewInput)) {
+				throw new Error(localize('webviewEditorDidNotOpen', "The webview editor could not be opened."));
+			}
 			return webviewInput;
 		} catch (error) {
 			webviewInput.dispose();
+			const createdModalEditorPart = this._editorGroupsService.activeModalEditorPart;
+			if (showOptions.modal && createdModalEditorPart && createdModalEditorPart !== previousModalEditorPart && createdModalEditorPart.activeGroup.isEmpty) {
+				try {
+					await createdModalEditorPart.close();
+				} catch (closeError) {
+					onUnexpectedError(closeError);
+				}
+			}
 			throw error;
 		}
 	}

@@ -77,7 +77,9 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 
 	private ensureRunning(): void {
 		if (!this.running) {
-			const running = this.run();
+			// Publish the runner before invoking projection code. An apply call can synchronously
+			// emit feedback that requests another projection before reaching its first await.
+			const running = Promise.resolve().then(() => this.run());
 			this.running = running.finally(() => {
 				this.running = undefined;
 				if (this.pendingRequest && !this.disposed) {

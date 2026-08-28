@@ -3,8 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { isNumber, isObject } from '../../../../base/common/types.js';
+import { isUriComponents } from '../../../../base/common/uri.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { TitleEventSource } from '../../../../platform/terminal/common/terminal.js';
 import { IEditorSerializer } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { ISerializedTerminalEditorInput, ITerminalInstance, ITerminalService, type IDeserializedTerminalEditorInput } from './terminal.js';
@@ -64,8 +67,59 @@ export class TerminalInputSerializer implements IEditorSerializer {
 }
 
 function isDeserializedTerminalEditorInput(obj: unknown): obj is IDeserializedTerminalEditorInput {
-	return isObject(obj) && 'id' in obj && isNumber(obj.id) && 'pid' in obj && isNumber(obj.pid)
-		&& (!('logicalWorkspaceId' in obj) || obj.logicalWorkspaceId === undefined || typeof obj.logicalWorkspaceId === 'string')
-		&& (!('logicalTerminalId' in obj) || obj.logicalTerminalId === undefined || typeof obj.logicalTerminalId === 'string')
-		&& (!('remoteAuthority' in obj) || obj.remoteAuthority === undefined || obj.remoteAuthority === null || (typeof obj.remoteAuthority === 'string' && obj.remoteAuthority.length > 0));
+	if (!isObject(obj)) {
+		return false;
+	}
+	const candidate = obj as Record<string, unknown>;
+	return isNonNegativeSafeInteger(candidate.id)
+		&& isNonNegativeSafeInteger(candidate.pid)
+		&& isOptionalNonEmptyString(candidate.logicalWorkspaceId)
+		&& isOptionalNonEmptyString(candidate.logicalTerminalId)
+		&& (candidate.remoteAuthority === undefined || candidate.remoteAuthority === null || isNonEmptyString(candidate.remoteAuthority))
+		&& typeof candidate.title === 'string'
+		&& isTitleEventSource(candidate.titleSource)
+		&& typeof candidate.cwd === 'string'
+		&& isOptionalTerminalIcon(candidate.icon)
+		&& (candidate.color === undefined || typeof candidate.color === 'string')
+		&& (candidate.hasChildProcesses === undefined || typeof candidate.hasChildProcesses === 'boolean')
+		&& (candidate.type === undefined || candidate.type === 'Task' || candidate.type === 'Local')
+		&& (candidate.isFeatureTerminal === undefined || typeof candidate.isFeatureTerminal === 'boolean')
+		&& (candidate.hideFromUser === undefined || typeof candidate.hideFromUser === 'boolean')
+		&& isOptionalReconnectionProperties(candidate.reconnectionProperties)
+		&& typeof candidate.shellIntegrationNonce === 'string';
+}
+
+function isNonNegativeSafeInteger(candidate: unknown): candidate is number {
+	return Number.isSafeInteger(candidate) && (candidate as number) >= 0;
+}
+
+function isOptionalNonEmptyString(candidate: unknown): candidate is string | undefined {
+	return candidate === undefined || isNonEmptyString(candidate);
+}
+
+function isNonEmptyString(candidate: unknown): candidate is string {
+	return typeof candidate === 'string' && candidate.length > 0;
+}
+
+function isTitleEventSource(candidate: unknown): candidate is TitleEventSource {
+	return candidate === TitleEventSource.Api
+		|| candidate === TitleEventSource.Process
+		|| candidate === TitleEventSource.Sequence
+		|| candidate === TitleEventSource.Config;
+}
+
+function isOptionalTerminalIcon(candidate: unknown): boolean {
+	if (candidate === undefined || ThemeIcon.isThemeIcon(candidate) || isUriComponents(candidate)) {
+		return true;
+	}
+
+	if (!isObject(candidate)) {
+		return false;
+	}
+	const icon = candidate as Record<string, unknown>;
+	return isUriComponents(icon.light) && isUriComponents(icon.dark);
+}
+
+function isOptionalReconnectionProperties(candidate: unknown): boolean {
+	return candidate === undefined || (isObject(candidate) && isNonEmptyString((candidate as Record<string, unknown>).ownerId));
 }

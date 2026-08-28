@@ -223,7 +223,7 @@ export class PtyHostService extends Disposable implements IPtyHostService {
 	attachToProcess(id: number): Promise<void> {
 		return this._proxy.attachToProcess(id);
 	}
-	detachFromProcess(id: number, forcePersist?: boolean): Promise<boolean> {
+	detachFromProcess(id: number, forcePersist?: boolean): Promise<void> {
 		return this._proxy.detachFromProcess(id, forcePersist);
 	}
 	shutdownAll(): Promise<void> {

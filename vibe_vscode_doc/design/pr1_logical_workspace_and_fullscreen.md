@@ -252,7 +252,7 @@ Terminal 创建与投影遵循以下目标流程：
 
 Terminal projection 通过通用 Coordinator 把自身触发的 `onDidChangeInstances` 合并到同 target transaction 尾部，因此一次 reconcile 可以完成整批迁移，而不会每移动一个实例就启动新 generation。`showBackgroundTerminal()` 的完成语义包含 editor `openEditor()`；若期间切换到另一 Workspace，旧恢复完成后会被 generation check 截断，再由新 target transaction 收敛。
 
-Terminal ownership 随 PTY process 存活，不再根据 `TerminalExitReason.Shutdown` 修改 Workspace snapshot。PTY detach 从后端逐层返回 `processWasRetained`；只有后端确认进程进入可重连状态，Terminal instance 才记录 `processWasDetached=true`。真正结束的进程自然不再出现在 Terminal authority 中。
+Terminal ownership 随 PTY process 存活，不再根据 `TerminalExitReason.Shutdown` 修改 Workspace snapshot。是否可重连继续由 VS Code 原有的 PTY detach/persistence 生命周期决定；真正结束的进程自然不再出现在 Terminal authority 中。
 
 旧 snapshot 的 `terminalIds` 只用于一次兼容迁移：恢复老进程时查找对应 Workspace，把结果写入 `ProcessPropertyType.LogicalWorkspaceId`。后续投影只读取 Terminal instance metadata。
 
@@ -333,6 +333,7 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 - `/mnt/ceph/vibe-vscode` 是端口 `18080`、`18081` 唯一允许的构建源；
 - `18080` 运行当前 checkout 的可变开发输出；`18081` 可运行不可变 package，但 package 也必须由本 checkout 构建；
 - 两个服务都监听 `0.0.0.0`；
+- 对外监听仍使用 VS Code 原生 connection token；完整账号登录和首次注册由 Issue #2 后续实现；
 - 服务 state 继续保存在 `/mnt/ceph/dever_for_dev/.dever/vscode-services`，源码 authority 与用户状态目录相互独立。
 
 本地通用 quick start 可以使用默认端口；它不覆盖上述托管端口和监听地址规约。

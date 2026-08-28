@@ -44,6 +44,8 @@ export class ReleaseNotesManager extends Disposable {
 	private _currentReleaseNotes: WebviewInput | undefined = undefined;
 	private _currentReleaseNotesCreation: Promise<WebviewInput> | undefined;
 	private _lastMeta: { text: string; base: URI } | undefined;
+	private _showGeneration = 0;
+	private _htmlGeneration = 0;
 
 	constructor(
 		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
@@ -63,7 +65,7 @@ export class ReleaseNotesManager extends Disposable {
 		super();
 
 		this._register(TokenizationRegistry.onDidChange(() => {
-			return this.updateHtml();
+			void this.updateHtml().catch(onUnexpectedError);
 		}));
 
 		this._register(_configurationService.onDidChangeConfiguration((e) => this.onDidChangeConfiguration(e)));
@@ -72,12 +74,15 @@ export class ReleaseNotesManager extends Disposable {
 	}
 
 	private async updateHtml() {
-		if (!this._currentReleaseNotes || !this._lastMeta) {
+		const releaseNotes = this._currentReleaseNotes;
+		const meta = this._lastMeta;
+		if (!releaseNotes || !meta) {
 			return;
 		}
-		const html = await this.renderBody(this._lastMeta);
-		if (this._currentReleaseNotes) {
-			this._currentReleaseNotes.webview.setHtml(html);
+		const generation = ++this._htmlGeneration;
+		const html = await this.renderBody(meta);
+		if (generation === this._htmlGeneration && this._currentReleaseNotes === releaseNotes && this._lastMeta === meta) {
+			releaseNotes.webview.setHtml(html);
 		}
 	}
 
@@ -92,17 +97,34 @@ export class ReleaseNotesManager extends Disposable {
 	}
 
 	public async show(version: string, useCurrentFile: boolean): Promise<boolean> {
+		const showGeneration = ++this._showGeneration;
 		const releaseNoteText = await this.loadReleaseNotes(version, useCurrentFile);
+		if (showGeneration !== this._showGeneration) {
+			return true;
+		}
 		const base = await this.getBase(useCurrentFile);
-		this._lastMeta = { text: releaseNoteText, base };
-		const html = await this.renderBody(this._lastMeta);
+		if (showGeneration !== this._showGeneration) {
+			return true;
+		}
+		const meta = { text: releaseNoteText, base };
+		this._lastMeta = meta;
+		const htmlGeneration = ++this._htmlGeneration;
+		const html = await this.renderBody(meta);
+		if (showGeneration !== this._showGeneration || this._lastMeta !== meta) {
+			return true;
+		}
 		const title = nls.localize('releaseNotesInputName', "Release Notes: {0}", version);
 
 		const activeEditorPane = this._editorService.activeEditorPane;
 		const shouldReveal = !!this._currentReleaseNotes || !!this._currentReleaseNotesCreation;
 		const releaseNotes = this._currentReleaseNotes ?? await this.getOrCreateReleaseNotes(title, useCurrentFile, base);
+		if (showGeneration !== this._showGeneration || this._lastMeta !== meta || this._currentReleaseNotes !== releaseNotes) {
+			return true;
+		}
 		releaseNotes.setWebviewTitle(title);
-		releaseNotes.webview.setHtml(html);
+		if (htmlGeneration === this._htmlGeneration) {
+			releaseNotes.webview.setHtml(html);
+		}
 		if (shouldReveal) {
 			this._webviewWorkbenchService.revealWebview(releaseNotes, {
 				group: activeEditorPane ? activeEditorPane.group : this._editorGroupService.activeGroup,
@@ -118,7 +140,7 @@ export class ReleaseNotesManager extends Disposable {
 			return Promise.resolve(this._currentReleaseNotes);
 		}
 		if (!this._currentReleaseNotesCreation) {
-			const creation = this.createReleaseNotes(title, useCurrentFile, base);
+			const creation = Promise.resolve().then(() => this.createReleaseNotes(title, useCurrentFile, base));
 			this._currentReleaseNotesCreation = creation;
 			creation.then(
 				() => {

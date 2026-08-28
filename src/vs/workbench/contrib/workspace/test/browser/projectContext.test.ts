@@ -9,7 +9,7 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ISettableObservable, observableValue } from '../../../../../base/common/observable.js';
-import { joinPath } from '../../../../../base/common/resources.js';
+import { isEqual, joinPath } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -63,6 +63,9 @@ class TestSCMViewService extends mock<ISCMViewService>() {
 		const removed = [...previous].filter(repository => !next.has(repository));
 		if (added.length || removed.length) {
 			this._onDidChangeVisibleRepositories.fire({ added, removed });
+		}
+		if (this._focusedRepository && !next.has(this._focusedRepository)) {
+			this._focusedRepository = undefined;
 		}
 	}
 
@@ -266,6 +269,69 @@ suite('ProjectContextService', () => {
 		store.dispose();
 	});
 
+	test('clears Explorer and SCM projections when the last Project folder is removed', async () => {
+		const store = disposables.add(new DisposableStore());
+		const projectFolder = createFolder('project', 0);
+		let folders: IWorkspaceFolder[] = [projectFolder];
+		const foldersChanged = store.add(new Emitter<IWorkspaceFoldersChangeEvent>());
+		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
+			override readonly onDidChangeWorkspaceFolders = foldersChanged.event;
+			override readonly onDidChangeWorkspaceName = Event.None;
+			override readonly onDidChangeWorkbenchState = Event.None;
+			override getWorkspace(): IWorkspace { return { id: 'physical', folders }; }
+		};
+		const activeRoots: Array<URI | undefined> = [];
+		const explorerService = new class extends mock<IExplorerService>() {
+			override async setActiveRoot(resource: URI | undefined): Promise<void> { activeRoots.push(resource); }
+		};
+		const repository = createRepository(projectFolder.uri);
+		const scmService = new class extends mock<ISCMService>() {
+			override readonly onDidAddRepository = Event.None;
+			override readonly onDidRemoveRepository = Event.None;
+			override get repositories(): Iterable<ISCMRepository> { return [repository]; }
+		};
+		const scmViewService = store.add(new TestSCMViewService(ISCMRepositorySelectionMode.Multiple, [repository]));
+		const service = store.add(new ProjectContextService(
+			workspaceContextService,
+			new class extends mock<IQuickInputService>() { },
+			store.add(new TestStorageService()),
+			new class extends mock<ICommandService>() { },
+			new class extends mock<IPaneCompositePartService>() { },
+			explorerService,
+			scmService,
+			scmViewService,
+			new NullLogService(),
+		));
+		await timeout(0);
+
+		folders = [];
+		foldersChanged.fire({ added: [], removed: [projectFolder], changed: [] });
+		await timeout(0);
+
+		assert.deepStrictEqual({
+			selectedFolder: service.selectedFolder,
+			activeRoots,
+			visibleRepositories: scmViewService.visibleRepositories,
+			focusedRepository: scmViewService.focusedRepository,
+		}, {
+			selectedFolder: undefined,
+			activeRoots: [projectFolder.uri, undefined],
+			visibleRepositories: [],
+			focusedRepository: undefined,
+		});
+
+		scmViewService.setVisibleRepositoriesFromUser([repository]);
+		await timeout(0);
+		assert.deepStrictEqual({
+			visibleRepositories: scmViewService.visibleRepositories,
+			focusedRepository: scmViewService.focusedRepository,
+		}, {
+			visibleRepositories: [],
+			focusedRepository: undefined,
+		});
+		store.dispose();
+	});
+
 	test('a stale Project projection cannot reveal or focus after a newer selection', async () => {
 		const store = disposables.add(new DisposableStore());
 		const firstFolder = createFolder('first', 0);
@@ -376,7 +442,106 @@ suite('ProjectContextService', () => {
 		store.dispose();
 	});
 
-	test('projects an exact SCM repository set across selection modes and catalog changes', async () => {
+	test('same-Project SCM changes do not invalidate an in-flight selection', async () => {
+		const store = disposables.add(new DisposableStore());
+		const firstFolder = createFolder('first', 0);
+		const secondFolder = createFolder('second', 1);
+		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
+			override readonly onDidChangeWorkspaceFolders = Event.None;
+			override readonly onDidChangeWorkspaceName = Event.None;
+			override readonly onDidChangeWorkbenchState = Event.None;
+			override getWorkspace(): IWorkspace { return { id: 'physical', folders: [firstFolder, secondFolder] }; }
+		};
+		const quickInputService = new class extends mock<IQuickInputService>() {
+			override pick<T extends IQuickPickItem>(picks: Promise<QuickPickInput<T>[]> | QuickPickInput<T>[], options?: IPickOptions<T> & { canPickMany: true }, token?: CancellationToken): Promise<T[] | undefined>;
+			override pick<T extends IQuickPickItem>(picks: Promise<QuickPickInput<T>[]> | QuickPickInput<T>[], options?: IPickOptions<T> & { canPickMany: false }, token?: CancellationToken): Promise<T | undefined>;
+			override async pick<T extends IQuickPickItem>(picks: Promise<QuickPickInput<T>[]> | QuickPickInput<T>[]): Promise<T | undefined> {
+				const item = (await picks)[1];
+				return item?.type === 'separator' ? undefined : item;
+			}
+		};
+
+		const firstProjectionStarted = new DeferredPromise<void>();
+		const releaseFirstProjection = new DeferredPromise<void>();
+		const refreshProjectionStarted = new DeferredPromise<void>();
+		const releaseRefreshProjection = new DeferredPromise<void>();
+		let secondProjectionCount = 0;
+		const selectedResources: URI[] = [];
+		const explorerService = new class extends mock<IExplorerService>() {
+			override async setActiveRoot(resource: URI | undefined): Promise<void> {
+				if (!resource || !isEqual(resource, secondFolder.uri)) {
+					return;
+				}
+				secondProjectionCount++;
+				if (secondProjectionCount === 1) {
+					await firstProjectionStarted.complete();
+					await releaseFirstProjection.p;
+				} else {
+					await refreshProjectionStarted.complete();
+					await releaseRefreshProjection.p;
+				}
+			}
+			override async select(resource: URI): Promise<void> { selectedResources.push(resource); }
+		};
+		let openedExplorerCount = 0;
+		const paneCompositePartService = new class extends mock<IPaneCompositePartService>() {
+			override async openPaneComposite() {
+				openedExplorerCount++;
+				return undefined;
+			}
+		};
+
+		const firstRepository = createRepository(firstFolder.uri);
+		const secondRepository = createRepository(secondFolder.uri);
+		const repositories: ISCMRepository[] = [firstRepository];
+		const onDidAddRepository = store.add(new Emitter<ISCMRepository>());
+		const scmService = new class extends mock<ISCMService>() {
+			override readonly onDidAddRepository = onDidAddRepository.event;
+			override readonly onDidRemoveRepository = Event.None;
+			override get repositories(): Iterable<ISCMRepository> { return repositories; }
+		};
+		const scmViewService = store.add(new TestSCMViewService(ISCMRepositorySelectionMode.Multiple, [firstRepository]));
+		const service = store.add(new ProjectContextService(
+			workspaceContextService,
+			quickInputService,
+			store.add(new TestStorageService()),
+			new class extends mock<ICommandService>() { },
+			paneCompositePartService,
+			explorerService,
+			scmService,
+			scmViewService,
+			new NullLogService(),
+		));
+		await timeout(0);
+
+		const selection = service.pickProjectContext();
+		await firstProjectionStarted.p;
+		repositories.push(secondRepository);
+		onDidAddRepository.fire(secondRepository);
+		await releaseFirstProjection.complete();
+		await selection;
+
+		assert.deepStrictEqual({
+			selectedFolder: service.selectedFolder?.uri.toString(),
+			selectedResources: selectedResources.map(resource => resource.toString()),
+			openedExplorerCount,
+			visibleRepositories: scmViewService.visibleRepositories,
+			focusedRepository: scmViewService.focusedRepository,
+		}, {
+			selectedFolder: secondFolder.uri.toString(),
+			selectedResources: [secondFolder.uri.toString()],
+			openedExplorerCount: 1,
+			visibleRepositories: [secondRepository],
+			focusedRepository: secondRepository,
+		});
+
+		await refreshProjectionStarted.p;
+		await releaseRefreshProjection.complete();
+		await timeout(0);
+		store.dispose();
+	});
+
+	test('projects an exact SCM repository set across Explorer failures, selection modes, and catalog changes', async () => {
 		const store = disposables.add(new DisposableStore());
 		const projectFolder = createFolder('project', 0);
 		const otherFolder = createFolder('other', 1);
@@ -402,6 +567,7 @@ suite('ProjectContextService', () => {
 		};
 		const scmViewService = store.add(new TestSCMViewService(ISCMRepositorySelectionMode.Multiple, repositories));
 
+		let failExplorerProjection = true;
 		store.add(new ProjectContextService(
 			workspaceContextService,
 			new class extends mock<IQuickInputService>() { },
@@ -409,7 +575,12 @@ suite('ProjectContextService', () => {
 			new class extends mock<ICommandService>() { },
 			new class extends mock<IPaneCompositePartService>() { },
 			new class extends mock<IExplorerService>() {
-				override async setActiveRoot(): Promise<void> { }
+				override async setActiveRoot(): Promise<void> {
+					if (failExplorerProjection) {
+						failExplorerProjection = false;
+						throw new Error('Explorer cleanup failed');
+					}
+				}
 			},
 			scmService,
 			scmViewService,

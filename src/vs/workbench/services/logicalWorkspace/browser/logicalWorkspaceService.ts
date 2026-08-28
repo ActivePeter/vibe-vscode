@@ -288,7 +288,10 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		// truth before writing it back, never against that now-obsolete result.
 		const authoritativeState = this.parseSharedState(this.stateStore.readSharedState()) ?? initializedState;
 		this.acceptSharedStateAfterInitialization = false;
-		const preferredActiveWorkspaceId = candidate.shouldMarkConfigurationMigrated ? candidate.state.activeWorkspaceId : undefined;
+		// Keep the candidate selection only as an intent. The authoritative catalog below decides
+		// whether that identity is real, so a generated provisional ID is ignored while a valid
+		// legacy/page-local selection survives initialization.
+		const preferredActiveWorkspaceId = candidate.state.activeWorkspaceId;
 		this.applyLoadedState({
 			state: this.withActiveWorkspace(authoritativeState, undefined, preferredActiveWorkspaceId),
 			shouldMarkConfigurationMigrated: candidate.shouldMarkConfigurationMigrated,

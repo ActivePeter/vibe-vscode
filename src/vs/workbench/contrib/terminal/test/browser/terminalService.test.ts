@@ -13,9 +13,10 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
-import { TerminalLocation, TitleEventSource, type ICreateContributedTerminalProfileOptions, type IPtyHostAttachTarget, type IShellLaunchConfig, type ITerminalBackend, type ITerminalsLayoutInfoById, type TerminalIcon } from '../../../../../platform/terminal/common/terminal.js';
+import { TerminalExitReason, TerminalLocation, TitleEventSource, type ICreateContributedTerminalProfileOptions, type IPtyHostAttachTarget, type IShellLaunchConfig, type ITerminalBackend, type ITerminalsLayoutInfoById, type TerminalIcon } from '../../../../../platform/terminal/common/terminal.js';
 import { IDeserializedTerminalEditorInput, ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../browser/terminal.js';
 import { TerminalEditorInput } from '../../browser/terminalEditorInput.js';
+import { TerminalEditorService } from '../../browser/terminalEditorService.js';
 import { TerminalGroup } from '../../browser/terminalGroup.js';
 import { TerminalService } from '../../browser/terminalService.js';
 import { ITerminalProfileService, TERMINAL_CONFIG_SECTION } from '../../common/terminal.js';
@@ -24,6 +25,10 @@ import { ILogicalWorkspace, ILogicalWorkspaceService, LogicalWorkspaceActivation
 import { IRemoteAgentService } from '../../../../services/remote/common/remoteAgentService.js';
 import { TestEnvironmentService, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import type { IConfigurationChangeEvent } from '../../../../../platform/configuration/common/configuration.js';
+import { IEditorService } from '../../../../services/editor/common/editorService.js';
+import { TerminalCapabilityStore } from '../../../../../platform/terminal/common/capabilities/terminalCapabilityStore.js';
+import { TerminalStatusList } from '../../browser/terminalStatusList.js';
+import { IResourceEditorInput } from '../../../../../platform/editor/common/editor.js';
 
 suite('Workbench - TerminalService', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -238,6 +243,39 @@ suite('Workbench - TerminalService', () => {
 			strictEqual(completed, true);
 		});
 
+		test('should restore background ownership when an editor terminal fails to open', async () => {
+			const expectedError = new Error('editor open failed');
+			instantiationService.stub(ITerminalEditorService, 'detachInstance', () => { });
+			instantiationService.stub(ITerminalEditorService, 'openEditor', async () => { throw expectedError; });
+
+			const disposalEmitter = store.add(new Emitter<ITerminalInstance>());
+			const instance = {
+				instanceId: 1,
+				target: TerminalLocation.Editor,
+				isDisposed: false,
+				onDisposed: disposalEmitter.event,
+				detachFromElement: () => { },
+				setVisible: () => { },
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			terminalService.moveToBackground(instance);
+			let changeCount = 0;
+			store.add(terminalService.onDidChangeInstances(() => changeCount++));
+
+			await rejects(terminalService.showBackgroundTerminal(instance), error => error === expectedError);
+
+			deepStrictEqual({
+				instances: terminalService.instances,
+				foregroundInstances: terminalService.foregroundInstances,
+				backgroundInstances: (Reflect.get(terminalService, '_backgroundedTerminalInstances') as Array<{ instance: ITerminalInstance }>).map(entry => entry.instance),
+				changeCount,
+			}, {
+				instances: [instance],
+				foregroundInstances: [],
+				backgroundInstances: [instance],
+				changeCount: 0,
+			});
+		});
+
 		test('should keep the panel open while moving its last terminal to the background', async () => {
 			await configurationService.setUserConfiguration(TERMINAL_CONFIG_SECTION, { hideOnLastClosed: true });
 			configurationService.onDidChangeConfigurationEmitter.fire({
@@ -396,6 +434,229 @@ suite('Workbench - TerminalService', () => {
 		});
 	});
 
+	test('should reject and dispose a new editor terminal when its editor fails to open', async () => {
+		const expectedError = new Error('editor open failed');
+		const shellLaunchConfig: IShellLaunchConfig = { executable: '/bin/sh' };
+		let exitReason: TerminalExitReason | undefined;
+		const instance = {
+			shellLaunchConfig,
+			shellType: undefined,
+			dispose: (reason?: TerminalExitReason) => exitReason = reason,
+		} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+		instantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', () => shellLaunchConfig);
+		instantiationService.stub(ITerminalInstanceService, 'createInstance', () => instance);
+		instantiationService.stub(ITerminalEditorService, 'openEditor', async () => { throw expectedError; });
+		terminalService.registerProcessSupport(true);
+
+		await rejects(terminalService.createTerminal({
+			config: { executable: '/bin/sh' },
+			location: TerminalLocation.Editor,
+			skipContributedProfileCheck: true,
+		}), error => error === expectedError);
+
+		strictEqual(exitReason, TerminalExitReason.Unknown);
+	});
+
+	test('should roll back and dispose a split editor terminal when its editor fails to open', async () => {
+		const expectedError = new Error('split editor open failed');
+		let exitReason: TerminalExitReason | undefined;
+		const capabilities = store.add(new TerminalCapabilityStore());
+		const statusList = store.add(instantiationService.createInstance(TerminalStatusList));
+		const child = {
+			instanceId: 77,
+			resource: URI.parse('vscode-terminal://physical/77'),
+			target: TerminalLocation.Editor,
+			description: '',
+			shellLaunchConfig: {},
+			onDidFocus: Event.None,
+			onDidBlur: Event.None,
+			onExit: Event.None,
+			onDisposed: Event.None,
+			onTitleChanged: Event.None,
+			onIconChanged: Event.None,
+			capabilities,
+			statusList,
+			detachFromElement: () => { },
+			setParentContextKeyService: () => { },
+			dispose: (reason?: TerminalExitReason) => exitReason = reason,
+		} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+		const parent = {
+			resource: URI.parse('vscode-terminal://physical/1'),
+			target: TerminalLocation.Editor,
+		} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+		instantiationService.stub(ITerminalInstanceService, 'createInstance', () => child);
+		instantiationService.stub(IEditorService, 'openEditor', async () => { throw expectedError; });
+		const editorTerminalService = store.add(instantiationService.createInstance(TerminalEditorService));
+
+		await rejects(editorTerminalService.splitInstance(parent), error => error === expectedError);
+
+		deepStrictEqual({ instances: editorTerminalService.instances, exitReason }, {
+			instances: [],
+			exitReason: TerminalExitReason.Unknown,
+		});
+	});
+
+	test('should serialize concurrent editor terminal opens and continue after a failure', async () => {
+		const firstOpenStarted = new DeferredPromise<void>();
+		const releaseFirstOpen = new DeferredPromise<void>();
+		const firstError = new Error('first editor open failed');
+		const openedResources: string[] = [];
+		let inFlight = 0;
+		let maximumInFlight = 0;
+		instantiationService.stub(IEditorService, 'openEditor', async (input: IResourceEditorInput) => {
+			inFlight++;
+			maximumInFlight = Math.max(maximumInFlight, inFlight);
+			const resource = input.resource;
+			openedResources.push(resource?.toString() ?? 'unknown');
+			try {
+				if (resource?.path === '/1') {
+					await firstOpenStarted.complete();
+					await releaseFirstOpen.p;
+					throw firstError;
+				}
+			} finally {
+				inFlight--;
+			}
+			return undefined;
+		});
+		const editorTerminalService = store.add(instantiationService.createInstance(TerminalEditorService));
+		const createInstance = (instanceId: number): ITerminalInstance => ({
+			instanceId,
+			resource: URI.parse(`vscode-terminal://physical/${instanceId}`),
+			target: TerminalLocation.Editor,
+			description: '',
+			shellLaunchConfig: {},
+			onDidFocus: Event.None,
+			onDidBlur: Event.None,
+			onExit: Event.None,
+			onDisposed: Event.None,
+			onTitleChanged: Event.None,
+			onIconChanged: Event.None,
+			capabilities: store.add(new TerminalCapabilityStore()),
+			statusList: store.add(instantiationService.createInstance(TerminalStatusList)),
+			detachFromElement: () => { },
+			setParentContextKeyService: () => { },
+		}) satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+		const instances = [createInstance(1), createInstance(2), createInstance(3)];
+
+		const opens = instances.map(instance => editorTerminalService.openEditor(instance));
+		const firstFailure = rejects(opens[0], error => error === firstError);
+		await firstOpenStarted.p;
+		await timeout(0);
+		deepStrictEqual({ openedResources, maximumInFlight }, {
+			openedResources: ['vscode-terminal://physical/1'],
+			maximumInFlight: 1,
+		});
+
+		await releaseFirstOpen.complete();
+		await firstFailure;
+		await Promise.all(opens.slice(1));
+
+		deepStrictEqual({ openedResources, maximumInFlight, instances: editorTerminalService.instances }, {
+			openedResources: [
+				'vscode-terminal://physical/1',
+				'vscode-terminal://physical/2',
+				'vscode-terminal://physical/3',
+			],
+			maximumInFlight: 1,
+			instances: instances.slice(1),
+		});
+		for (const instance of [...editorTerminalService.instances]) {
+			editorTerminalService.detachInstance(instance);
+		}
+	});
+
+	test('should give a copied editor terminal a new process and Logical Terminal identity', () => {
+		const sourceLaunchConfig: IShellLaunchConfig = {
+			logicalWorkspaceId: 'workspace',
+			logicalTerminalId: 'original-terminal',
+			attachPersistentProcess: {
+				id: 17,
+				pid: 42,
+				title: 'Restored Terminal',
+				titleSource: TitleEventSource.Process,
+				cwd: '/',
+				shellIntegrationNonce: '',
+			},
+		};
+		const createInstance = (instanceId: number, shellLaunchConfig: IShellLaunchConfig): ITerminalInstance => ({
+			instanceId,
+			resource: URI.parse(`vscode-terminal://physical/${instanceId}`),
+			target: TerminalLocation.Editor,
+			shellLaunchConfig,
+			onDidFocus: Event.None,
+			onDidBlur: Event.None,
+			onExit: Event.None,
+			onDisposed: Event.None,
+			onTitleChanged: Event.None,
+			onIconChanged: Event.None,
+			capabilities: store.add(new TerminalCapabilityStore()),
+			statusList: store.add(instantiationService.createInstance(TerminalStatusList)),
+			focusWhenReady: async () => { },
+			dispose: () => { },
+		}) satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+		const originalInstance = createInstance(1, sourceLaunchConfig);
+		let copiedLaunchConfig: IShellLaunchConfig | undefined;
+		instantiationService.stub(ITerminalInstanceService, 'createInstance', (launchConfig: IShellLaunchConfig) => {
+			copiedLaunchConfig = launchConfig;
+			return createInstance(2, launchConfig);
+		});
+		const originalInput = store.add(instantiationService.createInstance(TerminalEditorInput, originalInstance.resource, originalInstance));
+		originalInput.setCopyLaunchConfig(sourceLaunchConfig);
+
+		store.add(originalInput.copy());
+
+		deepStrictEqual({
+			logicalWorkspaceId: copiedLaunchConfig?.logicalWorkspaceId,
+			logicalTerminalIdChanged: copiedLaunchConfig?.logicalTerminalId !== sourceLaunchConfig.logicalTerminalId,
+			logicalTerminalIdType: typeof copiedLaunchConfig?.logicalTerminalId,
+			attachPersistentProcess: copiedLaunchConfig?.attachPersistentProcess,
+		}, {
+			logicalWorkspaceId: 'workspace',
+			logicalTerminalIdChanged: true,
+			logicalTerminalIdType: 'string',
+			attachPersistentProcess: undefined,
+		});
+	});
+
+	test('should restore a panel terminal when moving it to an editor fails', async () => {
+		const expectedError = new Error('move to editor failed');
+		const source = {
+			target: TerminalLocation.Panel,
+			isDisposed: false,
+		} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+		let removed = 0;
+		let restored = 0;
+		const sourceGroup = {
+			removeInstance: () => {
+				removed++;
+				groups.length = 0;
+			},
+			addInstance: () => { restored++; },
+		} satisfies Partial<ITerminalGroup> as unknown as ITerminalGroup;
+		const groups: ITerminalGroup[] = [sourceGroup];
+		let recreatedWith: ITerminalInstance | undefined;
+		Object.defineProperty(instantiationService.get(ITerminalGroupService), 'groups', {
+			configurable: true,
+			get: () => groups,
+		});
+		instantiationService.stub(ITerminalGroupService, 'getGroupForInstance', () => sourceGroup);
+		instantiationService.stub(ITerminalGroupService, 'createGroup', (instance: IShellLaunchConfig | ITerminalInstance | undefined) => {
+			recreatedWith = instance as ITerminalInstance;
+			return sourceGroup;
+		});
+		instantiationService.stub(ITerminalEditorService, 'openEditor', async () => { throw expectedError; });
+
+		await rejects(terminalService.moveToEditor(source), error => error === expectedError);
+
+		deepStrictEqual({ removed, restored, recreatedWith, target: source.target }, {
+			removed: 1,
+			restored: 0,
+			recreatedWith: source,
+			target: TerminalLocation.Panel,
+		});
+	});
+
 	suite('logical workspace terminals', () => {
 		async function createServiceWithPendingLogicalWorkspaceAuthority() {
 			const authorityReady = new DeferredPromise<void>();
@@ -469,7 +730,10 @@ suite('Workbench - TerminalService', () => {
 				shellType: undefined,
 				focusWhenReady: async () => { },
 			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
-			controlled.instantiationService.stub(ITerminalGroupService, 'instances', [instance]);
+			Object.defineProperty(controlled.instantiationService.get(ITerminalGroupService), 'instances', {
+				configurable: true,
+				get: () => [instance],
+			});
 			controlled.instantiationService.stub(ITerminalGroupService, 'createGroup', () => ({ terminalInstances: [instance] } satisfies Partial<ITerminalGroup> as ITerminalGroup));
 			controlled.instantiationService.stub(ITerminalGroupService, 'setActiveInstanceByIndex', () => { });
 			let providerEntered = false;
@@ -543,6 +807,44 @@ suite('Workbench - TerminalService', () => {
 			});
 		});
 
+		test('should retain the initiating Workspace while an Extension Host split parent resolves', async () => {
+			const parentReady = new DeferredPromise<ITerminalInstance>();
+			const shellLaunchConfig: IShellLaunchConfig = { executable: '/bin/sh', cwd: '/workspace' };
+			instantiationService.stub(ITerminalInstanceService, 'convertProfileToShellLaunchConfig', () => shellLaunchConfig);
+			const instance = {
+				shellLaunchConfig,
+				shellType: undefined,
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			instantiationService.stub(ITerminalEditorService, 'splitInstance', async () => instance);
+			terminalService.registerProcessSupport(true);
+
+			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			await logicalWorkspaceService.whenReady;
+			const initiatingWorkspaceId = logicalWorkspaceService.activeWorkspace.id;
+			const targetWorkspace = await logicalWorkspaceService.createWorkspace('Target');
+			const creation = terminalService.createTerminal({
+				config: { executable: '/bin/sh' },
+				location: { parentTerminal: parentReady.p },
+				skipContributedProfileCheck: true,
+			});
+			logicalWorkspaceService.activateWorkspace(targetWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+			await parentReady.complete({
+				target: TerminalLocation.Editor,
+				shellLaunchConfig: { cwd: '/workspace' },
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance);
+			await creation;
+
+			deepStrictEqual({
+				logicalWorkspaceId: shellLaunchConfig.logicalWorkspaceId,
+				logicalTerminalId: typeof shellLaunchConfig.logicalTerminalId,
+				targetWorkspaceId: targetWorkspace.id,
+			}, {
+				logicalWorkspaceId: initiatingWorkspaceId,
+				logicalTerminalId: 'string',
+				targetWorkspaceId: targetWorkspace.id,
+			});
+		});
+
 		test('should retain the initiating Workspace through a contributed profile provider', async () => {
 			const providerReady = new DeferredPromise<void>();
 			const providerEntered = new DeferredPromise<void>();
@@ -554,10 +856,21 @@ suite('Workbench - TerminalService', () => {
 				shellType: undefined,
 				focusWhenReady: async () => { },
 			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
-			instantiationService.stub(ITerminalGroupService, 'instances', [instance]);
+			const unrelatedInstance = {
+				shellLaunchConfig: {},
+				shellType: undefined,
+				focusWhenReady: async () => { },
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			const groupInstances = [instance];
+			const activatedInstances: ITerminalInstance[] = [];
+			Object.defineProperty(instantiationService.get(ITerminalGroupService), 'instances', {
+				configurable: true,
+				get: () => groupInstances,
+			});
 			instantiationService.stub(ITerminalGroupService, 'createGroup', () => ({
 				terminalInstances: [instance],
 			} satisfies Partial<ITerminalGroup> as ITerminalGroup));
+			instantiationService.stub(ITerminalGroupService, 'setActiveInstance', (instance: ITerminalInstance) => activatedInstances.push(instance));
 			instantiationService.stub(ITerminalGroupService, 'setActiveInstanceByIndex', () => { });
 			instantiationService.stub(ITerminalProfileService, 'getContributedProfileProvider', () => ({
 				createContributedTerminalProfile: async (options: ICreateContributedTerminalProfileOptions) => {
@@ -568,6 +881,8 @@ suite('Workbench - TerminalService', () => {
 						skipContributedProfileCheck: true,
 						creationContext: options.creationContext,
 					});
+					// A concurrent terminal may become the host's last item before the provider RPC returns.
+					groupInstances.push(unrelatedInstance);
 				},
 			}));
 			terminalService.registerProcessSupport(true);
@@ -586,13 +901,17 @@ suite('Workbench - TerminalService', () => {
 			await providerEntered.p;
 			logicalWorkspaceService.activateWorkspace(targetWorkspace.id, LogicalWorkspaceActivationActor.Picker);
 			await providerReady.complete();
-			await terminalPromise;
+			const createdInstance = await terminalPromise;
 
 			deepStrictEqual({
+				createdExpectedInstance: createdInstance === instance,
+				activatedExpectedInstance: activatedInstances.at(-1) === instance,
 				logicalWorkspaceId: shellLaunchConfig.logicalWorkspaceId,
 				logicalTerminalId: typeof shellLaunchConfig.logicalTerminalId,
 				targetWorkspaceId: targetWorkspace.id,
 			}, {
+				createdExpectedInstance: true,
+				activatedExpectedInstance: true,
 				logicalWorkspaceId: initiatingWorkspaceId,
 				logicalTerminalId: 'string',
 				targetWorkspaceId: targetWorkspace.id,

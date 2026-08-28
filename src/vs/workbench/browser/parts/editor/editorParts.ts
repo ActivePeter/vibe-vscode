@@ -405,7 +405,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 			return part;
 		}
 
-		const createPromise = this.doCreateModalEditorPart(options).finally(() => {
+		const createPromise = Promise.resolve().then(() => this.doCreateModalEditorPart(options)).finally(() => {
 			this.modalEditorPartCreatePromise = undefined;
 		});
 		this.modalEditorPartCreatePromise = createPromise;
@@ -936,7 +936,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	}
 
 	private containsEditorInput(editor: EditorInput): boolean {
-		return this.parts.some(part => part.getGroups(GroupsOrder.CREATION_TIME).some(group => group.contains(editor)));
+		return this.parts.some(part => part.getGroups(GroupsOrder.CREATION_TIME).some(group => group.contains(editor, { strictEquals: true })));
 	}
 
 	private indexOfWorkingSet(workingSet: IEditorWorkingSet): number | undefined {

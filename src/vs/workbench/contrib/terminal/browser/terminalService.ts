@@ -428,6 +428,14 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 		try {
 			await profileProvider.createContributedTerminalProfile(options);
+			const createdInstance = this._findTerminalForCreationContext(options.creationContext);
+			if (createdInstance) {
+				this.setActiveInstance(createdInstance);
+				await createdInstance.focusWhenReady();
+				return;
+			}
+			// Preserve the upstream fallback for providers that do not create a terminal carrying
+			// the forwarded identity. New Vibe creation paths always use the stable context above.
 			this._terminalGroupService.setActiveInstanceByIndex(this._terminalGroupService.instances.length - 1);
 			await this._terminalGroupService.activeInstance?.focusWhenReady();
 		} catch (e) {
@@ -827,7 +835,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return this.instances.some(term => term.processId === remoteTerm.pid);
 	}
 
-	moveToEditor(source: ITerminalInstance, group?: GroupIdentifier | SIDE_GROUP_TYPE | ACTIVE_GROUP_TYPE | AUX_WINDOW_GROUP_TYPE): void {
+	async moveToEditor(source: ITerminalInstance, group?: GroupIdentifier | SIDE_GROUP_TYPE | ACTIVE_GROUP_TYPE | AUX_WINDOW_GROUP_TYPE): Promise<void> {
 		if (source.target === TerminalLocation.Editor) {
 			return;
 		}
@@ -836,12 +844,23 @@ export class TerminalService extends Disposable implements ITerminalService {
 			return;
 		}
 		sourceGroup.removeInstance(source);
-		this._terminalEditorService.openEditor(source, group ? { viewColumn: group } : undefined);
-
+		try {
+			await this._terminalEditorService.openEditor(source, group ? { viewColumn: group } : undefined);
+		} catch (error) {
+			if (!source.isDisposed) {
+				source.target = TerminalLocation.Panel;
+				if (this._terminalGroupService.groups.includes(sourceGroup)) {
+					sourceGroup.addInstance(source);
+				} else {
+					this._terminalGroupService.createGroup(source);
+				}
+			}
+			throw error;
+		}
 	}
 
-	moveIntoNewEditor(source: ITerminalInstance): void {
-		this.moveToEditor(source, AUX_WINDOW_GROUP);
+	moveIntoNewEditor(source: ITerminalInstance): Promise<void> {
+		return this.moveToEditor(source, AUX_WINDOW_GROUP);
 	}
 
 	async moveToTerminalView(source?: ITerminalInstance | URI, target?: ITerminalInstance, side?: 'before' | 'after'): Promise<void> {
@@ -1067,11 +1086,11 @@ export class TerminalService extends Disposable implements ITerminalService {
 				titleTemplate: contributedProfile.titleTemplate,
 				creationContext: delegatedCreationContext,
 			});
-			const instanceHost = resolvedLocation === TerminalLocation.Editor ? this._terminalEditorService : this._terminalGroupService;
-			// TODO@meganrogge: This returns undefined in the remote & web smoke tests but the function
-			// does not return undefined. This should be handled correctly.
-			const instance = instanceHost.instances[instanceHost.instances.length - 1];
-			await instance?.focusWhenReady();
+			const instance = this._findTerminalForCreationContext(delegatedCreationContext);
+			if (!instance) {
+				throw new Error('The contributed terminal profile did not create a terminal');
+			}
+			await instance.focusWhenReady();
 			this._terminalHasBeenCreated.set(true);
 			return instance;
 		}
@@ -1085,9 +1104,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 			} else {
 				location = typeof options?.location === 'object' && hasKey(options.location, { viewColumn: true }) ? options.location : resolvedLocation;
 			}
-			const instanceHost = resolvedLocation === TerminalLocation.Editor ? this._terminalEditorService : this._terminalGroupService;
 			for (const fallbackProfile of this._terminalProfileService.contributedProfiles) {
-				const instanceCount = instanceHost.instances.length;
 				await this.createContributedTerminalProfile(fallbackProfile.extensionIdentifier, fallbackProfile.id, {
 					icon: fallbackProfile.icon,
 					color: fallbackProfile.color,
@@ -1096,7 +1113,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 					titleTemplate: fallbackProfile.titleTemplate,
 					creationContext: delegatedCreationContext,
 				});
-				const instance = instanceHost.instances[instanceCount];
+				const instance = this._findTerminalForCreationContext(delegatedCreationContext);
 				if (!instance) {
 					continue;
 				}
@@ -1132,7 +1149,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		if (parent) {
 			instance = await this._splitTerminal(shellLaunchConfig, location, parent);
 		} else {
-			instance = this._createTerminal(shellLaunchConfig, location, options);
+			instance = await this._createTerminal(shellLaunchConfig, location, options);
 		}
 		if (instance.shellType) {
 			this._extensionService.activateByEvent(`onTerminal:${instance.shellType}`);
@@ -1160,6 +1177,14 @@ export class TerminalService extends Disposable implements ITerminalService {
 
 	private _withLogicalTerminalIdentity(context: ITerminalCreationContext): ITerminalCreationContext {
 		return context.logicalTerminalId ? context : { ...context, logicalTerminalId: generateUuid() };
+	}
+
+	private _findTerminalForCreationContext(context: ITerminalCreationContext): ITerminalInstance | undefined {
+		if (!context.logicalTerminalId) {
+			return undefined;
+		}
+		return this.instances.find(instance => instance.shellLaunchConfig.logicalTerminalId === context.logicalTerminalId
+			&& instance.shellLaunchConfig.logicalWorkspaceId === context.logicalWorkspaceId);
 	}
 
 	private _prepareLogicalWorkspaceTerminal(shellLaunchConfig: IShellLaunchConfig, context: ITerminalCreationContext): void {
@@ -1320,13 +1345,18 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return instance;
 	}
 
-	private _createTerminal(shellLaunchConfig: IShellLaunchConfig, location: TerminalLocation, options?: ICreateTerminalOptions): ITerminalInstance {
+	private async _createTerminal(shellLaunchConfig: IShellLaunchConfig, location: TerminalLocation, options?: ICreateTerminalOptions): Promise<ITerminalInstance> {
 		let instance;
 		if (location === TerminalLocation.Editor) {
 			instance = this._terminalInstanceService.createInstance(shellLaunchConfig, TerminalLocation.Editor);
 			if (!shellLaunchConfig.hideFromUser) {
 				const editorOptions = this._getEditorOptions(options?.location);
-				this._terminalEditorService.openEditor(instance, editorOptions);
+				try {
+					await this._terminalEditorService.openEditor(instance, editorOptions);
+				} catch (error) {
+					instance.dispose(TerminalExitReason.Unknown);
+					throw error;
+				}
 			}
 		} else {
 			// TODO: pass resource?
@@ -1452,7 +1482,18 @@ export class TerminalService extends Disposable implements ITerminalService {
 			}
 		} else {
 			const editorOptions = backgroundTerminal.terminalLocationOptions ? this._getEditorOptions(backgroundTerminal.terminalLocationOptions) : this._getEditorOptions(instance.target);
-			await this._terminalEditorService.openEditor(instance, editorOptions);
+			try {
+				await this._terminalEditorService.openEditor(instance, editorOptions);
+			} catch (error) {
+				if (!instance.isDisposed) {
+					if (this._terminalEditorService.instances.includes(instance)) {
+						this._terminalEditorService.detachInstance(instance);
+					}
+					this._backgroundedTerminalInstances.splice(Math.min(index, this._backgroundedTerminalInstances.length), 0, backgroundTerminal);
+					this._backgroundedTerminalDisposables.set(instance.instanceId, instance.onDisposed(instance => this._onBackgroundTerminalDisposed(instance)));
+				}
+				throw error;
+			}
 		}
 
 		this._onDidChangeInstances.fire();

@@ -104,6 +104,21 @@ suite('ExplorerService', () => {
 			lastCalls: ['close-failed:workspace', 'input-after-failure:workspace'],
 		});
 
+		let treeInputAttempts = 0;
+		service.registerView(new class extends mock<IExplorerView>() {
+			override async closeFind(): Promise<void> { }
+			override async setTreeInput(): Promise<void> {
+				treeInputAttempts++;
+				if (treeInputAttempts === 1) {
+					throw new Error('tree input failed');
+				}
+			}
+		});
+		await assert.rejects(service.setActiveRoot(nestedFolder.uri), /tree input failed/);
+		assert.strictEqual(service.visibleRoots.at(0), nestedRoot);
+		await service.setActiveRoot(nestedFolder.uri);
+		assert.strictEqual(treeInputAttempts, 2);
+
 		store.dispose();
 	});
 });

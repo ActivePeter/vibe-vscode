@@ -200,7 +200,7 @@ export class RemoteTerminalChannelClient implements IPtyHostController {
 	attachToProcess(id: number): Promise<void> {
 		return this._channel.call(RemoteTerminalChannelRequest.AttachToProcess, [id]);
 	}
-	detachFromProcess(id: number, forcePersist?: boolean): Promise<boolean> {
+	detachFromProcess(id: number, forcePersist?: boolean): Promise<void> {
 		return this._channel.call(RemoteTerminalChannelRequest.DetachFromProcess, [id, forcePersist]);
 	}
 	listProcesses(): Promise<IProcessDetails[]> {

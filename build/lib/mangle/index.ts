@@ -401,6 +401,24 @@ export interface MangleOutput {
 	sourceMap?: string;
 }
 
+const defaultMangleWorkerCount = 4;
+
+/**
+ * Resolve the number of TypeScript language-service workers used for rename operations.
+ */
+export function getMangleWorkerCount(configuredWorkerCount: string | undefined): number {
+	if (configuredWorkerCount === undefined) {
+		return defaultMangleWorkerCount;
+	}
+
+	const workerCount = Number(configuredWorkerCount);
+	if (!Number.isSafeInteger(workerCount) || workerCount < 1) {
+		throw new Error(`VSCODE_MANGLE_WORKERS must be a positive integer, got: ${configuredWorkerCount}`);
+	}
+
+	return workerCount;
+}
+
 /**
  * TypeScript2TypeScript transformer that mangles all private and protected fields
  *
@@ -431,7 +449,7 @@ export class Mangler {
 		this.config = config;
 
 		this.renameWorkerPool = workerpool.pool(path.join(import.meta.dirname, 'renameWorker.ts'), {
-			maxWorkers: 4,
+			maxWorkers: getMangleWorkerCount(process.env['VSCODE_MANGLE_WORKERS']),
 			minWorkers: 'max'
 		});
 	}

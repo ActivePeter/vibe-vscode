@@ -8,7 +8,7 @@ import { afterEach, beforeEach, suite, test } from 'node:test';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { Mangler } from '../mangle/index.ts';
+import { getMangleWorkerCount, Mangler } from '../mangle/index.ts';
 
 suite('Mangler', () => {
 	let rootPath: string;
@@ -32,6 +32,20 @@ suite('Mangler', () => {
 
 	afterEach(() => {
 		rmSync(rootPath, { recursive: true, force: true });
+	});
+
+	test('uses a bounded configurable rename worker count', () => {
+		assert.deepStrictEqual({
+			defaultWorkerCount: getMangleWorkerCount(undefined),
+			configuredWorkerCount: getMangleWorkerCount('1'),
+		}, {
+			defaultWorkerCount: 4,
+			configuredWorkerCount: 1,
+		});
+
+		for (const value of ['', '0', '-1', '1.5', 'not-a-number']) {
+			assert.throws(() => getMangleWorkerCount(value), /VSCODE_MANGLE_WORKERS must be a positive integer/);
+		}
 	});
 
 	test('preserves runtime-observable and explicitly skipped class members', async () => {

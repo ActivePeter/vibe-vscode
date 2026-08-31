@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review VS Code Async State"
+  short_description: "Audit readiness, ownership, and async state races"
+  default_prompt: "Use $vscode-async-state-review to audit this VS Code change for readiness, ownership, and stale async-state races."

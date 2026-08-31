@@ -36,7 +36,7 @@ import { getSingletonServiceDescriptors } from '../../platform/instantiation/com
 import { ServiceIdentifier } from '../../platform/instantiation/common/instantiation.js';
 import { IWorkbench } from '../../workbench/browser/web.api.js';
 import { isEqual } from '../../base/common/resources.js';
-import { ILogicalWorkspaceService } from '../../workbench/services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILogicalWorkspaceEditorProjectionService, ILogicalWorkspaceService, ILogicalWorkspaceTerminalProjectionService } from '../../workbench/services/logicalWorkspace/common/logicalWorkspace.js';
 
 /**
  * Mock files pre-seeded in the in-memory file system. These match the
@@ -538,6 +538,31 @@ class MockGitService implements IGitService {
 	async openRepository(_uri: URI) { return undefined; }
 }
 
+let logicalWorkspaceEditorProjectionStarted = false;
+let logicalWorkspaceTerminalProjectionStarted = false;
+
+class MockLogicalWorkspaceTerminalProjectionService implements ILogicalWorkspaceTerminalProjectionService {
+	declare readonly _serviceBrand: undefined;
+	readonly whenReady = Promise.resolve();
+
+	constructor() {
+		logicalWorkspaceTerminalProjectionStarted = true;
+	}
+
+	requestReconcile(): Promise<void> {
+		return Promise.resolve();
+	}
+}
+
+class MockLogicalWorkspaceEditorProjectionService implements ILogicalWorkspaceEditorProjectionService {
+	declare readonly _serviceBrand: undefined;
+	readonly whenReady = Promise.resolve();
+
+	constructor(@ILogicalWorkspaceTerminalProjectionService _terminalProjectionService: ILogicalWorkspaceTerminalProjectionService) {
+		logicalWorkspaceEditorProjectionStarted = true;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TestSessionsBrowserMain
 // ---------------------------------------------------------------------------
@@ -558,13 +583,22 @@ export class TestSessionsBrowserMain extends SessionsBrowserMain {
 		// getSingletonServiceDescriptors() returns the mutable internal array, so
 		// replacing entries here ensures both BrowserMain and Workbench pick up mocks.
 		const registry = getSingletonServiceDescriptors();
-		if (!registry.some(([serviceId]) => serviceId === ILogicalWorkspaceService)) {
-			throw new Error('Sessions entrypoint did not register ILogicalWorkspaceService');
+		const requiredLogicalWorkspaceServices = [
+			ILogicalWorkspaceService,
+			ILogicalWorkspaceEditorProjectionService,
+			ILogicalWorkspaceTerminalProjectionService,
+		];
+		if (requiredLogicalWorkspaceServices.some(serviceId => !registry.some(([registeredId]) => registeredId === serviceId))) {
+			throw new Error('Sessions entrypoint did not register the complete Logical Workspace projection stack');
 		}
+		logicalWorkspaceEditorProjectionStarted = false;
+		logicalWorkspaceTerminalProjectionStarted = false;
 		const overrides: [ServiceIdentifier<any>, SyncDescriptor<any>][] = [
 			[IChatEntitlementService, new SyncDescriptor(MockChatEntitlementService)],
 			[IDefaultAccountService, new SyncDescriptor(MockDefaultAccountService)],
 			[IGitService, new SyncDescriptor(MockGitService)],
+			[ILogicalWorkspaceTerminalProjectionService, new SyncDescriptor(MockLogicalWorkspaceTerminalProjectionService)],
+			[ILogicalWorkspaceEditorProjectionService, new SyncDescriptor(MockLogicalWorkspaceEditorProjectionService)],
 		];
 		for (const [serviceId, mockDescriptor] of overrides) {
 			const idx = registry.findIndex(([id]) => id === serviceId);
@@ -577,6 +611,9 @@ export class TestSessionsBrowserMain extends SessionsBrowserMain {
 		}
 
 		const workbench = await super.open();
+		if (!logicalWorkspaceEditorProjectionStarted || !logicalWorkspaceTerminalProjectionStarted) {
+			throw new Error('Sessions Workbench did not start the complete Logical Workspace projection stack');
+		}
 
 		// Restore original descriptors now that the workbench has started,
 		// so subsequent tests in the same process are not affected.

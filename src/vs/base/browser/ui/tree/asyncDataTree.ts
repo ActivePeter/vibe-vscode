@@ -294,7 +294,7 @@ class AsyncFindController<TInput, T, TFilterData> extends FindController<T, TFil
 	private activeSession = false;
 	private sessionEndPromise: Promise<void> | undefined;
 	private asyncWorkInProgress = false;
-	private taskQueue = new ThrottledDelayer(250);
+	private readonly taskQueue = this.disposables.add(new ThrottledDelayer<void>(250));
 
 	constructor(
 		tree: ObjectTree<IAsyncDataTreeNode<TInput, T>, TFilterData>,
@@ -305,7 +305,10 @@ class AsyncFindController<TInput, T, TFilterData> extends FindController<T, TFil
 	) {
 		super(tree as unknown as AbstractTree<T, TFilterData, unknown>, filter, contextViewProvider, options);
 		// Always make sure to end the session before disposing
-		this.disposables.add(toDisposable(() => { void this.deactivateFindSession(); }));
+		this.disposables.add(toDisposable(() => {
+			this.activeTokenSource?.cancel();
+			this.deactivateFindSession().catch(onUnexpectedError);
+		}));
 	}
 
 	protected override applyPattern(_pattern: string): void {
@@ -314,7 +317,7 @@ class AsyncFindController<TInput, T, TFilterData> extends FindController<T, TFil
 		this.activeTokenSource?.cancel();
 		this.activeTokenSource = new CancellationTokenSource();
 
-		this.taskQueue.trigger(() => this.applyPatternAsync());
+		this.taskQueue.trigger(() => this.applyPatternAsync()).catch(onUnexpectedError);
 	}
 
 	private async applyPatternAsync(): Promise<void> {
@@ -356,9 +359,14 @@ class AsyncFindController<TInput, T, TFilterData> extends FindController<T, TFil
 		}
 	}
 
-	override async close(): Promise<void> {
+	override close(): void {
+		this.closeAndWait().catch(onUnexpectedError);
+	}
+
+	async closeAndWait(): Promise<void> {
 		const wasOpen = this.isOpened();
 		super.close();
+		this.taskQueue.cancel();
 
 		if (!wasOpen) {
 			await this.sessionEndPromise;
@@ -1018,7 +1026,7 @@ export class AsyncDataTree<TInput, T, TFilterData = void> implements IDisposable
 	 */
 	async closeFind(): Promise<void> {
 		if (this.findController) {
-			await this.findController.close();
+			await this.findController.closeAndWait();
 		} else {
 			this.tree.closeFind();
 		}

@@ -128,6 +128,50 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		store.dispose();
 	});
 
+	test('does not block initial projection on Terminal connection and reconciles after connection', async () => {
+		const store = disposables.add(new DisposableStore());
+		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
+		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		await logicalWorkspaceService.whenReady;
+
+		const terminalConnection = new DeferredPromise<void>();
+		const changedInstances = store.add(new Emitter<void>());
+		const terminalMoved = new DeferredPromise<void>();
+		let foreground: ITerminalInstance[] = [];
+		const terminalService = new class extends mock<ITerminalService>() {
+			override readonly onDidChangeInstances = changedInstances.event;
+			override readonly whenConnected = terminalConnection.p;
+			override get foregroundInstances(): readonly ITerminalInstance[] { return foreground; }
+			override get instances(): readonly ITerminalInstance[] { return foreground; }
+			override moveToBackground(): void {
+				foreground = [];
+				void terminalMoved.complete();
+			}
+		}();
+		const adapter = store.add(new LogicalWorkspaceTerminalAdapter(
+			logicalWorkspaceService,
+			terminalService,
+			store.add(new TestStorageService()),
+			new NullLogService(),
+		));
+		let ready = false;
+		void adapter.whenReady.then(() => ready = true);
+
+		await timeout(0);
+		const readyBeforeConnection = ready;
+		foreground = [{
+			instanceId: 1,
+			target: TerminalLocation.Panel,
+			shellLaunchConfig: { logicalWorkspaceId: 'other-workspace' },
+		} satisfies Partial<ITerminalInstance> as ITerminalInstance];
+		await terminalConnection.complete();
+		await terminalMoved.p;
+		await adapter.requestReconcile();
+
+		assert.deepStrictEqual({ readyBeforeConnection, foreground }, { readyBeforeConnection: true, foreground: [] });
+		store.dispose();
+	});
+
 	test('completes a terminal projection transaction before an awaited reconcile resolves', async () => {
 		const store = disposables.add(new DisposableStore());
 		const instantiationService = store.add(workbenchInstantiationService(undefined, store));

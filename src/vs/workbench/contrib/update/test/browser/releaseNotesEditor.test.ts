@@ -87,7 +87,12 @@ suite('ReleaseNotesManager', () => {
 		const delayedLoadStarted = new DeferredPromise<void>();
 		const releaseDelayedLoad = new DeferredPromise<void>();
 		const delayedLoadVersion = '1.2.5';
+		const failedLoadVersion = '1.2.10';
+		const failedLoadError = new Error('release notes load failed');
 		internals.loadReleaseNotes = async version => {
+			if (version === failedLoadVersion) {
+				throw failedLoadError;
+			}
 			if (version === delayedLoadVersion) {
 				await delayedLoadStarted.complete();
 				await releaseDelayedLoad.p;
@@ -98,7 +103,12 @@ suite('ReleaseNotesManager', () => {
 		const delayedRenderStarted = new DeferredPromise<void>();
 		const releaseDelayedRender = new DeferredPromise<void>();
 		const delayedVersion = '1.2.7';
+		const failedRenderVersion = '1.2.11';
+		const failedRenderError = new Error('release notes render failed');
 		internals.renderBody = async meta => {
+			if (meta.text === failedRenderVersion) {
+				throw failedRenderError;
+			}
 			if (meta.text === delayedVersion) {
 				await delayedRenderStarted.complete();
 				await releaseDelayedRender.p;
@@ -109,9 +119,17 @@ suite('ReleaseNotesManager', () => {
 		const firstWave = [manager.show('1.2.3', false), manager.show('1.2.4', false)];
 		await timeout(0);
 		assert.strictEqual(openCount, 1);
+		await assert.rejects(manager.show(failedLoadVersion, false), error => error === failedLoadError);
+		await assert.rejects(manager.show(failedRenderVersion, false), error => error === failedRenderError);
 		await openGates[0].complete();
 		await Promise.all(firstWave);
-		assert.deepStrictEqual({ htmlWrites: inputs[0].html.length, titleWrites: inputs[0].titles.length }, { htmlWrites: 1, titleWrites: 1 });
+		assert.deepStrictEqual({
+			htmlWrites: inputs[0].html,
+			titleWrites: inputs[0].titles,
+		}, {
+			htmlWrites: ['<html>1.2.4</html>'],
+			titleWrites: ['Release Notes: 1.2.4'],
+		});
 
 		const olderLoad = manager.show(delayedLoadVersion, false);
 		await delayedLoadStarted.p;

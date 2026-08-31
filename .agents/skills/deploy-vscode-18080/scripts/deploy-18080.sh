@@ -14,6 +14,7 @@ readonly SERVICE_RUNTIME_ROOT="$SOURCE_ROOT/.build/vibe-vscode-18080"
 readonly SERVICE_RELEASES_ROOT="$SERVICE_RUNTIME_ROOT/releases"
 readonly SERVICE_CURRENT_LINK="$SERVICE_RUNTIME_ROOT/last-known-good"
 readonly SERVICE_PREVIOUS_LINK="$SERVICE_RUNTIME_ROOT/previous"
+readonly SERVICE_DEPLOY_LOCK="$SERVICE_RUNTIME_ROOT/deploy.lock"
 readonly TLS_KEY_PATH=/mnt/ceph/dever_for_dev/.dever/https/localhost-key.pem
 readonly TLS_CERT_PATH=/mnt/ceph/dever_for_dev/.dever/https/localhost-cert.pem
 readonly CADDY_VERSION=2.11.4
@@ -21,6 +22,7 @@ readonly CADDY_CACHE_ROOT="$SERVICE_RUNTIME_ROOT/tools/caddy/$CADDY_VERSION"
 readonly CADDY_BINARY="$CADDY_CACHE_ROOT/caddy"
 readonly CADDY_CONFIG_RELATIVE_PATH=resources/server/vibe-vscode/Caddyfile
 readonly DEPLOY_TIMEOUT_SECONDS="${VIBE_VSCODE_DEPLOY_TIMEOUT_SECONDS:-900}"
+readonly DEFAULT_DEPLOY_MODE="${VIBE_VSCODE_DEPLOY_MODE:-latest}"
 readonly SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
 readonly NODE_VERSION="$(tr -d '[:space:]' < "$SOURCE_ROOT/.nvmrc")"
 readonly NODE_ROOT="$HOME/.nvm/versions/node/v$NODE_VERSION"
@@ -28,7 +30,9 @@ readonly NODE_BIN="$NODE_ROOT/bin/node"
 readonly NPM_BIN="$NODE_ROOT/bin/npm"
 
 ACTIVE_RUNTIME_ROOT=
+ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS=false
 STAGING_RUNTIME_ROOT=
+DEPLOY_LOCK_FD=
 
 fail() {
 	printf 'deploy-vscode-18080: %s\n' "$1" >&2
@@ -41,6 +45,48 @@ log() {
 
 require_command() {
 	command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
+}
+
+print_usage() {
+	cat <<'EOF'
+Usage: deploy-18080.sh [--mode latest|snapshot] [--update-snapshot]
+
+  --mode latest       Build and promote the current source before restart (default).
+  --mode snapshot     Restart the selected immutable release without rebuilding.
+  --update-snapshot   Build and promote a new release in snapshot mode.
+EOF
+}
+
+resolve_deploy_action() {
+	local mode="$1"
+	local update_snapshot="$2"
+
+	case "$mode" in
+	latest)
+		printf 'update\n'
+		;;
+	snapshot)
+		if [[ "$update_snapshot" == true ]]; then
+			printf 'update\n'
+		else
+			printf 'restart\n'
+		fi
+		;;
+	*)
+		fail "invalid deployment mode: $mode (expected latest or snapshot)"
+		;;
+	esac
+}
+
+acquire_deployment_lock() {
+	local lock_path="${1:-$SERVICE_DEPLOY_LOCK}"
+
+	mkdir -p -- "$(dirname -- "$lock_path")"
+	exec {DEPLOY_LOCK_FD}>"$lock_path"
+	if ! flock --nonblock "$DEPLOY_LOCK_FD"; then
+		printf 'deploy-vscode-18080: another deployment holds %s\n' "$lock_path" >&2
+		return 75
+	fi
 }
 
 ensure_caddy_binary() {
@@ -134,8 +180,6 @@ cleanup_staging_runtime() {
 	esac
 }
 
-trap cleanup_staging_runtime EXIT
-
 require_source_tree() {
 	local required_path
 	local -a required_paths=(
@@ -201,10 +245,8 @@ validate_runtime_root() {
 	done
 }
 
-validate_candidate_runtime_root() {
+validate_caddy_runtime_root() {
 	local runtime_root="$1"
-	local link_path
-	local resolved_link
 	local required_path
 	local -a executable_paths=(
 		"$runtime_root/node"
@@ -223,19 +265,46 @@ validate_candidate_runtime_root() {
 		VIBE_VSCODE_TLS_KEY_PATH="$TLS_KEY_PATH" \
 		VIBE_VSCODE_BACKEND_ADDRESS="unix/$SERVICE_BACKEND_SOCKET" \
 		"$runtime_root/caddy" validate --config "$runtime_root/$CADDY_CONFIG_RELATIVE_PATH" --adapter caddyfile >/dev/null || return 1
+}
 
-	# A last-known-good release must survive replacement or removal of the canonical dependency
-	# trees. Relative links contained inside a copied node_modules tree are allowed, but no link
-	# may resolve back into the mutable source checkout.
+validate_candidate_runtime_root() {
+	local runtime_root="$1"
+
+	validate_caddy_runtime_root "$runtime_root" || return 1
+	validate_runtime_links "$runtime_root"
+}
+
+validate_runtime_links() {
+	local runtime_root="$1"
+	local link_path
+	local resolved_link
+
+	# A release is immutable only when every symbolic link resolves inside that same release.
+	# Links to source, another release, or any unrelated host path make rollback depend on mutable
+	# state outside the selected snapshot.
 	while IFS= read -r -d '' link_path; do
-		resolved_link="$(readlink -f -- "$link_path" 2>/dev/null || true)"
+		resolved_link="$(realpath -e -- "$link_path" 2>/dev/null || true)"
 		case "$resolved_link" in
 		"$runtime_root" | "$runtime_root"/*) ;;
-		"$SOURCE_ROOT" | "$SOURCE_ROOT"/*)
-			printf 'Runtime link escapes into mutable source: %s -> %s\n' "$link_path" "$resolved_link" >&2
+		*)
+			printf 'Runtime link escapes immutable release: %s -> %s\n' "$link_path" "${resolved_link:-<unresolved>}" >&2
 			return 1
 			;;
 		esac
+	done < <(find "$runtime_root" -type l -print0)
+}
+
+remove_unresolved_runtime_links() {
+	local runtime_root="$1"
+	local link_path
+
+	# Package-manager .bin directories can contain links to intentionally omitted build tools.
+	# They have no usable runtime target, so omit them from the release before enforcing the
+	# stronger invariant that every remaining link resolves inside this snapshot.
+	while IFS= read -r -d '' link_path; do
+		if ! realpath -e -- "$link_path" >/dev/null 2>&1; then
+			rm -f -- "$link_path"
+		fi
 	done < <(find "$runtime_root" -type l -print0)
 }
 
@@ -245,7 +314,7 @@ resolve_runtime_link() {
 
 	[[ -L "$link_path" ]] || return 1
 	runtime_root="$(readlink -f -- "$link_path")"
-	validate_runtime_root "$runtime_root" || return 1
+	validate_candidate_runtime_root "$runtime_root" || return 1
 	printf '%s\n' "$runtime_root"
 }
 
@@ -327,7 +396,8 @@ create_runtime_snapshot() {
 		copy_runtime_tree "$node_modules_path" "$STAGING_RUNTIME_ROOT/$relative_path" "$previous_path"
 	done < <(find "$SOURCE_ROOT/extensions" -name node_modules -prune -print0)
 
-	validate_candidate_runtime_root "$STAGING_RUNTIME_ROOT" || fail "staged runtime is incomplete or depends on mutable source: $STAGING_RUNTIME_ROOT"
+	remove_unresolved_runtime_links "$STAGING_RUNTIME_ROOT"
+	validate_candidate_runtime_root "$STAGING_RUNTIME_ROOT" || fail "staged runtime is incomplete or depends on state outside its immutable release: $STAGING_RUNTIME_ROOT"
 	mv -- "$STAGING_RUNTIME_ROOT" "$release_root"
 	STAGING_RUNTIME_ROOT=
 	printf -v "$result_variable" '%s' "$release_root"
@@ -340,8 +410,16 @@ service_runtime_root() {
 	realpath -e -- "$runtime_root"
 }
 
+is_recognized_service_session() {
+	local start_command
+
+	start_command="$(tmux display-message -p -t "$SERVICE_SESSION" '#{pane_start_command}' 2>/dev/null || true)"
+	[[ "$start_command" == *"$SCRIPT_PATH"*'--internal-run'* ]]
+}
+
 stop_service() {
 	local deadline=$((SECONDS + 10))
+	local running_runtime_root
 
 	if ! tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
 		is_port_listening && fail "port $SERVICE_PORT is owned by an unrecognized process"
@@ -349,6 +427,9 @@ stop_service() {
 		rm -f -- "$SERVICE_BACKEND_SOCKET"
 		return 0
 	fi
+	is_recognized_service_session || fail "tmux session $SERVICE_SESSION is not owned by this deployment entry point"
+	running_runtime_root="$(service_runtime_root)"
+	validate_runtime_root "$running_runtime_root" || fail "tmux session $SERVICE_SESSION uses an incomplete runtime: $running_runtime_root"
 
 	printf 'Stopping existing Vibe VS Code service on port %s...\n' "$SERVICE_PORT"
 	tmux kill-session -t "$SERVICE_SESSION"
@@ -373,33 +454,6 @@ build_current() {
 		[[ -f "$SOURCE_ROOT/extensions/vibe-vscode/dist/browser/extension.js" ]] || fail 'vibe-vscode browser extension bundle is missing'
 		log 'Compilation completed.'
 	} 2>&1 | tee -a "$SERVICE_LOG"
-}
-
-run_legacy_server() {
-	local runtime_root="$1"
-	local workspace_path="$2"
-	local runtime_node="$NODE_BIN"
-
-	if [[ -x "$runtime_root/node" ]]; then
-		runtime_node="$runtime_root/node"
-	fi
-
-	mkdir -p -- "$SERVICE_STATE_ROOT/server" "$(dirname -- "$SERVICE_LOG")"
-	exec >> "$SERVICE_LOG" 2>&1
-	log "Starting legacy direct-TLS Vibe VS Code runtime from $runtime_root on 0.0.0.0:$SERVICE_PORT."
-	cd -- "$runtime_root"
-	exec env NODE_ENV=development VSCODE_DEV=1 \
-		"$runtime_node" out/server-main.js \
-		--host 0.0.0.0 \
-		--port "$SERVICE_PORT" \
-		--tls-key-path "$TLS_KEY_PATH" \
-		--tls-cert-path "$TLS_CERT_PATH" \
-		--without-connection-token \
-		--server-data-dir "$SERVICE_STATE_ROOT/server" \
-		--default-workspace "$workspace_path" \
-		--disable-telemetry \
-		--disable-experiments \
-		--accept-server-license-terms
 }
 
 run_gateway_stack() {
@@ -468,21 +522,30 @@ run_gateway_stack() {
 run_service() {
 	local runtime_root="$1"
 	local workspace_path="$2"
+	local allow_legacy_links="${3:-false}"
 
-	if [[ -x "$runtime_root/caddy" && -f "$runtime_root/$CADDY_CONFIG_RELATIVE_PATH" ]]; then
-		run_gateway_stack "$runtime_root" "$workspace_path"
+	if [[ "$allow_legacy_links" == true ]]; then
+		validate_caddy_runtime_root "$runtime_root" || fail "legacy rollback runtime cannot start without its pinned Caddy gateway: $runtime_root"
 	else
-		run_legacy_server "$runtime_root" "$workspace_path"
+		validate_candidate_runtime_root "$runtime_root" || fail "runtime cannot start without its pinned Caddy gateway: $runtime_root"
 	fi
+	run_gateway_stack "$runtime_root" "$workspace_path"
 }
 
 start_service() {
 	local runtime_root="$1"
 	local workspace_path="$2"
+	local allow_legacy_links="${3:-false}"
+	local internal_mode=--internal-run
 	local tmux_command
 
-	validate_runtime_root "$runtime_root" || return 1
-	printf -v tmux_command 'exec env VIBE_VSCODE_SOCKET_ROOT=%q %q %q %q %q' "$SERVICE_SOCKET_ROOT" "$SCRIPT_PATH" --internal-run "$runtime_root" "$workspace_path"
+	if [[ "$allow_legacy_links" == true ]]; then
+		validate_caddy_runtime_root "$runtime_root" || return 1
+		internal_mode=--internal-run-legacy-links
+	else
+		validate_candidate_runtime_root "$runtime_root" || return 1
+	fi
+	printf -v tmux_command 'exec env VIBE_VSCODE_SOCKET_ROOT=%q %q %q %q %q' "$SERVICE_SOCKET_ROOT" "$SCRIPT_PATH" "$internal_mode" "$runtime_root" "$workspace_path"
 	tmux new-session -d -s "$SERVICE_SESSION" -c "$runtime_root" "$tmux_command"
 }
 
@@ -510,15 +573,11 @@ wait_until_ready() {
 				printf 'Service is healthy on localhost but has no public wildcard listener on port %s.\n' "$SERVICE_PORT" >&2
 				return 1
 			fi
-			if [[ -x "$expected_runtime_root/caddy" && "$(backend_health_status)" != '200' ]]; then
+			if [[ "$(backend_health_status)" != '200' ]]; then
 				printf 'Caddy is healthy but the private VS Code backend is not reachable through %s.\n' "$SERVICE_BACKEND_SOCKET" >&2
 				return 1
 			fi
-			if [[ -x "$expected_runtime_root/caddy" ]]; then
-				printf 'Vibe VS Code runtime is ready: %s (%s, Caddy HTTPS, anonymous access, private Unix-socket backend, 0.0.0.0:%s)\n' "$runtime_label" "$SERVICE_URL" "$SERVICE_PORT"
-			else
-				printf 'Vibe VS Code runtime is ready: %s (%s, legacy direct TLS, anonymous access, 0.0.0.0:%s)\n' "$runtime_label" "$SERVICE_URL" "$SERVICE_PORT"
-			fi
+			printf 'Vibe VS Code runtime is ready: %s (%s, Caddy HTTPS, anonymous access, private Unix-socket backend, 0.0.0.0:%s)\n' "$runtime_label" "$SERVICE_URL" "$SERVICE_PORT"
 			return 0
 		fi
 
@@ -541,18 +600,32 @@ prepare_active_runtime() {
 		ACTIVE_RUNTIME_ROOT="$(resolve_runtime_link "$SERVICE_CURRENT_LINK" || true)"
 		return 0
 	fi
+	is_recognized_service_session || fail "tmux session $SERVICE_SESSION is not owned by this deployment entry point"
 
 	running_runtime="$(service_runtime_root)"
-	validate_runtime_root "$running_runtime" || fail "running service uses an incomplete runtime: $running_runtime"
+	ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS=false
+	if [[ "$running_runtime" == "$SOURCE_ROOT" ]]; then
+		validate_runtime_root "$running_runtime" || fail "running legacy service uses an incomplete source runtime: $running_runtime"
+	else
+		validate_caddy_runtime_root "$running_runtime" || fail "running service is not a complete Caddy runtime: $running_runtime"
+	fi
 
-	if [[ "$(health_status)" != '200' ]] || ! has_public_listener; then
+	if [[ "$(health_status)" != '200' ]] || ! has_public_listener || [[ "$(backend_health_status)" != '200' ]]; then
 		ACTIVE_RUNTIME_ROOT="$(resolve_runtime_link "$SERVICE_CURRENT_LINK" || true)"
 		return 0
 	fi
 
 	if [[ "$running_runtime" != "$SOURCE_ROOT" ]]; then
 		ACTIVE_RUNTIME_ROOT="$running_runtime"
-		set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
+		if validate_runtime_links "$running_runtime"; then
+			set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
+		else
+			# A pre-invariant release may remain the rollback anchor only because this exact
+			# process passed both health boundaries. New candidates and snapshot restarts stay
+			# strict, and a successful promotion removes this compatibility path.
+			ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS=true
+			printf 'Running release has legacy runtime links; retaining it only as the verified rollback anchor.\n' >&2
+		fi
 		return 0
 	fi
 
@@ -567,11 +640,41 @@ prepare_active_runtime() {
 
 	print_log_tail
 	stop_service
-	if start_service "$SOURCE_ROOT" "$workspace_path" && wait_until_ready 'restored legacy source runtime' "$SOURCE_ROOT"; then
-		fail 'could not activate the immutable bootstrap runtime; restored the legacy source service'
+	fail 'could not activate the immutable Caddy bootstrap runtime; direct-TLS fallback is disabled'
+}
+
+is_release_runtime() {
+	local releases_root
+	local runtime_root="$1"
+
+	[[ -d "$SERVICE_RELEASES_ROOT" ]] || return 1
+	releases_root="$(realpath -e -- "$SERVICE_RELEASES_ROOT")" || return 1
+	runtime_root="$(realpath -e -- "$runtime_root")" || return 1
+	[[ "$runtime_root" == "$releases_root/"* ]] && validate_candidate_runtime_root "$runtime_root"
+}
+
+prepare_snapshot_restart() {
+	local result_variable="$1"
+	local running_runtime
+	local selected_runtime
+
+	selected_runtime="$(resolve_runtime_link "$SERVICE_CURRENT_LINK" || true)"
+	[[ -n "$selected_runtime" ]] || fail 'snapshot mode has no selected release; rerun with --update-snapshot'
+	is_release_runtime "$selected_runtime" || fail "selected snapshot is not an immutable release: $selected_runtime"
+	ACTIVE_RUNTIME_ROOT=
+	ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS=false
+	if tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
+		is_recognized_service_session || fail "tmux session $SERVICE_SESSION is not owned by this deployment entry point"
+		running_runtime="$(service_runtime_root)"
+		is_release_runtime "$running_runtime" || fail "running snapshot is not an immutable Caddy release: $running_runtime"
+		if [[ "$(health_status)" == '200' ]] && has_public_listener && [[ "$(backend_health_status)" == '200' ]]; then
+			ACTIVE_RUNTIME_ROOT="$running_runtime"
+		fi
+	else
+		is_port_listening && fail "port $SERVICE_PORT is owned by an unrecognized process"
+		is_backend_socket_listening && fail "backend socket is owned by an unrecognized process: $SERVICE_BACKEND_SOCKET"
 	fi
-	print_log_tail
-	fail 'could not activate the immutable bootstrap runtime or restore the legacy source service'
+	printf -v "$result_variable" '%s' "$selected_runtime"
 }
 
 promote_runtime() {
@@ -579,8 +682,10 @@ promote_runtime() {
 	local previous_runtime="$2"
 	local release_root
 
-	if [[ -n "$previous_runtime" && "$previous_runtime" == "$SERVICE_RELEASES_ROOT/"* && "$previous_runtime" != "$candidate_runtime" ]]; then
+	if [[ -n "$previous_runtime" && "$previous_runtime" == "$SERVICE_RELEASES_ROOT/"* && "$previous_runtime" != "$candidate_runtime" ]] && validate_candidate_runtime_root "$previous_runtime"; then
 		set_runtime_link "$SERVICE_PREVIOUS_LINK" "$previous_runtime"
+	else
+		rm -f -- "$SERVICE_PREVIOUS_LINK"
 	fi
 	set_runtime_link "$SERVICE_CURRENT_LINK" "$candidate_runtime"
 
@@ -596,7 +701,7 @@ activate_candidate_runtime() {
 	local candidate_runtime="$1"
 	local workspace_path="$2"
 
-	validate_candidate_runtime_root "$candidate_runtime" || fail "candidate runtime is incomplete or depends on mutable source: $candidate_runtime"
+	validate_candidate_runtime_root "$candidate_runtime" || fail "candidate runtime is incomplete or depends on state outside its immutable release: $candidate_runtime"
 	stop_service
 	if start_service "$candidate_runtime" "$workspace_path" && wait_until_ready 'candidate runtime' "$candidate_runtime"; then
 		promote_runtime "$candidate_runtime" "$ACTIVE_RUNTIME_ROOT"
@@ -607,7 +712,10 @@ activate_candidate_runtime() {
 	print_log_tail
 	printf 'Candidate runtime failed; restoring last-known-good runtime...\n' >&2
 	stop_service
-	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]] && start_service "$ACTIVE_RUNTIME_ROOT" "$workspace_path" && wait_until_ready 'restored last-known-good runtime' "$ACTIVE_RUNTIME_ROOT"; then
+	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]] && start_service "$ACTIVE_RUNTIME_ROOT" "$workspace_path" "$ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS" && wait_until_ready 'restored last-known-good runtime' "$ACTIVE_RUNTIME_ROOT"; then
+		if [[ "$ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS" != true ]]; then
+			set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
+		fi
 		fail 'candidate runtime failed health checks; restored last-known-good runtime'
 	fi
 
@@ -615,50 +723,104 @@ activate_candidate_runtime() {
 	fail 'candidate runtime failed and last-known-good runtime could not be restored'
 }
 
-case "${1:-}" in
-	--internal-run)
-		[[ "$#" -eq 3 ]] || fail 'invalid internal service arguments'
-		run_service "$2" "$3"
-		exit $?
+require_common_commands() {
+	local command
+	local -a commands=(awk basename chmod curl dirname env find flock grep ln mkdir mv readlink realpath rm sleep ss tmux tr)
+
+	for command in "${commands[@]}"; do
+		require_command "$command"
+	done
+}
+
+require_update_commands() {
+	local command
+	local -a commands=(cp rsync sha256sum sha512sum tar tee uname)
+
+	for command in "${commands[@]}"; do
+		require_command "$command"
+	done
+}
+
+run_deployment_action() {
+	local action="$1"
+	local candidate_runtime
+	local workspace_path="$2"
+
+	case "$action" in
+	restart)
+		prepare_snapshot_restart candidate_runtime
+		activate_candidate_runtime "$candidate_runtime" "$workspace_path"
 		;;
-	'')
-		[[ "$#" -eq 0 ]] || fail 'usage: deploy-18080.sh'
+	update)
+		require_update_commands
+		ensure_caddy_binary
+		require_source_tree
+		prepare_active_runtime "$workspace_path"
+		printf 'Building and deploying from %s...\n' "$SOURCE_ROOT"
+		build_current
+		candidate_runtime=
+		create_runtime_snapshot candidate_runtime
+		activate_candidate_runtime "$candidate_runtime" "$workspace_path"
 		;;
 	*)
-		fail 'usage: deploy-18080.sh'
+		fail "unsupported deployment action: $action"
 		;;
-esac
+	esac
+}
 
-[[ "$DEPLOY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'VIBE_VSCODE_DEPLOY_TIMEOUT_SECONDS must be a positive integer'
-require_command awk
-require_command chmod
-require_command cp
-require_command curl
-require_command env
-require_command find
-require_command grep
-require_command ln
-require_command mv
-require_command readlink
-require_command realpath
-require_command rm
-require_command rsync
-require_command sha256sum
-require_command sha512sum
-require_command ss
-require_command tar
-require_command tee
-require_command tmux
-require_command tr
-require_command uname
-ensure_caddy_binary
-require_source_tree
-require_service_state
+main() {
+	local action
+	local deploy_mode="$DEFAULT_DEPLOY_MODE"
+	local update_snapshot=false
+	local workspace_path
 
-readonly WORKSPACE_PATH="$(resolve_workspace_path)"
-prepare_active_runtime "$WORKSPACE_PATH"
-printf 'Building and deploying from %s...\n' "$SOURCE_ROOT"
-build_current
-candidate_runtime=
-create_runtime_snapshot candidate_runtime
-activate_candidate_runtime "$candidate_runtime" "$WORKSPACE_PATH"
+	if [[ "${1:-}" == '--internal-run' ]]; then
+		[[ "$#" -eq 3 ]] || fail 'invalid internal service arguments'
+		run_service "$2" "$3" false
+		return $?
+	fi
+	if [[ "${1:-}" == '--internal-run-legacy-links' ]]; then
+		[[ "$#" -eq 3 ]] || fail 'invalid internal legacy service arguments'
+		run_service "$2" "$3" true
+		return $?
+	fi
+
+	while (( $# > 0 )); do
+		case "$1" in
+		--mode)
+			[[ "$#" -ge 2 ]] || fail 'missing value for --mode'
+			deploy_mode="$2"
+			shift 2
+			;;
+		--mode=*)
+			deploy_mode="${1#--mode=}"
+			shift
+			;;
+		--update-snapshot)
+			update_snapshot=true
+			shift
+			;;
+		--help | -h)
+			print_usage
+			return 0
+			;;
+		*)
+			fail "unknown argument: $1"
+			;;
+		esac
+	done
+
+	action="$(resolve_deploy_action "$deploy_mode" "$update_snapshot")"
+	[[ "$DEPLOY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'VIBE_VSCODE_DEPLOY_TIMEOUT_SECONDS must be a positive integer'
+	require_common_commands
+	acquire_deployment_lock || return $?
+	trap cleanup_staging_runtime EXIT
+	require_service_state
+	workspace_path="$(resolve_workspace_path)"
+	printf 'Vibe VS Code deployment mode: %s (%s).\n' "$deploy_mode" "$action"
+	run_deployment_action "$action" "$workspace_path"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

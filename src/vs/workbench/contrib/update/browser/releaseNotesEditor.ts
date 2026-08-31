@@ -44,7 +44,8 @@ export class ReleaseNotesManager extends Disposable {
 	private _currentReleaseNotes: WebviewInput | undefined = undefined;
 	private _currentReleaseNotesCreation: Promise<WebviewInput> | undefined;
 	private _lastMeta: { text: string; base: URI } | undefined;
-	private _showGeneration = 0;
+	private _showRequestSequence = 0;
+	private _showCommitSequence = 0;
 	private _htmlGeneration = 0;
 
 	constructor(
@@ -97,28 +98,29 @@ export class ReleaseNotesManager extends Disposable {
 	}
 
 	public async show(version: string, useCurrentFile: boolean): Promise<boolean> {
-		const showGeneration = ++this._showGeneration;
+		const showSequence = ++this._showRequestSequence;
 		const releaseNoteText = await this.loadReleaseNotes(version, useCurrentFile);
-		if (showGeneration !== this._showGeneration) {
+		if (showSequence < this._showCommitSequence) {
 			return true;
 		}
 		const base = await this.getBase(useCurrentFile);
-		if (showGeneration !== this._showGeneration) {
+		if (showSequence < this._showCommitSequence) {
 			return true;
 		}
 		const meta = { text: releaseNoteText, base };
-		this._lastMeta = meta;
-		const htmlGeneration = ++this._htmlGeneration;
 		const html = await this.renderBody(meta);
-		if (showGeneration !== this._showGeneration || this._lastMeta !== meta) {
+		if (showSequence < this._showCommitSequence) {
 			return true;
 		}
+		this._showCommitSequence = showSequence;
+		this._lastMeta = meta;
+		const htmlGeneration = ++this._htmlGeneration;
 		const title = nls.localize('releaseNotesInputName', "Release Notes: {0}", version);
 
 		const activeEditorPane = this._editorService.activeEditorPane;
 		const shouldReveal = !!this._currentReleaseNotes || !!this._currentReleaseNotesCreation;
 		const releaseNotes = this._currentReleaseNotes ?? await this.getOrCreateReleaseNotes(title, useCurrentFile, base);
-		if (showGeneration !== this._showGeneration || this._lastMeta !== meta || this._currentReleaseNotes !== releaseNotes) {
+		if (showSequence !== this._showCommitSequence || this._lastMeta !== meta || this._currentReleaseNotes !== releaseNotes) {
 			return true;
 		}
 		releaseNotes.setWebviewTitle(title);

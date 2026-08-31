@@ -51,6 +51,44 @@ suite('Editor Parts', () => {
 		assert.strictEqual(await parts.applySerializedWorkingSet(parts.serializeWorkingSet(), { preserveFocus: true }), true);
 	});
 
+	test('keeps modal editors outside serialized working set state and apply', async () => {
+		const instantiationService = createInstantiationService();
+		disposables.add(registerTestEditor(testEditorId, [new SyncDescriptor(TestFileEditorInput)], testEditorId));
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, disposables);
+		const mainEditor = disposables.add(new TestFileEditorInput(URI.file('/main-working-set.txt'), testEditorId));
+		await parts.activeGroup.openEditor(mainEditor, { pinned: true });
+		const workingSet = parts.serializeWorkingSet();
+
+		const modalPart = await parts.createModalEditorPart({ fullscreen: true });
+		const modalEditor = disposables.add(new TestFileEditorInput(URI.file('/modal-editor.txt'), testEditorId));
+		await modalPart.activeGroup.openEditor(modalEditor, { pinned: true });
+		modalPart.activeGroup.focus();
+		const serializedWithModal = JSON.parse(parts.serializeWorkingSet()) as { auxiliary: { mru: number[] } };
+
+		const applied = await parts.applySerializedWorkingSet(workingSet, { preserveFocus: true });
+		const restoredMainEditor = parts.mainPart.activeGroup.activeEditor;
+		if (restoredMainEditor && restoredMainEditor !== mainEditor) {
+			disposables.add(restoredMainEditor);
+		}
+
+		assert.deepStrictEqual({
+			mru: serializedWithModal.auxiliary.mru,
+			applied,
+			modalPartPreserved: parts.activeModalEditorPart === modalPart,
+			modalEditorPreserved: modalPart.activeGroup.contains(modalEditor),
+			mainEditorPreserved: parts.mainPart.activeGroup.contains(mainEditor),
+		}, {
+			mru: [0],
+			applied: true,
+			modalPartPreserved: true,
+			modalEditorPreserved: true,
+			mainEditorPreserved: true,
+		});
+
+		await modalPart.close();
+	});
+
 	test('does not reuse a live cached file input across working set disposal', async () => {
 		const instantiationService = createInstantiationService();
 		disposables.add(Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(FILE_EDITOR_INPUT_ID, FileEditorInputSerializer));
@@ -201,33 +239,46 @@ suite('Editor Parts', () => {
 	test('rejects malformed serialized working sets without changing existing editors', async () => {
 		const instantiationService = createInstantiationService();
 		disposables.add(registerTestEditor(testEditorId, [new SyncDescriptor(TestFileEditorInput)], testEditorId));
+		disposables.add(Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(FILE_EDITOR_INPUT_ID, FileEditorInputSerializer));
 		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
 		const parts = await createEditorParts(instantiationService, disposables);
 		const editor = disposables.add(new TestFileEditorInput(URI.file('/working-set.txt'), testEditorId));
 		await parts.activeGroup.openEditor(editor, { pinned: true });
 
 		const workingSet = JSON.parse(parts.serializeWorkingSet()) as { readonly main: Record<string, unknown>; readonly auxiliary: Record<string, unknown> };
-		type SerializedNode = { type: 'branch'; data: SerializedNode[] } | { type: 'leaf'; data: { editors: { id: string; value: string }[]; mru: number[] } };
-		const malformedEditorPayload = JSON.parse(JSON.stringify(workingSet)) as { main: { serializedGrid: { root: SerializedNode } }; auxiliary: Record<string, unknown> };
-		const corruptFirstEditor = (node: SerializedNode): boolean => {
+		type SerializedGroup = { editors: { id: string; value: string }[]; mru: number[] };
+		type SerializedNode = { type: 'branch'; data: SerializedNode[] } | { type: 'leaf'; data: SerializedGroup };
+		type MutableWorkingSet = { main: { serializedGrid: { root: SerializedNode } }; auxiliary: Record<string, unknown> };
+		const mutateFirstGroup = (node: SerializedNode, mutate: (group: SerializedGroup) => void): boolean => {
 			if (node.type === 'branch') {
-				return node.data.some(corruptFirstEditor);
+				return node.data.some(child => mutateFirstGroup(child, mutate));
 			}
-			if (node.data.editors.length) {
-				node.data.editors[0].value = '{';
-			} else {
-				node.data.editors.push({ id: testEditorId, value: '{' });
-				node.data.mru = [0];
-			}
+			mutate(node.data);
 			return true;
 		};
-		assert.strictEqual(corruptFirstEditor(malformedEditorPayload.main.serializedGrid.root), true);
+		const malformedEditorPayload = JSON.parse(JSON.stringify(workingSet)) as MutableWorkingSet;
+		assert.strictEqual(mutateFirstGroup(malformedEditorPayload.main.serializedGrid.root, group => group.editors[0].value = '{'), true);
+		const incompleteGroupMru = JSON.parse(JSON.stringify(workingSet)) as MutableWorkingSet;
+		assert.strictEqual(mutateFirstGroup(incompleteGroupMru.main.serializedGrid.root, group => group.mru = []), true);
+		const malformedUriComponents = JSON.parse(JSON.stringify(workingSet)) as MutableWorkingSet;
+		assert.strictEqual(mutateFirstGroup(malformedUriComponents.main.serializedGrid.root, group => group.editors[0] = {
+			id: FILE_EDITOR_INPUT_ID,
+			value: JSON.stringify({ resourceJSON: {} }),
+		}), true);
+		const invalidUri = JSON.parse(JSON.stringify(workingSet)) as MutableWorkingSet;
+		assert.strictEqual(mutateFirstGroup(invalidUri.main.serializedGrid.root, group => group.editors[0] = {
+			id: FILE_EDITOR_INPUT_ID,
+			value: JSON.stringify({ resourceJSON: { scheme: '' } }),
+		}), true);
 		const malformedWorkingSets = [
 			{ ...workingSet, main: { ...workingSet.main, serializedGrid: {} } },
 			{ ...workingSet, main: { ...workingSet.main, mostRecentActiveGroups: 'invalid' } },
 			{ ...workingSet, auxiliary: { ...workingSet.auxiliary, mru: [0, 0] } },
 			{ ...workingSet, auxiliary: { auxiliary: [{ state: {} }], mru: [0, 1] } },
 			malformedEditorPayload,
+			incompleteGroupMru,
+			malformedUriComponents,
+			invalidUri,
 		];
 
 		const results = [];

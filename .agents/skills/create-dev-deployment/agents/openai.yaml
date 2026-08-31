@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create Dev Deployment"
+  short_description: "Design safe snapshot-based development deployments"
+  default_prompt: "Use $create-dev-deployment to design or review a safe development deployment script for this service."

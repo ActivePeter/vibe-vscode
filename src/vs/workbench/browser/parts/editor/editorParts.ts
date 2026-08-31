@@ -180,7 +180,7 @@ function isSerializedEditorGroup(candidate: unknown): candidate is ISerializedEd
 		return false;
 	}
 
-	if (!isIndexList(candidate.mru, candidate.editors.length)) {
+	if (!isIndexPermutation(candidate.mru, candidate.editors.length)) {
 		return false;
 	}
 
@@ -703,16 +703,25 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		}
 	}
 
+	private get auxiliaryEditorParts(): (EditorPart & IAuxiliaryEditorPart)[] {
+		return this.parts.filter((part): part is EditorPart & IAuxiliaryEditorPart => part !== this.mainPart && this.auxiliaryWindowService.getWindow(part.windowId) !== undefined);
+	}
+
+	private get stateParts(): EditorPart[] {
+		return [this.mainPart, ...this.auxiliaryEditorParts];
+	}
+
 	private createState(): IEditorPartsUIState {
+		const parts = this.stateParts;
 		return {
-			auxiliary: this.parts
+			auxiliary: parts
 				.map(part => ({ part, auxiliaryWindow: this.auxiliaryWindowService.getWindow(part.windowId) }))
 				.filter(({ auxiliaryWindow }) => auxiliaryWindow !== undefined)
 				.map(({ part, auxiliaryWindow }) => ({
 					state: part.createState(),
 					...auxiliaryWindow!.createState()
 				})),
-			mru: this.mostRecentActiveParts.map(part => this.parts.indexOf(part))
+			mru: this.mostRecentActiveParts.filter(part => parts.includes(part)).map(part => parts.indexOf(part))
 		};
 	}
 
@@ -728,20 +737,28 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 			// Await creation
 			await Promise.allSettled(auxiliaryEditorPartPromises);
 
-			// Update MRU list
-			if (state.mru.length === this.parts.length) {
-				this.mostRecentActiveParts = state.mru.map(index => this.parts[index]);
+			const parts = this.stateParts;
+			const ephemeralPart = this.mostRecentActiveParts.find(part => !parts.includes(part));
+			const ephemeralPartIndex = ephemeralPart ? this.mostRecentActiveParts.indexOf(ephemeralPart) : -1;
+
+			// Update MRU list while preserving the ephemeral modal part, which is not
+			// represented by persisted editor part state.
+			if (state.mru.length === parts.length) {
+				this.mostRecentActiveParts = state.mru.map(index => parts[index]);
 			} else {
-				this.mostRecentActiveParts = [...this.parts];
+				this.mostRecentActiveParts = [...parts];
+			}
+			if (ephemeralPart && ephemeralPartIndex !== -1) {
+				this.mostRecentActiveParts.splice(Math.min(ephemeralPartIndex, this.mostRecentActiveParts.length), 0, ephemeralPart);
 			}
 
 			// Await ready
-			await Promise.allSettled(this.parts.map(part => part.whenReady));
+			await Promise.allSettled(parts.map(part => part.whenReady));
 		}
 	}
 
 	get hasRestorableState(): boolean {
-		return this.parts.some(part => part.hasRestorableState);
+		return this.stateParts.some(part => part.hasRestorableState);
 	}
 
 	private onDidChangeMementoState(e: IStorageValueChangeEvent): void {
@@ -762,16 +779,12 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		// (for example when being dirty). This is to be able to have
 		// them merge into the main part.
 
-		for (const part of this.parts) {
-			if (part === this.mainPart) {
-				continue; // main part takes care on its own
-			}
-
+		for (const part of this.auxiliaryEditorParts) {
 			for (const group of part.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)) {
 				await group.closeAllEditors({ excludeConfirming: true, force: true });
 			}
 
-			const closed = (part as unknown as IAuxiliaryEditorPart).close(); // will move remaining editors to main part
+			const closed = part.close(); // will move remaining editors to main part
 			if (!closed) {
 				return false; // this indicates that closing was vetoed
 			}

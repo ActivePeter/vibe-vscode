@@ -16,6 +16,8 @@ import { DockedEditorInput } from '../../common/dockedEditorInput.js';
 import { EditorInputCapabilities } from '../../../workbench/common/editor.js';
 import { SESSIONS_LIST_MINIMUM_WIDTH } from '../../browser/parts/sidebarPart.js';
 import { Menus } from '../../browser/menus.js';
+import { ServiceIdentifier, ServicesAccessor } from '../../../platform/instantiation/common/instantiation.js';
+import { ILogicalWorkspaceEditorProjectionService } from '../../../workbench/services/logicalWorkspace/common/logicalWorkspace.js';
 
 interface IViewSize { width: number; height: number }
 
@@ -69,6 +71,26 @@ suite('Sessions - Workbench', () => {
 	const restoreEditorPartOnActivation = Reflect.get(Workbench.prototype, '_restoreEditorPartOnActivation') as (this: ITestWorkbench) => void;
 	const layoutSinglePaneGrid = Reflect.get(SinglePaneWorkbench.prototype, '_layoutGrid') as (this: IContainerResizeTestHarness) => void;
 	const preserveSessionsEditorRatio = Reflect.get(SinglePaneWorkbench.prototype, '_preserveSessionsEditorRatio') as (this: IProportionalResizeTestHarness, previousSessionsWidth: number, previousEditorWidth: number) => void;
+	const initLayout = Workbench.prototype.initLayout as (this: Record<string, unknown>, accessor: ServicesAccessor) => void;
+
+	test('starts the Logical Workspace projection stack during layout initialization', () => {
+		const stopAfterProjection = new Error('projection requested');
+		let projectionRequested = false;
+		const accessor = {
+			get<T>(serviceId: ServiceIdentifier<T>): T {
+				if (projectionRequested) {
+					throw stopAfterProjection;
+				}
+				if (serviceId === ILogicalWorkspaceEditorProjectionService) {
+					projectionRequested = true;
+				}
+				return {} as T;
+			},
+		} satisfies ServicesAccessor;
+
+		assert.throws(() => initLayout.call({}, accessor), error => error === stopAfterProjection);
+		assert.strictEqual(projectionRequested, true);
+	});
 
 	// --- Harness ------------------------------------------------------------
 

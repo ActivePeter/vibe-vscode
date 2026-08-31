@@ -21,6 +21,7 @@ import { Part } from '../../workbench/browser/part.js';
 import { Direction, ISerializableView, ISerializedGrid, ISerializedLeafNode, ISerializedNode, IViewSize, Orientation, SerializableGrid } from '../../base/browser/ui/grid/grid.js';
 import { IEditorGroupsService } from '../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../workbench/services/editor/common/editorService.js';
+import { ILogicalWorkspaceEditorProjectionService } from '../../workbench/services/logicalWorkspace/common/logicalWorkspace.js';
 import { IPaneCompositePartService } from '../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IViewDescriptorService, ViewContainerLocation } from '../../workbench/common/views.js';
 import { ILogService } from '../../platform/log/common/log.js';
@@ -1223,6 +1224,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// which creates and registers the parts
 		this.editorGroupService = accessor.get(IEditorGroupsService);
 		this.editorService = accessor.get(IEditorService);
+		// Match the standard Workbench startup boundary: the editor projection owns the initial
+		// working-set restore and resolves the Terminal projection through its DI dependency.
+		accessor.get(ILogicalWorkspaceEditorProjectionService);
 		this.paneCompositeService = accessor.get(IPaneCompositePartService);
 		this.viewDescriptorService = accessor.get(IViewDescriptorService);
 		this.sessionsService = accessor.get(ISessionsService);

@@ -23,6 +23,7 @@ import { Action2, registerAction2 } from '../../../platform/actions/common/actio
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
 import { localize, localize2 } from '../../../nls.js';
 import { IHoverService } from '../../../platform/hover/browser/hover.js';
+import { onUnexpectedError } from '../../../base/common/errors.js';
 
 function ensureDOMFocus(widget: ListWidget | undefined): void {
 	// it can happen that one of the commands is executed while
@@ -887,9 +888,10 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	handler: (accessor) => {
 		const widget = accessor.get(IListService).lastFocusedList;
 
-		if (widget instanceof AbstractTree || widget instanceof AsyncDataTree) {
-			const tree = widget;
-			tree.closeFind();
+		if (widget instanceof AsyncDataTree) {
+			widget.closeFind().catch(onUnexpectedError);
+		} else if (widget instanceof AbstractTree) {
+			widget.closeFind();
 		}
 	}
 });

@@ -8,11 +8,11 @@ import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, dispose, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
+import { localize } from '../../../../nls.js';
 import { IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { EditorActivation } from '../../../../platform/editor/common/editor.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig, TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
-import { IEditorPane } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IDeserializedTerminalEditorInput, ITerminalEditorService, ITerminalInstance, ITerminalInstanceService, TerminalEditorLocation } from './terminal.js';
 import { TerminalEditorInput } from './terminalEditorInput.js';
@@ -29,7 +29,7 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 	private _activeInstanceIndex: number = -1;
 	private _isShuttingDown = false;
 	private readonly _openEditorSequencer = new Sequencer();
-	private readonly _openEditorRequests = new Map<number, Promise<IEditorPane | undefined>>();
+	private readonly _openEditorRequests = new Map<number, Promise<void>>();
 
 	private _terminalEditorActive: IContextKey<boolean>;
 
@@ -150,8 +150,23 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 		const wasRegistered = this.instances.includes(instance);
 		const resource = this.resolveResource(instance, false);
 		if (resource) {
-			const request = this._openEditorSequencer.queue(() => this._editorService.openEditor({
-				resource,
+			const editorInput = this.getInputFromResource(resource);
+			const request = this._doOpenEditor(instance, editorInput, wasRegistered, editorOptions);
+			this._openEditorRequests.set(instance.instanceId, request);
+			try {
+				await request;
+			} finally {
+				if (this._openEditorRequests.get(instance.instanceId) === request) {
+					this._openEditorRequests.delete(instance.instanceId);
+				}
+			}
+		}
+	}
+
+	private async _doOpenEditor(instance: ITerminalInstance, editorInput: TerminalEditorInput, wasRegistered: boolean, editorOptions?: TerminalEditorLocation): Promise<void> {
+		try {
+			await this._openEditorSequencer.queue(() => this._editorService.openEditor({
+				resource: instance.resource,
 				description: instance.description || instance.shellLaunchConfig.type,
 				options: {
 					pinned: true,
@@ -160,22 +175,17 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 					auxiliary: editorOptions?.auxiliary,
 				}
 			}, editorOptions?.viewColumn ?? ACTIVE_GROUP));
-			this._openEditorRequests.set(instance.instanceId, request);
-			try {
-				await request;
-				if (!wasRegistered && this.instances.includes(instance)) {
-					this._onDidChangeInstances.fire();
-				}
-			} catch (error) {
-				if (!wasRegistered && this.instances.includes(instance)) {
-					this.detachInstance(instance, false);
-				}
-				throw error;
-			} finally {
-				if (this._openEditorRequests.get(instance.instanceId) === request) {
-					this._openEditorRequests.delete(instance.instanceId);
-				}
+			if (!this._editorService.editors.includes(editorInput)) {
+				throw new Error(localize('terminalEditorDidNotOpen', "The terminal editor could not be opened."));
 			}
+			if (!wasRegistered && this.instances.includes(instance)) {
+				this._onDidChangeInstances.fire();
+			}
+		} catch (error) {
+			if (!wasRegistered && this.instances.includes(instance)) {
+				this.detachInstance(instance, false);
+			}
+			throw error;
 		}
 	}
 

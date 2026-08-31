@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import { URI, UriComponents } from '../../../../../base/common/uri.js';
+import { isUriComponents, URI, UriComponents } from '../../../../../base/common/uri.js';
 import { IEditorSerializer } from '../../../../common/editor.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { ITextEditorService } from '../../../../services/textfile/common/textEditorService.js';
@@ -23,6 +23,19 @@ interface ISerializedFileEditorInput {
 	description?: string;
 	encoding?: string;
 	modeId?: string; // should be `languageId` but is kept for backwards compatibility
+}
+
+function isValidUriComponents(candidate: unknown): candidate is UriComponents {
+	if (!isUriComponents(candidate)) {
+		return false;
+	}
+
+	try {
+		URI.from(candidate, true);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export class FileEditorInputSerializer implements IEditorSerializer {
@@ -54,10 +67,10 @@ export class FileEditorInputSerializer implements IEditorSerializer {
 				return false;
 			}
 			const input = candidate as Partial<ISerializedFileEditorInput>;
-			if (!URI.isUri(URI.revive(input.resourceJSON))) {
+			if (!isValidUriComponents(input.resourceJSON)) {
 				return false;
 			}
-			if (input.preferredResourceJSON !== undefined && !URI.isUri(URI.revive(input.preferredResourceJSON))) {
+			if (input.preferredResourceJSON !== undefined && !isValidUriComponents(input.preferredResourceJSON)) {
 				return false;
 			}
 			return [input.name, input.description, input.encoding, input.modeId].every(value => value === undefined || typeof value === 'string');

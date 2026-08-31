@@ -15,6 +15,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../common/utils.j
 import { runWithFakedTimers } from '../../../common/timeTravelScheduler.js';
 import { IContextViewProvider } from '../../../../browser/ui/contextview/contextview.js';
 import { TreeFindMode } from '../../../../browser/ui/tree/abstractTree.js';
+import { errorHandler } from '../../../../common/errors.js';
 
 interface Element {
 	id: string;
@@ -103,6 +104,33 @@ suite('AsyncDataTree', function () {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
+	async function createAsyncFindTree(id: string, container: HTMLElement, findProvider: IAsyncFindProvider<Element>): Promise<AsyncDataTree<Element, Element>> {
+		const contextViewProvider: IContextViewProvider = {
+			showContextView: () => { },
+			hideContextView: () => { },
+			layout: () => { },
+		};
+		const model = new Model({ id: 'root', children: [{ id: 'a' }, { id: 'b' }] });
+		const tree = store.add(new AsyncDataTree<Element, Element>(id, container, new VirtualDelegate(), [new Renderer()], new DataSource(), {
+			identityProvider: new IdentityProvider(),
+			keyboardNavigationLabelProvider: { getKeyboardNavigationLabel: element => element.id },
+			contextViewProvider,
+			filter: { filter: () => TreeVisibility.Visible },
+			findProvider,
+			defaultFindMode: TreeFindMode.Filter,
+		}));
+		tree.layout(200);
+		await tree.setInput(model.root);
+		return tree;
+	}
+
+	function typeFindPattern(container: HTMLElement, pattern: string): void {
+		const input = container.querySelector<HTMLInputElement>('.monaco-tree-type-filter:not(.disabled) input');
+		assert.ok(input);
+		input.value = pattern;
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+	}
+
 	test('close completion owns the provider session across an immediate reopen', async () => {
 		await runWithFakedTimers({ useFakeTimers: true }, async () => {
 			const container = document.createElement('div');
@@ -128,38 +156,16 @@ suite('AsyncDataTree', function () {
 					calls.push('end:done');
 				},
 			};
-			const contextViewProvider: IContextViewProvider = {
-				showContextView: () => { },
-				hideContextView: () => { },
-				layout: () => { },
-			};
-			const model = new Model({ id: 'root', children: [{ id: 'a' }, { id: 'b' }] });
-			const tree = store.add(new AsyncDataTree<Element, Element>('testAsyncFindClose', container, new VirtualDelegate(), [new Renderer()], new DataSource(), {
-				identityProvider: new IdentityProvider(),
-				keyboardNavigationLabelProvider: { getKeyboardNavigationLabel: element => element.id },
-				contextViewProvider,
-				filter: { filter: () => TreeVisibility.Visible },
-				findProvider,
-				defaultFindMode: TreeFindMode.Filter,
-			}));
-			tree.layout(200);
-			await tree.setInput(model.root);
-
-			const typeFindPattern = (pattern: string) => {
-				const input = container.querySelector<HTMLInputElement>('.monaco-tree-type-filter:not(.disabled) input');
-				assert.ok(input);
-				input.value = pattern;
-				input.dispatchEvent(new Event('input', { bubbles: true }));
-			};
+			const tree = await createAsyncFindTree('testAsyncFindClose', container, findProvider);
 
 			tree.openFind();
-			typeFindPattern('a');
+			typeFindPattern(container, 'a');
 			await timeout(300);
 
 			let closeCompleted = false;
 			const close = tree.closeFind().then(() => closeCompleted = true);
 			tree.openFind();
-			typeFindPattern('b');
+			typeFindPattern(container, 'b');
 			await timeout(300);
 			const beforeSessionEnd = { closeCompleted, calls: [...calls] };
 
@@ -178,6 +184,60 @@ suite('AsyncDataTree', function () {
 				beforeSessionEnd: { closeCompleted: false, calls: ['start', 'find:a', 'end:start'] },
 				afterSessionEnd: { closeCompleted: true, calls: ['start', 'find:a', 'end:start', 'end:done', 'start', 'find:b'] },
 			});
+		});
+	});
+
+	test('close completion propagates provider session end failures', async () => {
+		await runWithFakedTimers({ useFakeTimers: true }, async () => {
+			const container = document.createElement('div');
+			const expectedError = new Error('session end failed');
+			let endSessionCalls = 0;
+			const tree = await createAsyncFindTree('testAsyncFindCloseFailure', container, {
+				find: async () => ({ matchCount: 1, isMatch: () => true }),
+				endSession: async () => {
+					endSessionCalls++;
+					throw expectedError;
+				},
+			});
+			tree.openFind();
+			typeFindPattern(container, 'a');
+			await timeout(300);
+
+			await assert.rejects(tree.closeFind(), error => error === expectedError);
+
+			assert.strictEqual(endSessionCalls, 1);
+		});
+	});
+
+	test('UI close reports provider session end failures', async () => {
+		await runWithFakedTimers({ useFakeTimers: true }, async () => {
+			const container = document.createElement('div');
+			const expectedError = new Error('session end failed');
+			const tree = await createAsyncFindTree('testAsyncFindUICloseFailure', container, {
+				find: async () => ({ matchCount: 1, isMatch: () => true }),
+				endSession: async () => { throw expectedError; },
+			});
+			tree.openFind();
+			typeFindPattern(container, 'a');
+			await timeout(300);
+
+			const previousUnexpectedErrorHandler = errorHandler.getUnexpectedErrorHandler();
+			const reportedErrors: Error[] = [];
+			const errorReported = new DeferredPromise<void>();
+			errorHandler.setUnexpectedErrorHandler(error => {
+				reportedErrors.push(error);
+				errorReported.complete();
+			});
+			try {
+				const findController = Reflect.get(tree, 'findController') as { close(): void };
+				findController.close();
+				await errorReported.p;
+				await timeout(300);
+			} finally {
+				errorHandler.setUnexpectedErrorHandler(previousUnexpectedErrorHandler);
+			}
+
+			assert.deepStrictEqual(reportedErrors, [expectedError]);
 		});
 	});
 

@@ -20,13 +20,18 @@ interface IDatabaseConnection {
 	lastError?: string;
 }
 
+interface IStorageSchemaColumn {
+	readonly name: string;
+	readonly type: string;
+}
+
 export interface ISQLiteStorageDatabaseOptions {
 	readonly logging?: ISQLiteStorageDatabaseLoggingOptions;
 	readonly useWAL?: boolean;
 
 	/**
-	 * Fail when the configured database cannot be opened instead of attempting
-	 * backup recovery or falling back to an in-memory database.
+	 * Fail when the configured database cannot be opened or does not expose the
+	 * expected storage schema instead of attempting recovery or using memory.
 	 */
 	readonly failOnOpenError?: boolean;
 
@@ -341,26 +346,14 @@ export class SQLiteStorageDatabase implements IStorageDatabase {
 		return new Promise((resolve, reject) => {
 			import('@vscode/sqlite3').then(sqlite3 => {
 				const ctor = (this.logger.isTracing ? sqlite3.default.verbose().Database : sqlite3.default.Database);
+				const databaseExists = path !== SQLiteStorageDatabase.IN_MEMORY_PATH && fs.existsSync(path);
 				const connection: IDatabaseConnection = {
 					db: new ctor(path, (error: (Error & { code?: string }) | null) => {
 						if (error) {
 							return (connection.db && error.code !== 'SQLITE_CANTOPEN' /* https://github.com/TryGhost/node-sqlite3/issues/1617 */) ? connection.db.close(() => reject(error)) : reject(error);
 						}
 
-						// The following exec() statement serves two purposes:
-						// - create the DB if it does not exist yet
-						// - validate that the DB is not corrupt (the open() call does not throw otherwise)
-						const pragmas: string[] = [
-							'PRAGMA user_version = 1;',
-							'CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);'
-						];
-						if (this.useWAL) {
-							pragmas.push('PRAGMA journal_mode=WAL;');
-						}
-						if (this.busyTimeout) {
-							pragmas.push(`PRAGMA busy_timeout=${this.busyTimeout};`);
-						}
-						return this.exec(connection, pragmas.join('')).then(() => {
+						return this.initializeConnection(connection, databaseExists).then(() => {
 							return resolve(connection);
 						}, error => {
 							return connection.db.close(() => reject(error));
@@ -378,6 +371,37 @@ export class SQLiteStorageDatabase implements IStorageDatabase {
 				}
 			}, reject);
 		});
+	}
+
+	private async initializeConnection(connection: IDatabaseConnection, databaseExists: boolean): Promise<void> {
+		// Opening a SQLite file does not validate its schema. Strict mode validates an existing file
+		// before any write; only a newly created database is allowed to create the storage table.
+		if (!this.failOnOpenError || !databaseExists) {
+			await this.exec(connection, 'CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);');
+		}
+		if (this.failOnOpenError) {
+			const columns = await this.all<IStorageSchemaColumn>(connection, 'PRAGMA table_info(ItemTable)');
+			const hasExpectedColumns = columns.length === 2
+				&& columns[0].name === 'key' && columns[0].type.toUpperCase() === 'TEXT'
+				&& columns[1].name === 'value' && columns[1].type.toUpperCase() === 'BLOB';
+			if (!hasExpectedColumns) {
+				const error = new Error('ItemTable has an unsupported schema');
+				this.handleSQLiteError(connection, `[storage ${this.name}] schema(): ${error}`);
+				throw error;
+			}
+
+			// This compiles the same conflict target used by updateItems without inserting a row.
+			await this.exec(connection, 'INSERT INTO ItemTable (key, value) SELECT \'\', \'\' WHERE 0 ON CONFLICT (key) DO UPDATE SET value = excluded.value;');
+		}
+
+		const pragmas: string[] = ['PRAGMA user_version = 1;'];
+		if (this.useWAL) {
+			pragmas.push('PRAGMA journal_mode=WAL;');
+		}
+		if (this.busyTimeout) {
+			pragmas.push(`PRAGMA busy_timeout=${this.busyTimeout};`);
+		}
+		await this.exec(connection, pragmas.join(''));
 	}
 
 	private exec(connection: IDatabaseConnection, sql: string): Promise<void> {
@@ -408,7 +432,7 @@ export class SQLiteStorageDatabase implements IStorageDatabase {
 		});
 	}
 
-	private all(connection: IDatabaseConnection, sql: string): Promise<{ key: string; value: string }[]> {
+	private all<T extends object = { key: string; value: string }>(connection: IDatabaseConnection, sql: string): Promise<T[]> {
 		return new Promise((resolve, reject) => {
 			connection.db.all(sql, (error, rows) => {
 				if (error) {

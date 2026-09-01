@@ -204,12 +204,13 @@ export class AgentSessionCatalog<T> extends Disposable {
 	upsert(item: T): void {
 		const key = this.options.keyOf(item);
 		const previous = this._items.get(key);
+		// The event is newer authority even when the cache already has the same value.
+		this._contentGeneration++;
 		if (previous && this.options.equals(previous, item)) {
 			return;
 		}
 
 		this._items.set(key, item);
-		this._contentGeneration++;
 		this._onDidChange.fire({ addedOrUpdated: [item] });
 	}
 
@@ -218,12 +219,13 @@ export class AgentSessionCatalog<T> extends Disposable {
 	 */
 	delete(key: string): void {
 		const previous = this._items.get(key);
+		// An absent cache entry does not make an older in-flight snapshot authoritative.
+		this._contentGeneration++;
 		if (!previous) {
 			return;
 		}
 
 		this._items.delete(key);
-		this._contentGeneration++;
 		this._onDidChange.fire({ removed: [previous] });
 	}
 

@@ -16,6 +16,7 @@ import { NullLogService } from '../../../platform/log/common/log.js';
 import { ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, LogicalWorkspaceMutationType } from '../../../workbench/services/logicalWorkspace/common/logicalWorkspace.js';
 import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, RemoteLogicalWorkspaceStateErrorCode } from '../../../workbench/services/logicalWorkspace/common/logicalWorkspaceRemote.js';
 import { RemoteLogicalWorkspaceStateChannel, RemoteLogicalWorkspaceStateStorage } from '../../node/logicalWorkspaceStateChannel.js';
+import type { Database } from '@vscode/sqlite3';
 
 class FailOnceStorageDatabase implements IStorageDatabase {
 
@@ -57,6 +58,53 @@ class FailOnceStorageDatabase implements IStorageDatabase {
 			await this.closed.error(error);
 			throw error;
 		}
+	}
+}
+
+class FailInitialReadStorageDatabase implements IStorageDatabase {
+
+	readonly onDidChangeItemsExternal = this.delegate.onDidChangeItemsExternal;
+	readonly whenClosed: Promise<boolean>;
+
+	private readonly closed = new DeferredPromise<boolean>();
+
+	constructor(private readonly delegate: IStorageDatabase) {
+		this.whenClosed = this.closed.p;
+	}
+
+	async getItems(): Promise<Map<string, string>> {
+		await this.delegate.getItems();
+		throw new Error('Injected initial database read failure');
+	}
+
+	updateItems(request: IUpdateRequest): Promise<void> {
+		return this.delegate.updateItems(request);
+	}
+
+	optimize(): Promise<void> {
+		return this.delegate.optimize();
+	}
+
+	async close(recovery?: () => Map<string, string>): Promise<void> {
+		try {
+			await this.delegate.close(recovery);
+			await this.closed.complete(recovery !== undefined);
+		} catch (error) {
+			await this.closed.error(error);
+			throw error;
+		}
+	}
+}
+
+async function createRawSQLiteDatabase(storagePath: string, sql: string): Promise<void> {
+	const sqlite3 = (await import('@vscode/sqlite3')).default;
+	const database = await new Promise<Database>((resolve, reject) => {
+		const candidate = new sqlite3.Database(storagePath, error => error ? reject(error) : resolve(candidate));
+	});
+	try {
+		await new Promise<void>((resolve, reject) => database.exec(sql, error => error ? reject(error) : resolve()));
+	} finally {
+		await new Promise<void>((resolve, reject) => database.close(error => error ? reject(error) : resolve()));
 	}
 }
 
@@ -285,6 +333,70 @@ suite('RemoteLogicalWorkspaceStateChannel', () => {
 		} finally {
 			firstStorage.dispose();
 			reopenedStorage?.dispose();
+			fs.rmSync(testDir, { recursive: true, force: true });
+		}
+	});
+
+	test('fails closed without modifying an unsupported SQLite schema', async function () {
+		this.timeout(10000);
+		const testDir = getRandomTestPath(os.tmpdir(), 'vsctests', 'logical-workspace-schema-failure');
+		const storagePath = join(testDir, 'logical-workspaces.vscdb');
+		fs.mkdirSync(testDir, { recursive: true });
+		await createRawSQLiteDatabase(storagePath, 'CREATE TABLE Preserved(value TEXT); INSERT INTO Preserved VALUES (\'must-survive\'); CREATE TABLE ItemTable(foo TEXT);');
+		const originalContents = fs.readFileSync(storagePath);
+		const storage = new RemoteLogicalWorkspaceStateStorage(storagePath, new NullLogService());
+		const channel = new RemoteLogicalWorkspaceStateChannel(storage);
+
+		try {
+			const initialize = await channel.call<IRemoteLogicalWorkspaceStateResult<IRemoteLogicalWorkspaceStateSnapshot>>(
+				undefined,
+				RemoteLogicalWorkspaceStateCommand.Initialize,
+				{ physicalWorkspaceId: 'physical', state: state('workspace') },
+			);
+			storage.dispose();
+
+			assert.deepStrictEqual({
+				initialize: initialize.status === 'error' ? { status: initialize.status, code: initialize.code } : initialize,
+				storageUnchanged: fs.readFileSync(storagePath).equals(originalContents),
+				backupCreated: fs.existsSync(`${storagePath}.backup`),
+			}, {
+				initialize: { status: 'error', code: RemoteLogicalWorkspaceStateErrorCode.StorageUnavailable },
+				storageUnchanged: true,
+				backupCreated: false,
+			});
+		} finally {
+			storage.dispose();
+			fs.rmSync(testDir, { recursive: true, force: true });
+		}
+	});
+
+	test('does not offer recovery when the initial database read fails', async function () {
+		this.timeout(10000);
+		const testDir = getRandomTestPath(os.tmpdir(), 'vsctests', 'logical-workspace-read-failure');
+		const storagePath = join(testDir, 'logical-workspaces.vscdb');
+		fs.mkdirSync(testDir, { recursive: true });
+		const database = new FailInitialReadStorageDatabase(new SQLiteStorageDatabase(storagePath));
+		const storage = new RemoteLogicalWorkspaceStateStorage(storagePath, new NullLogService(), () => database);
+		const channel = new RemoteLogicalWorkspaceStateChannel(storage);
+
+		try {
+			const read = await channel.call<IRemoteLogicalWorkspaceStateResult<IRemoteLogicalWorkspaceStateSnapshot | undefined>>(
+				undefined,
+				RemoteLogicalWorkspaceStateCommand.Read,
+				{ physicalWorkspaceId: 'physical' },
+			);
+			storage.dispose();
+			const recoveryProvided = await database.whenClosed;
+
+			assert.deepStrictEqual({
+				read: read.status === 'error' ? { status: read.status, code: read.code } : read,
+				recoveryProvided,
+			}, {
+				read: { status: 'error', code: RemoteLogicalWorkspaceStateErrorCode.StorageUnavailable },
+				recoveryProvided: false,
+			});
+		} finally {
+			storage.dispose();
 			fs.rmSync(testDir, { recursive: true, force: true });
 		}
 	});

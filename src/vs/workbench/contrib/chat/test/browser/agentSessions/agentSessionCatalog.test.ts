@@ -139,6 +139,59 @@ suite('AgentSessionCatalog', () => {
 		});
 	});
 
+	test('no-op authoritative events invalidate older complete snapshots without emitting deltas', async () => {
+		const item = { id: 'a', value: 1 };
+		const olderUpsertRead = new DeferredPromise<CatalogSnapshot<ITestCatalogItem>>();
+		const upsertReadStarted = new DeferredPromise<void>();
+		let upsertReadCount = 0;
+		const upsertCatalog = createCatalog(async () => {
+			upsertReadCount++;
+			if (upsertReadCount === 1) {
+				return completeCatalogSnapshot([item]);
+			}
+			if (upsertReadCount === 2) {
+				await upsertReadStarted.complete();
+				return olderUpsertRead.p;
+			}
+			return completeCatalogSnapshot([item]);
+		});
+		await upsertCatalog.refresh(CancellationToken.None);
+		let upsertDeltaCount = 0;
+		disposables.add(upsertCatalog.onDidChange(() => upsertDeltaCount++));
+		const upsertRefresh = upsertCatalog.refresh(CancellationToken.None);
+		await upsertReadStarted.p;
+		upsertCatalog.upsert(item);
+		await olderUpsertRead.complete(completeCatalogSnapshot([]));
+		await upsertRefresh;
+
+		const olderDeleteRead = new DeferredPromise<CatalogSnapshot<ITestCatalogItem>>();
+		const deleteReadStarted = new DeferredPromise<void>();
+		let deleteReadCount = 0;
+		const deleteCatalog = createCatalog(async () => {
+			deleteReadCount++;
+			if (deleteReadCount === 1) {
+				await deleteReadStarted.complete();
+				return olderDeleteRead.p;
+			}
+			return completeCatalogSnapshot([]);
+		});
+		let deleteDeltaCount = 0;
+		disposables.add(deleteCatalog.onDidChange(() => deleteDeltaCount++));
+		const deleteRefresh = deleteCatalog.refresh(CancellationToken.None);
+		await deleteReadStarted.p;
+		deleteCatalog.delete(item.id);
+		await olderDeleteRead.complete(completeCatalogSnapshot([item]));
+		await deleteRefresh;
+
+		assert.deepStrictEqual({
+			upsert: { readCount: upsertReadCount, items: upsertCatalog.items, deltaCount: upsertDeltaCount },
+			delete: { readCount: deleteReadCount, items: deleteCatalog.items, deltaCount: deleteDeltaCount },
+		}, {
+			upsert: { readCount: 3, items: [item], deltaCount: 0 },
+			delete: { readCount: 2, items: [], deltaCount: 0 },
+		});
+	});
+
 	test('a reentrant newer failure retains ownership of the background retry', () => runWithFakedTimers({ maxTaskCount: 10 }, async () => {
 		let readCount = 0;
 		const catalog = createCatalog(() => {

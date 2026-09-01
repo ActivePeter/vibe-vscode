@@ -36,6 +36,7 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 	private readonly confirmedItems = new Map<string, string>();
 	private readonly whenReady: Promise<IStorageDatabase>;
 	private database: IStorageDatabase | undefined;
+	private databaseInitializationSucceeded = false;
 
 	constructor(
 		private readonly storagePath: string | undefined,
@@ -103,6 +104,7 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 			for (const [key, value] of await database.getItems()) {
 				this.confirmedItems.set(key, value);
 			}
+			this.databaseInitializationSucceeded = true;
 			return database;
 		} catch (error) {
 			throw new UnavailableLogicalWorkspaceStateStorageError(`The Logical Workspace state database is unavailable. No automatic recovery was attempted: ${toErrorMessage(error)}`);
@@ -153,7 +155,8 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 		const database = this.database;
 		this.database = undefined;
 		if (database) {
-			void database.close(() => new Map(this.confirmedItems)).catch(error => this.logService.error('Failed to close the remote Logical Workspace state database', error));
+			const recovery = this.databaseInitializationSucceeded ? () => new Map(this.confirmedItems) : undefined;
+			void database.close(recovery).catch(error => this.logService.error('Failed to close the remote Logical Workspace state database', error));
 		}
 		super.dispose();
 	}

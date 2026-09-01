@@ -288,12 +288,11 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		// truth before writing it back, never against that now-obsolete result.
 		const authoritativeState = this.parseSharedState(this.stateStore.readSharedState()) ?? initializedState;
 		this.acceptSharedStateAfterInitialization = false;
-		// Keep the candidate selection only as an intent. The authoritative catalog below decides
-		// whether that identity is real, so a generated provisional ID is ignored while a valid
-		// legacy/page-local selection survives initialization.
-		const preferredActiveWorkspaceId = candidate.state.activeWorkspaceId;
+		// A configuration migration deliberately replaces the previous browser catalog. Otherwise
+		// the page selection remains authoritative and the provisional candidate is only a fallback.
+		const preferredActiveWorkspaceId = candidate.shouldMarkConfigurationMigrated ? candidate.state.activeWorkspaceId : undefined;
 		this.applyLoadedState({
-			state: this.withActiveWorkspace(authoritativeState, undefined, preferredActiveWorkspaceId),
+			state: this.withActiveWorkspace(authoritativeState, candidate.state.activeWorkspaceId, preferredActiveWorkspaceId),
 			shouldMarkConfigurationMigrated: candidate.shouldMarkConfigurationMigrated,
 		});
 		this._isReady = true;
@@ -331,9 +330,9 @@ export class LogicalWorkspaceService extends Disposable implements ILogicalWorks
 		}
 	}
 
-	private withActiveWorkspace(sharedState: ILogicalWorkspaceSharedState, legacyActiveWorkspaceId?: string, preferredActiveWorkspaceId?: string): ILogicalWorkspaceState {
+	private withActiveWorkspace(sharedState: ILogicalWorkspaceSharedState, fallbackActiveWorkspaceId?: string, preferredActiveWorkspaceId?: string): ILogicalWorkspaceState {
 		const storedActiveWorkspaceId = this.stateStore.readActiveWorkspaceId(this.physicalWorkspaceId);
-		const activeWorkspaceId = [preferredActiveWorkspaceId, storedActiveWorkspaceId, legacyActiveWorkspaceId]
+		const activeWorkspaceId = [preferredActiveWorkspaceId, storedActiveWorkspaceId, fallbackActiveWorkspaceId]
 			.find(candidate => candidate && sharedState.workspaces.some(workspace => workspace.id === candidate))
 			?? sharedState.workspaces[0].id;
 		return { ...sharedState, activeWorkspaceId };

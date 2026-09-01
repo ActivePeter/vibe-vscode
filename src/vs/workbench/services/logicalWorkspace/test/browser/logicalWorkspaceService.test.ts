@@ -492,6 +492,40 @@ suite('LogicalWorkspaceService', () => {
 		});
 	});
 
+	/*
+	 * Initialization selection precedence:
+	 *
+	 * | Candidate source        | Candidate | Page selection | Authoritative catalog | Result |
+	 * | stale catalog fallback  | A         | B              | A, B                  | B      |
+	 * | stale catalog fallback  | A         | missing        | A, B                  | A      |
+	 * | generated fallback      | P         | B              | A, B                  | B      |
+	 * | configuration migration | C         | A              | C, A                  | C      |
+	 * | legacy selection        | B         | missing        | A, B                  | B      |
+	 *
+	 * The page selection is the authority. A provisional fallback is considered only when that
+	 * selection is absent from the authoritative catalog.
+	 */
+	test('does not replace a valid page selection with a provisional catalog fallback', async () => {
+		const physicalWorkspaceId = contextService.getWorkspace().id;
+		const firstWorkspace = { id: 'workspace-a', name: 'A', terminalIds: [], shellLayout: undefined };
+		const selectedWorkspace = { id: 'workspace-b', name: 'B', terminalIds: [], shellLayout: undefined };
+		stateStore.setSharedState({ schemaVersion: 2, workspaces: [firstWorkspace] });
+		stateStore.writeActiveWorkspaceId(physicalWorkspaceId, selectedWorkspace.id);
+		const initialize = stateStore.delayInitialize();
+		const service = createService();
+
+		await initialize.complete({ schemaVersion: 2, workspaces: [firstWorkspace, selectedWorkspace] });
+		await service.whenReady;
+
+		assert.deepStrictEqual({
+			activeWorkspaceId: service.activeWorkspace.id,
+			storedActiveWorkspaceId: stateStore.readActiveWorkspaceId(physicalWorkspaceId),
+		}, {
+			activeWorkspaceId: selectedWorkspace.id,
+			storedActiveWorkspaceId: selectedWorkspace.id,
+		});
+	});
+
 	test('preserves a valid legacy selection after the authoritative catalog is ready', async () => {
 		const firstWorkspace = { id: 'workspace-a', name: 'A', terminalIds: [], shellLayout: undefined };
 		const selectedWorkspace = { id: 'workspace-b', name: 'B', terminalIds: [], shellLayout: undefined };

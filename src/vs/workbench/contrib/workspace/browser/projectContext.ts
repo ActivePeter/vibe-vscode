@@ -70,14 +70,12 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		@IExplorerService private readonly explorerService: IExplorerService,
 		@ISCMService private readonly scmService: ISCMService,
 		@ISCMViewService private readonly scmViewService: ISCMViewService,
-		@ILogService logService: ILogService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 		this.selectedFolderUri = this.resolveStoredFolder()?.uri;
 		this.projectionCoordinator = this._register(new AsyncProjectionCoordinator(
-			'Project Context',
 			context => this.applyProjectContext(context),
-			logService,
 			(current, next) => current.folderUri === next.folderUri
 				|| (current.folderUri !== undefined && next.folderUri !== undefined && isEqual(current.folderUri, next.folderUri)),
 		));
@@ -89,7 +87,7 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		const requestSCMProjection = () => {
 			// An empty Project is also an authoritative target. Keep reprojecting its empty SCM set
 			// when repository discovery or a user visibility change tries to repopulate the view.
-			void this.requestProjectContextProjection(this.selectedFolder);
+			this.requestProjectContextProjectionFromEvent(this.selectedFolder);
 		};
 		// SCM adds every newly discovered repository to the visible set in multiple mode.
 		// Reproject for every catalog change, including repositories outside this Project.
@@ -176,7 +174,7 @@ export class ProjectContextService extends Disposable implements IProjectContext
 			if (changed) {
 				this._onDidChangeProjectContext.fire();
 			}
-			void this.requestProjectContextProjection(undefined);
+			this.requestProjectContextProjectionFromEvent(undefined);
 			return;
 		}
 
@@ -186,7 +184,7 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		if (changed) {
 			this._onDidChangeProjectContext.fire();
 		}
-		void this.requestProjectContextProjection(selectedFolder);
+		this.requestProjectContextProjectionFromEvent(selectedFolder);
 	}
 
 	private selectFolder(folder: IWorkspaceFolder, reveal: boolean): Promise<void> {
@@ -207,6 +205,10 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		return this.projectionCoordinator.request({ folderUri }, () => folderUri
 			? !!this.selectedFolder && isEqual(this.selectedFolder.uri, folderUri)
 			: this.selectedFolderUri === undefined);
+	}
+
+	private requestProjectContextProjectionFromEvent(folder: IWorkspaceFolder | undefined): void {
+		void this.requestProjectContextProjection(folder).catch(error => this.logService.error('Project Context projection failed', error));
 	}
 
 	private async applyProjectContext(context: IAsyncProjectionContext<IProjectContextProjectionIntent>): Promise<void> {

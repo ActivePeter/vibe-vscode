@@ -1007,18 +1007,49 @@ suite('Workbench - TerminalService', () => {
 			});
 		});
 
-		test('should observe Workspace readiness failure when terminal profile selection exits early', async () => {
+		test('should observe Workspace readiness failure before terminal profile selection opens', async () => {
 			const controlled = await createServiceWithPendingLogicalWorkspaceAuthority();
+			let quickPickOpened = false;
 			controlled.instantiationService.stubInstance(TerminalProfileQuickpick, {
-				showAndGetResult: async () => undefined,
+				showAndGetResult: async () => {
+					quickPickOpened = true;
+					return undefined;
+				},
 			});
 			const expectedError = new Error('Workspace authority failed');
 			const picking = controlled.service.showProfileQuickPick('createInstance');
 			await timeout(0);
+			strictEqual(quickPickOpened, false);
 
 			await controlled.authorityReady.error(expectedError);
 
 			await rejects(picking, error => error === expectedError);
+			strictEqual(quickPickOpened, false);
+		});
+
+		test('should reject terminal creation before waiting for profiles when Workspace readiness fails', async () => {
+			const controlled = await createServiceWithPendingLogicalWorkspaceAuthority();
+			const profilesReady = new DeferredPromise<void>();
+			controlled.instantiationService.stub(ITerminalProfileService, 'profilesReady', profilesReady.p);
+			const expectedError = new Error('Workspace authority failed');
+			const creationResult = controlled.service.createTerminal({
+				config: { executable: '/bin/sh' },
+				skipContributedProfileCheck: true,
+			}).then(
+				() => ({ status: 'fulfilled' as const }),
+				error => ({ status: 'rejected' as const, error }),
+			);
+			await timeout(0);
+
+			await controlled.authorityReady.error(expectedError);
+			const earlyResult = await Promise.race([
+				creationResult,
+				timeout(0).then(() => ({ status: 'pending' as const })),
+			]);
+			await profilesReady.complete();
+			await creationResult;
+
+			deepStrictEqual(earlyResult, { status: 'rejected', error: expectedError });
 		});
 
 		test('should wait for the authoritative Workspace before delegating a contributed terminal', async () => {

@@ -98,6 +98,10 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 				await terminalProjectionStarted.complete();
 				await releaseTerminalProjection.p;
 			}
+			override prepareEditorTerminalsForWorkingSet(): void { }
+			override async restoreUnclaimedEditorTerminals(): Promise<boolean> {
+				return false;
+			}
 		};
 		let editorApplyCount = 0;
 		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
@@ -125,6 +129,142 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		await releaseTerminalProjection.complete();
 		await adapter.whenReady;
 		assert.strictEqual(editorApplyCount, 1);
+		store.dispose();
+	});
+
+	test('does not apply an editor working set after Terminal projection fails', async () => {
+		const store = disposables.add(new DisposableStore());
+		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
+		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		await logicalWorkspaceService.whenReady;
+		logicalWorkspaceService.setEditorWorkingSet(logicalWorkspaceService.activeWorkspace.id, 'editor-working-set');
+		const expectedError = new Error('terminal projection failed');
+		const terminalProjectionService = new class extends mock<ILogicalWorkspaceTerminalProjectionService>() {
+			override readonly whenReady = Promise.resolve();
+			override async requestReconcile(): Promise<void> {
+				throw expectedError;
+			}
+			override prepareEditorTerminalsForWorkingSet(): void { }
+			override async restoreUnclaimedEditorTerminals(): Promise<boolean> {
+				return false;
+			}
+		};
+		let editorApplyCount = 0;
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly whenReady = Promise.resolve();
+			override async applySerializedWorkingSet(): Promise<boolean> {
+				editorApplyCount++;
+				return true;
+			}
+		};
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidEditorsChange = Event.None;
+			override getEditors(): [] { return []; }
+		};
+		const adapter = store.add(new LogicalWorkspaceEditorAdapter(
+			logicalWorkspaceService,
+			editorGroupsService,
+			editorService,
+			terminalProjectionService,
+			store.add(new TestStorageService()),
+			new NullLogService(),
+		));
+
+		await assert.rejects(adapter.whenReady, error => error === expectedError);
+		assert.strictEqual(editorApplyCount, 0);
+		store.dispose();
+	});
+
+	test('finalizes unclaimed editor Terminals only after the editor working set is applied', async () => {
+		const store = disposables.add(new DisposableStore());
+		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
+		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		await logicalWorkspaceService.whenReady;
+		logicalWorkspaceService.setEditorWorkingSet(logicalWorkspaceService.activeWorkspace.id, 'editor-working-set');
+		const events: string[] = [];
+		const terminalProjectionService = new class extends mock<ILogicalWorkspaceTerminalProjectionService>() {
+			override readonly whenReady = Promise.resolve();
+			override async requestReconcile(): Promise<void> {
+				events.push('terminal-reconcile');
+			}
+			override prepareEditorTerminalsForWorkingSet(): void {
+				events.push('terminal-prepare');
+			}
+			override async restoreUnclaimedEditorTerminals(): Promise<boolean> {
+				events.push('terminal-finalize');
+				return false;
+			}
+		};
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly whenReady = Promise.resolve();
+			override async applySerializedWorkingSet(): Promise<boolean> {
+				events.push('editor-apply');
+				return true;
+			}
+		};
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidEditorsChange = Event.None;
+			override getEditors(): [] { return []; }
+		};
+		const adapter = store.add(new LogicalWorkspaceEditorAdapter(
+			logicalWorkspaceService,
+			editorGroupsService,
+			editorService,
+			terminalProjectionService,
+			store.add(new TestStorageService()),
+			new NullLogService(),
+		));
+
+		await adapter.whenReady;
+		assert.deepStrictEqual(events, ['terminal-reconcile', 'terminal-prepare', 'editor-apply', 'terminal-finalize']);
+		store.dispose();
+	});
+
+	test('does not confirm editor projection when unclaimed Terminal finalization fails', async () => {
+		const store = disposables.add(new DisposableStore());
+		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
+		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		await logicalWorkspaceService.whenReady;
+		logicalWorkspaceService.setEditorWorkingSet(logicalWorkspaceService.activeWorkspace.id, 'editor-working-set');
+		const expectedError = new Error('editor Terminal open failed');
+		let finalizationCount = 0;
+		const terminalProjectionService = new class extends mock<ILogicalWorkspaceTerminalProjectionService>() {
+			override readonly whenReady = Promise.resolve();
+			override async requestReconcile(): Promise<void> { }
+			override prepareEditorTerminalsForWorkingSet(): void { }
+			override async restoreUnclaimedEditorTerminals(): Promise<boolean> {
+				if (++finalizationCount === 1) {
+					throw expectedError;
+				}
+				return false;
+			}
+		};
+		let editorApplyCount = 0;
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly whenReady = Promise.resolve();
+			override async applySerializedWorkingSet(): Promise<boolean> {
+				editorApplyCount++;
+				return true;
+			}
+		};
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidEditorsChange = Event.None;
+			override getEditors(): [] { return []; }
+		};
+		const adapter = store.add(new LogicalWorkspaceEditorAdapter(
+			logicalWorkspaceService,
+			editorGroupsService,
+			editorService,
+			terminalProjectionService,
+			store.add(new TestStorageService()),
+			new NullLogService(),
+		));
+		const coordinator = Reflect.get(adapter, 'projectionCoordinator') as LogicalWorkspaceProjectionCoordinator;
+
+		await assert.rejects(adapter.whenReady, error => error === expectedError);
+		await coordinator.requestReconcile();
+
+		assert.deepStrictEqual({ editorApplyCount, finalizationCount }, { editorApplyCount: 2, finalizationCount: 2 });
 		store.dispose();
 	});
 
@@ -242,7 +382,7 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		assert.strictEqual(foregroundReads, 0);
 	});
 
-	test('leaves editor Terminal restoration to the editor working set owner', async () => {
+	test('restores an editor Terminal that remains unclaimed after working set adoption', async () => {
 		const store = disposables.add(new DisposableStore());
 		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
 		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
@@ -278,9 +418,12 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 			shellLaunchConfig: { logicalTerminalId, logicalWorkspaceId },
 			exitReason: TerminalExitReason.Unknown,
 		} satisfies Partial<ITerminalInstance> as ITerminalInstance);
-		const firstTerminal = createEditorInstance(1, 'first', firstWorkspace.id);
-		const secondTerminal = createEditorInstance(2, 'second', secondWorkspace.id);
-		background = [firstTerminal, secondTerminal];
+		const existingTerminal = createEditorInstance(1, 'existing', firstWorkspace.id);
+		const lateTerminal = createEditorInstance(2, 'late', firstWorkspace.id);
+		const hiddenTerminal = createEditorInstance(3, 'hidden', firstWorkspace.id);
+		hiddenTerminal.shellLaunchConfig.hideFromUser = true;
+		foreground = [existingTerminal];
+		background = [hiddenTerminal];
 
 		const adapter = store.add(new LogicalWorkspaceTerminalAdapter(
 			logicalWorkspaceService,
@@ -293,16 +436,93 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 
 		logicalWorkspaceService.activateWorkspace(secondWorkspace.id, LogicalWorkspaceActivationActor.Picker);
 		await coordinator.requestReconcile();
+		// The new editor Terminal completes after A was captured and while B is active.
+		foreground.push(lateTerminal);
+		changedInstances.fire();
+		await coordinator.requestReconcile();
+
+		logicalWorkspaceService.activateWorkspace(firstWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+		await coordinator.requestReconcile();
+		const staleRestore = await adapter.restoreUnclaimedEditorTerminals(firstWorkspace.id, logicalWorkspaceService.activationSequence - 1);
+		// Model the late open winning the race back into A immediately before destructive apply.
+		background = background.filter(instance => instance !== lateTerminal);
+		foreground.push(lateTerminal);
+		adapter.prepareEditorTerminalsForWorkingSet(firstWorkspace.id, logicalWorkspaceService.activationSequence);
+		// Applying A's serialized working set adopts the existing Terminal before finalization.
+		background = background.filter(instance => instance !== existingTerminal);
+		foreground.push(existingTerminal);
+		const restored = await adapter.restoreUnclaimedEditorTerminals(firstWorkspace.id, logicalWorkspaceService.activationSequence);
 
 		assert.deepStrictEqual({
 			foreground: foreground.map(instance => instance.shellLaunchConfig.logicalTerminalId),
 			background: background.map(instance => instance.shellLaunchConfig.logicalTerminalId),
 			completedOpens,
+			staleRestore,
+			restored,
 		}, {
-			foreground: [],
-			background: ['first', 'second'],
-			completedOpens: [],
+			foreground: ['existing', 'late'],
+			background: ['hidden'],
+			completedOpens: ['late'],
+			staleRestore: false,
+			restored: true,
 		});
+	});
+
+	test('converges to a newer Workspace when editor Terminal finalization completes late', async () => {
+		const store = disposables.add(new DisposableStore());
+		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
+		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		await logicalWorkspaceService.whenReady;
+		const firstWorkspace = logicalWorkspaceService.activeWorkspace;
+		const secondWorkspace = await logicalWorkspaceService.createWorkspace('Second');
+		const changedInstances = store.add(new Emitter<void>());
+		const showStarted = new DeferredPromise<void>();
+		const releaseShow = new DeferredPromise<void>();
+		const instance = {
+			instanceId: 1,
+			target: TerminalLocation.Editor,
+			shellLaunchConfig: { logicalTerminalId: 'late', logicalWorkspaceId: firstWorkspace.id },
+			exitReason: TerminalExitReason.Unknown,
+		} satisfies Partial<ITerminalInstance> as ITerminalInstance;
+		let foreground: ITerminalInstance[] = [];
+		let background: ITerminalInstance[] = [instance];
+		const terminalService = new class extends mock<ITerminalService>() {
+			override readonly onDidChangeInstances = changedInstances.event;
+			override readonly whenConnected = Promise.resolve();
+			override get foregroundInstances(): readonly ITerminalInstance[] { return foreground; }
+			override get instances(): readonly ITerminalInstance[] { return [...foreground, ...background]; }
+			override moveToBackground(instance: ITerminalInstance): void {
+				foreground = foreground.filter(candidate => candidate !== instance);
+				if (!background.includes(instance)) {
+					background.push(instance);
+				}
+				changedInstances.fire();
+			}
+			override async showBackgroundTerminal(instance: ITerminalInstance): Promise<void> {
+				background = background.filter(candidate => candidate !== instance);
+				foreground.push(instance);
+				changedInstances.fire();
+				await showStarted.complete();
+				await releaseShow.p;
+			}
+		};
+		const adapter = store.add(new LogicalWorkspaceTerminalAdapter(
+			logicalWorkspaceService,
+			terminalService,
+			store.add(new TestStorageService()),
+			new NullLogService(),
+		));
+		await adapter.whenReady;
+
+		const finalization = adapter.restoreUnclaimedEditorTerminals(firstWorkspace.id, logicalWorkspaceService.activationSequence);
+		await showStarted.p;
+		logicalWorkspaceService.activateWorkspace(secondWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+		await releaseShow.complete();
+		const restored = await finalization;
+		await adapter.requestReconcile();
+
+		assert.deepStrictEqual({ foreground, background, restored }, { foreground: [], background: [instance], restored: false });
+		store.dispose();
 	});
 
 });

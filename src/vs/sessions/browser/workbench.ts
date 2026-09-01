@@ -462,6 +462,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	private paneCompositeService!: IPaneCompositePartService;
 	private viewDescriptorService!: IViewDescriptorService;
 	private sessionsService!: ISessionsService;
+	private logicalWorkspaceEditorProjectionService!: ILogicalWorkspaceEditorProjectionService;
 	private sessionsPartService!: ISessionsPartService;
 	private customViewService!: ICustomViewService;
 	private customViewGridPartService!: ICustomViewGridPartService;
@@ -642,7 +643,10 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				this.layout();
 
 				// Restore
-				this.restore(lifecycleService);
+				void this.restore(lifecycleService).catch(error => {
+					this.logService.error('[Workbench] restore failed', error);
+					onUnexpectedError(error);
+				});
 			});
 
 			return instantiationService;
@@ -1171,13 +1175,25 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this.mainContainer.appendChild(customViewGridPartContainer);
 	}
 
-	private restore(lifecycleService: ILifecycleService): void {
-		// Update perf marks
+	private async restore(lifecycleService: ILifecycleService): Promise<void> {
+		// Restore parts (open default view containers)
+		try {
+			this.restoreParts();
+		} catch (error) {
+			onUnexpectedError(error);
+		}
+
+		// Match the standard Workbench startup barrier. Contributions and restored Sessions may open
+		// editors once the Restored phase begins, so the initial working set must commit first.
+		try {
+			await this.logicalWorkspaceEditorProjectionService.whenReady;
+		} catch (error) {
+			this.logService.error('[Workbench] Logical Workspace editor projection failed during restore', error);
+		}
+
+		// Update perf marks after the editor projection has completed.
 		mark('code/didStartWorkbench');
 		performance.measure('perf: workbench create & restore', 'code/didLoadWorkbenchMain', 'code/didStartWorkbench');
-
-		// Restore parts (open default view containers)
-		this.restoreParts();
 
 		// Restore the sessions that were visible in the grid.
 		void this.sessionsService.restoreVisibleSessions().catch(e => {
@@ -1226,7 +1242,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this.editorService = accessor.get(IEditorService);
 		// Match the standard Workbench startup boundary: the editor projection owns the initial
 		// working-set restore and resolves the Terminal projection through its DI dependency.
-		accessor.get(ILogicalWorkspaceEditorProjectionService);
+		this.logicalWorkspaceEditorProjectionService = accessor.get(ILogicalWorkspaceEditorProjectionService);
 		this.paneCompositeService = accessor.get(IPaneCompositePartService);
 		this.viewDescriptorService = accessor.get(IViewDescriptorService);
 		this.sessionsService = accessor.get(ISessionsService);

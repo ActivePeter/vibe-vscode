@@ -8,6 +8,7 @@ import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
+import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
@@ -20,7 +21,7 @@ import { AsyncProjectionCoordinator, ILogicalWorkspaceProjection, LogicalWorkspa
 import { LogicalWorkspaceService } from '../../browser/logicalWorkspaceService.js';
 import { RemoteLogicalWorkspaceStateClient } from '../../browser/logicalWorkspaceRemoteStateClient.js';
 import { ILogicalWorkspaceStateStore, LogicalWorkspaceStateStore } from '../../browser/logicalWorkspaceStateStore.js';
-import { applyLogicalWorkspaceMutation, ILogicalWorkspaceMutation, ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, LogicalWorkspaceActivationActor, LogicalWorkspaceMutationType, parseLogicalWorkspaceMutation, parseLogicalWorkspaceSharedState } from '../../common/logicalWorkspace.js';
+import { applyLogicalWorkspaceMutation, ILogicalWorkspaceMutation, ILogicalWorkspaceService, ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, ILogicalWorkspaceStateChangeEvent, ILogicalWorkspaceStateSnapshot, LogicalWorkspaceActivationActor, LogicalWorkspaceMutationType, LogicalWorkspaceStateChangeKind, parseLogicalWorkspaceMutation, parseLogicalWorkspaceSharedState } from '../../common/logicalWorkspace.js';
 import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, RemoteLogicalWorkspaceStateErrorCode } from '../../common/logicalWorkspaceRemote.js';
 
 class TestLogicalWorkspaceStateStore extends Disposable implements ILogicalWorkspaceStateStore {
@@ -815,6 +816,102 @@ suite('LogicalWorkspaceService', () => {
 		assert.strictEqual(ready, true);
 	});
 
+	test('initial projection readiness rejects when its same-target feedback tail fails', async () => {
+		const service = createService();
+		await service.whenReady;
+		const workspaceId = service.activeWorkspace.id;
+		const expectedError = new Error('feedback projection failed');
+		let restoreCount = 0;
+		const projection: ILogicalWorkspaceProjection = {
+			id: 'failedInitialFeedback',
+			stateSlice: state => state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.editorWorkingSet,
+			restore: async () => {
+				restoreCount++;
+				if (restoreCount === 1) {
+					service.setEditorWorkingSet(workspaceId, 'updated');
+					return;
+				}
+				throw expectedError;
+			},
+		};
+		const coordinator = disposables.add(new LogicalWorkspaceProjectionCoordinator(service, projection, storageService, new NullLogService()));
+
+		await assert.rejects(coordinator.whenReady, error => error === expectedError);
+		assert.strictEqual(restoreCount, 2);
+	});
+
+	test('initial projection readiness recovers when newer queued work succeeds', async () => {
+		const service = createService();
+		await service.whenReady;
+		const workspaceId = service.activeWorkspace.id;
+		const firstRestoreStarted = new DeferredPromise<void>();
+		const releaseFirstRestore = new DeferredPromise<void>();
+		let restoreCount = 0;
+		const projection: ILogicalWorkspaceProjection = {
+			id: 'recoveredInitialProjection',
+			stateSlice: state => state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.editorWorkingSet,
+			restore: async () => {
+				if (++restoreCount === 1) {
+					await firstRestoreStarted.complete();
+					await releaseFirstRestore.p;
+					throw new Error('obsolete projection failed');
+				}
+			},
+		};
+		const coordinator = disposables.add(new LogicalWorkspaceProjectionCoordinator(service, projection, storageService, new NullLogService()));
+		await firstRestoreStarted.p;
+		service.setEditorWorkingSet(workspaceId, 'updated');
+		await releaseFirstRestore.complete();
+
+		await coordinator.whenReady;
+		assert.strictEqual(restoreCount, 2);
+	});
+
+	test('projection coordinator observes initial and event-driven readiness failures', async () => {
+		const readiness = new DeferredPromise<void>();
+		const stateChanges = disposables.add(new Emitter<ILogicalWorkspaceStateChangeEvent>());
+		let state: ILogicalWorkspaceStateSnapshot = {
+			activeWorkspaceId: 'workspace-a',
+			workspaces: [{ id: 'workspace-a', name: 'A', terminalIds: [], shellLayout: undefined }],
+		};
+		const service = new class extends mock<ILogicalWorkspaceService>() {
+			override readonly onWillChangeActiveWorkspace = Event.None;
+			override readonly onDidChangeState = stateChanges.event;
+			override get state(): ILogicalWorkspaceStateSnapshot { return state; }
+			override get activeWorkspace() { return state.workspaces[0]; }
+			override get activationSequence(): number { return 0; }
+			override readonly whenReady = readiness.p;
+		}();
+		const errors: string[] = [];
+		const logService = new class extends NullLogService {
+			override error(message: string | Error, ...args: unknown[]): void {
+				errors.push([message, ...args].map(value => value instanceof Error ? value.message : String(value)).join(': '));
+			}
+		}();
+		const coordinator = disposables.add(new LogicalWorkspaceProjectionCoordinator(service, {
+			id: 'failedReadiness',
+			stateSlice: snapshot => snapshot.workspaces[0].editorWorkingSet,
+			restore: async () => { },
+		}, storageService, logService));
+		const expectedError = new Error('Workspace authority failed');
+		const initialFailure = assert.rejects(coordinator.whenReady, error => error === expectedError);
+		const previousState = state;
+		state = {
+			...state,
+			workspaces: [{ ...state.workspaces[0], editorWorkingSet: 'updated' }],
+		};
+		stateChanges.fire({ changed: LogicalWorkspaceStateChangeKind.Workspaces, previousState, state });
+
+		await readiness.error(expectedError);
+		await initialFailure;
+		await timeout(0);
+
+		assert.deepStrictEqual(errors.sort(), [
+			'failedReadiness initial projection failed: Workspace authority failed',
+			'failedReadiness projection reconciliation failed: Workspace authority failed',
+		]);
+	});
+
 	test('capture acknowledges locally-authored state without restoring the live UI', async () => {
 		const service = createService();
 		await service.whenReady;
@@ -1013,13 +1110,13 @@ suite('LogicalWorkspaceService', () => {
 		const firstStarted = new DeferredPromise<void>();
 		const releaseFirst = new DeferredPromise<void>();
 		const applied: string[] = [];
-		const coordinator = disposables.add(new AsyncProjectionCoordinator<string>('test', async context => {
+		const coordinator = disposables.add(new AsyncProjectionCoordinator<string>(async context => {
 			applied.push(context.value);
 			if (context.value === 'first') {
 				await firstStarted.complete();
 				await releaseFirst.p;
 			}
-		}, new NullLogService()));
+		}));
 
 		const first = coordinator.request('first');
 		await firstStarted.p;
@@ -1037,19 +1134,42 @@ suite('LogicalWorkspaceService', () => {
 		});
 	});
 
+	test('async projection rejects a failed request and continues with newer work', async () => {
+		const firstStarted = new DeferredPromise<void>();
+		const releaseFirst = new DeferredPromise<void>();
+		const expectedError = new Error('projection failed');
+		const applied: string[] = [];
+		const coordinator = disposables.add(new AsyncProjectionCoordinator<string>(async context => {
+			applied.push(context.value);
+			if (context.value === 'first') {
+				await firstStarted.complete();
+				await releaseFirst.p;
+				throw expectedError;
+			}
+		}));
+
+		const first = assert.rejects(coordinator.request('first'), error => error === expectedError);
+		await firstStarted.p;
+		const second = coordinator.request('second');
+		await releaseFirst.complete();
+		await Promise.all([first, second]);
+
+		assert.deepStrictEqual(applied, ['first', 'second']);
+	});
+
 	test('same-target projection feedback queues a refresh without invalidating the active transaction', async () => {
 		const firstStarted = new DeferredPromise<void>();
 		const releaseFirst = new DeferredPromise<void>();
 		const applied: string[] = [];
 		let firstCurrentAfterAsyncBoundary: boolean | undefined;
-		const coordinator = disposables.add(new AsyncProjectionCoordinator<string>('test', async context => {
+		const coordinator = disposables.add(new AsyncProjectionCoordinator<string>(async context => {
 			applied.push(context.value);
 			if (applied.length === 1) {
 				await firstStarted.complete();
 				await releaseFirst.p;
 				firstCurrentAfterAsyncBoundary = context.isCurrent();
 			}
-		}, new NullLogService(), (current, next) => current === next));
+		}, (current, next) => current === next));
 
 		const first = coordinator.request('workspace');
 		await firstStarted.p;
@@ -1069,7 +1189,7 @@ suite('LogicalWorkspaceService', () => {
 		const applied: string[] = [];
 		let activeApplyCount = 0;
 		let maximumActiveApplyCount = 0;
-		const coordinator = disposables.add(new AsyncProjectionCoordinator<string>('test', async context => {
+		const coordinator = disposables.add(new AsyncProjectionCoordinator<string>(async context => {
 			activeApplyCount++;
 			maximumActiveApplyCount = Math.max(maximumActiveApplyCount, activeApplyCount);
 			applied.push(context.value);
@@ -1079,7 +1199,7 @@ suite('LogicalWorkspaceService', () => {
 				await releaseFirst.p;
 			}
 			activeApplyCount--;
-		}, new NullLogService(), (current, next) => current === next));
+		}, (current, next) => current === next));
 
 		const first = coordinator.request('workspace');
 		await firstStarted.p;

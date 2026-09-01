@@ -72,6 +72,12 @@ export class LogicalWorkspaceEditorAdapter extends Disposable implements ILogica
 		this.restoring = true;
 		try {
 			let applied = true;
+			if (context.workspace.editorWorkingSet || context.activationSequence > 0) {
+				this.terminalProjectionService.prepareEditorTerminalsForWorkingSet(context.workspace.id, context.activationSequence);
+				if (!context.isCurrent()) {
+					return false;
+				}
+			}
 			if (context.workspace.editorWorkingSet) {
 				applied = await this.editorGroupsService.applySerializedWorkingSet(context.workspace.editorWorkingSet);
 			} else if (context.activationSequence > 0) {
@@ -85,8 +91,17 @@ export class LogicalWorkspaceEditorAdapter extends Disposable implements ILogica
 				this.logService.warn(`Logical workspace editor working set could not be restored: ${context.workspace.id}`);
 				return false;
 			}
+			const restoredUnclaimedEditorTerminals = await this.terminalProjectionService.restoreUnclaimedEditorTerminals(context.workspace.id, context.activationSequence);
+			if (!context.isCurrent()) {
+				return false;
+			}
 			this.projectedWorkspaceId = context.workspace.id;
 			this.refreshWebviewStateListeners();
+			if (restoredUnclaimedEditorTerminals) {
+				// Persist the fallback placement on the next guarded capture so reload can adopt the
+				// same PTY through the normal editor working-set serializer.
+				this.captureScheduler.schedule();
+			}
 			return true;
 		} catch (error) {
 			this.projectedWorkspaceId = undefined;

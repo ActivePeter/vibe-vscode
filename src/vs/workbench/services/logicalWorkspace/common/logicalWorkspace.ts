@@ -252,6 +252,10 @@ export interface ILogicalWorkspaceTerminalProjectionService {
 	readonly _serviceBrand: undefined;
 	readonly whenReady: Promise<void>;
 	requestReconcile(): Promise<void>;
+	/** Detaches current-owner editor Terminals immediately before destructive working-set apply. */
+	prepareEditorTerminalsForWorkingSet(workspaceId: string, activationSequence: number): void;
+	/** Restores active-owner editor Terminals that were not adopted by the serialized working set. */
+	restoreUnclaimedEditorTerminals(workspaceId: string, activationSequence: number): Promise<boolean>;
 }
 
 /**

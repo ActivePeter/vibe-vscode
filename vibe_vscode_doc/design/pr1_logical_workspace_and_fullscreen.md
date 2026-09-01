@@ -221,7 +221,7 @@ State Store 通过 Remote Agent IPC 访问按 Physical Workspace ID 隔离的服
 
 `LogicalWorkspaceProjectionCoordinator` 统一负责初始恢复、切换前 capture、切换后 restore 和页面保存。`AsyncProjectionCoordinator` 合并 pending intent；同 target 的反馈保留当前 generation 并在尾部收敛，不同 target 才使旧事务过期。调用方若需要最终稳定状态，应等待自己关心的最新请求，不能假定旧 generation 的 Promise 代表后续所有请求都已完成。所有被投影 Service 的 Promise 必须表达真实 UI commit，例如 editor terminal 的 restore 只有在 `openEditor()` 完成后才能 resolve。
 
-每个 Adapter 声明自身完整且最小的 active state slice；active ID 不变但 slice 内容更新时仍需排队 reconcile。只有 restore 成功才能推进 projected snapshot；capture 仅在 projected slice 与当前 authority slice 相同时执行，失败或 pending restore 不能把旧 UI 反写覆盖新状态。capture 写回的本地 slice 直接确认为当前 UI 已投影状态，不再对自身反馈执行破坏性 restore；外部 slice 更新仍走 reconcile。初始 editor projection 暴露独立 readiness，Workbench 在打开后续 startup editors 前等待它及其同 target 尾部刷新全部完成。
+每个 Adapter 声明自身完整且最小的 active state slice；active ID 不变但 slice 内容更新时仍需排队 reconcile。只有 restore 成功才能推进 projected snapshot；capture 仅在 projected slice 与当前 authority slice 相同时执行，失败或 pending restore 不能把旧 UI 反写覆盖新状态。capture 写回的本地 slice 直接确认为当前 UI 已投影状态，不再对自身反馈执行破坏性 restore；外部 slice 更新仍走 reconcile。初始 editor projection 暴露独立 readiness，Workbench 在打开后续 startup editors 前等待它及其同 target 尾部刷新全部完成。Projection apply 失败必须拒绝对应的 transaction Promise，但不能停止队列处理更新的请求；事件入口负责消费并记录 rejection，显式等待者则据此停止后续破坏性步骤。
 
 ### 7.2 Shell layout
 
@@ -232,7 +232,7 @@ Layout Adapter 保存三个 shell part 的 `visible`、`width`、`height` 与 `a
 `LogicalWorkspaceEditorAdapter` 通过 Editor Groups Service 序列化和恢复 editor working set，并监听 Webview state 更新补充 capture。它只处理 editor input 的通用恢复 identity，不读取 Agent Session catalog，也不建立 Session owner。
 
 Terminal editor 的 tab 位置也由 editor working set 恢复；Terminal serializer 复用 Terminal/PTY authority 已保留或已 revive 的同一实例，不创建第二个 attach client。Terminal layout 的 background 列表只恢复 Panel Terminal，不同时持有 editor Terminal 的恢复权。
-切换事务中 Terminal projection 必须先把旧 editor Terminal detach 到 background，随后 editor working set 才能关闭/替换 groups；否则通用 editor close 会误终止仍应保留的 PTY。
+切换事务采用 `Terminal prepare → editor working-set apply/adopt → Terminal finalize`：普通 reconcile 先隐藏其他 Workspace 的 Terminal；紧邻 destructive apply 的 prepare 再把当前 owner 的前台 editor Terminal 保护性 detach 到 background。随后 editor working set 关闭/替换 groups 并领养其中引用的实例，最后只把仍未被领养且 owner 为当前 Workspace 的可见用户 Terminal 恢复到 active editor group。这样创建跨越 Workspace 切换而晚完成、甚至尚未来得及执行旧 target reconcile 的 Editor Terminal 仍有可达入口，同时不会抢走 working set 中已有 Terminal 的原 group；hidden/tool Terminal 不参加 fallback finalize。
 
 具备可恢复 editor identity 的 Session Tab 可以自然包含在 serialized working set 中；但 PR #1 尚未为 Session Tab 单独完成 open/close、多 Workspace 重复打开和恢复正文的产品验收，因此 README 仍标记为 Planned。window geometry、panel split 和 active terminal 不属于 editor working set。
 
@@ -246,7 +246,8 @@ Terminal 创建与投影遵循以下目标流程：
 2. 沿既有创建链传递 identity，不重新读取 active Workspace；
 3. 将 `logicalWorkspaceId` 和 `logicalTerminalId` 写入 Shell launch config 与 persistent PTY metadata；
 4. 非当前 Workspace 的实例移到 background，不关闭 PTY；
-5. 切回 owner Workspace 时，Panel Terminal 由 Terminal Adapter 挂回；editor Terminal 由 editor working set 在原 group 中领养同一 background instance。
+5. 切回 owner Workspace 时，Panel Terminal 由 Terminal Adapter 挂回；editor Terminal 先由 editor working set 在原 group 中领养同一 background instance；
+6. working set 应用后仍留在 background 的当前 owner editor Terminal 由 Terminal Adapter 恢复到 active group，并通过受保护的下一次 capture 纳入 working set。
 
 `ITerminalCreationContext` 是只携带 initiating Workspace 与稳定 Logical Terminal ID 的小型 immutable value object。普通创建、Extension Host contributed profile 和 Agent Host profile 都沿已有调用链转发它。Terminal 创建失败只留下未使用的局部 config，不写 Workspace 共享状态，因此不会发布 ghost owner。
 

@@ -552,6 +552,12 @@ class MockLogicalWorkspaceTerminalProjectionService implements ILogicalWorkspace
 	requestReconcile(): Promise<void> {
 		return Promise.resolve();
 	}
+
+	prepareEditorTerminalsForWorkingSet(): void { }
+
+	restoreUnclaimedEditorTerminals(): Promise<boolean> {
+		return Promise.resolve(false);
+	}
 }
 
 class MockLogicalWorkspaceEditorProjectionService implements ILogicalWorkspaceEditorProjectionService {

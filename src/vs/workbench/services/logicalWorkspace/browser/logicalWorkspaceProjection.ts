@@ -25,6 +25,7 @@ interface IAsyncProjectionRequest<T> {
 interface IAsyncProjectionWaiter {
 	readonly sequence: number;
 	readonly resolve: () => void;
+	readonly reject: (error: unknown) => void;
 }
 
 /**
@@ -33,6 +34,7 @@ interface IAsyncProjectionWaiter {
  * generation: the active transaction finishes, then one coalesced refresh observes its effects.
  * A different target invalidates the active generation immediately.
  * Projection implementations must check `isCurrent` after every asynchronous boundary.
+ * A failed apply rejects the requests represented by that apply without stopping newer work.
  */
 export class AsyncProjectionCoordinator<T> extends Disposable {
 
@@ -42,12 +44,11 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 	private applyingRequest: IAsyncProjectionRequest<T> | undefined;
 	private running: Promise<void> | undefined;
 	private readonly waiters: IAsyncProjectionWaiter[] = [];
+	private lastFailure: { readonly sequence: number; readonly error: unknown } | undefined;
 	private disposed = false;
 
 	constructor(
-		private readonly id: string,
 		private readonly apply: (context: IAsyncProjectionContext<T>) => Promise<void>,
-		private readonly logService: ILogService,
 		private readonly isSameTarget: (current: T, next: T) => boolean = () => false,
 	) {
 		super();
@@ -64,14 +65,18 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 			? latestRequest.generation
 			: ++this.projectionGeneration;
 		this.pendingRequest = { value, sequence, generation, isStillCurrent };
-		const completion = new Promise<void>(resolve => this.waiters.push({ sequence, resolve }));
+		const completion = new Promise<void>((resolve, reject) => this.waiters.push({ sequence, resolve, reject }));
 		this.ensureRunning();
 		return completion;
 	}
 
+	/** Waits for all queued work and rejects when the newest completed projection failed. */
 	async whenIdle(): Promise<void> {
 		while (this.running) {
 			await this.running;
+		}
+		if (this.lastFailure) {
+			throw this.lastFailure.error;
 		}
 	}
 
@@ -100,21 +105,30 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 				isCurrent: () => !this.disposed && request.generation === this.projectionGeneration && request.isStillCurrent(),
 			};
 
+			let failed = false;
+			let failure: unknown;
 			try {
 				await this.apply(context);
 			} catch (error) {
-				this.logService.error(`${this.id} projection failed`, error);
+				failed = true;
+				failure = error;
 			} finally {
 				this.applyingRequest = undefined;
-				this.resolveWaitersThrough(request.sequence);
+				this.lastFailure = failed ? { sequence: request.sequence, error: failure } : undefined;
+				this.settleWaitersThrough(request.sequence, failed, failure);
 			}
 		}
 	}
 
-	private resolveWaitersThrough(sequence: number): void {
+	private settleWaitersThrough(sequence: number, failed = false, failure?: unknown): void {
 		for (let index = this.waiters.length - 1; index >= 0; index--) {
 			if (this.waiters[index].sequence <= sequence) {
-				this.waiters.splice(index, 1)[0].resolve();
+				const waiter = this.waiters.splice(index, 1)[0];
+				if (failed) {
+					waiter.reject(failure);
+				} else {
+					waiter.resolve();
+				}
 			}
 		}
 	}
@@ -123,7 +137,8 @@ export class AsyncProjectionCoordinator<T> extends Disposable {
 		this.disposed = true;
 		this.pendingRequest = undefined;
 		this.projectionGeneration++;
-		this.resolveWaitersThrough(Number.POSITIVE_INFINITY);
+		this.lastFailure = undefined;
+		this.settleWaitersThrough(Number.POSITIVE_INFINITY);
 		super.dispose();
 	}
 }
@@ -177,9 +192,7 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 	) {
 		super();
 		this.asyncProjection = this._register(new AsyncProjectionCoordinator(
-			projection.id,
 			context => this.restore(context),
-			logService,
 			(current, next) => current.workspace.id === next.workspace.id && current.activationSequence === next.activationSequence,
 		));
 
@@ -192,7 +205,7 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 			if (this.capturingProjection) {
 				return;
 			}
-			void this.requestReconcile();
+			this.requestReconcileFromEvent();
 		}));
 		if (projection.capture) {
 			this._register(storageService.onWillSaveState(() => {
@@ -201,10 +214,22 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 		}
 
 		this.whenReady = this.initialize();
+		// Readiness remains rejection-bearing for callers that need to sequence startup, while this
+		// observer owns logging immediately so a late or absent caller cannot create an unhandled
+		// rejection.
+		void this.whenReady.catch(error => this.logService.error(`${this.projection.id} initial projection failed`, error));
 	}
 
 	private async initialize(): Promise<void> {
-		await this.requestReconcile();
+		// Authority readiness failures occur before any projection request exists and must reject the
+		// readiness barrier directly. Apply failures are retained by the async coordinator below.
+		await this.logicalWorkspaceService.whenReady;
+		try {
+			await this.requestReconcile();
+		} catch {
+			// The request outcome is retained by the async coordinator. A queued newer request may
+			// still converge the current target, so readiness is decided only once the queue is idle.
+		}
 		await this.asyncProjection.whenIdle();
 	}
 
@@ -219,6 +244,11 @@ export class LogicalWorkspaceProjectionCoordinator extends Disposable {
 			stateSlice: this.getStateSlice(),
 		};
 		return this.asyncProjection.request(intent, () => this.isCurrent(intent));
+	}
+
+	/** Event listeners cannot await reconciliation, so this boundary owns any readiness failure. */
+	requestReconcileFromEvent(): void {
+		void this.requestReconcile().catch(error => this.logService.error(`${this.projection.id} projection reconciliation failed`, error));
 	}
 
 	/** Captures only when the UI and authority still describe the same successful projection. */

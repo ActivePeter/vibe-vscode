@@ -239,7 +239,10 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async showProfileQuickPick(type: 'setDefault' | 'createInstance', cwd?: string | URI): Promise<ITerminalInstance | undefined> {
-		const creationContext = type === 'createInstance' ? this._resolveTerminalCreationContext() : undefined;
+		// Resolve an implicit owner before opening the picker. Besides preventing provisional ownership,
+		// awaiting at this boundary makes a readiness failure reject this operation immediately instead
+		// of leaving a detached rejected promise while the picker remains open.
+		const creationContext = type === 'createInstance' ? await this._resolveTerminalCreationContext() : undefined;
 		const quickPick = this._instantiationService.createInstance(TerminalProfileQuickpick);
 		const result = await quickPick.showAndGetResult(type);
 		if (!result) {
@@ -1024,7 +1027,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		const initialShellLaunchConfig = options?.config as IShellLaunchConfig | undefined;
 		const explicitCreationContext = options?.creationContext ?? this._getExplicitTerminalCreationContext(initialShellLaunchConfig);
 		const creationContext = explicitCreationContext ?? (this._shouldManageLogicalWorkspaceTerminal(initialShellLaunchConfig)
-			? this._resolveTerminalCreationContext()
+			? await this._resolveTerminalCreationContext()
 			: undefined);
 
 		// Await the initialization of available profiles as long as this is not a pty terminal or a

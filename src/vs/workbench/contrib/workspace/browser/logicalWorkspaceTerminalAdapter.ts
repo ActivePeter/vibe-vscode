@@ -36,12 +36,45 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements ILogi
 
 		this.projectionCoordinator = this._register(new LogicalWorkspaceProjectionCoordinator(logicalWorkspaceService, this, storageService, logService));
 		this.whenReady = this.projectionCoordinator.whenReady;
-		this._register(this.terminalService.onDidChangeInstances(() => void this.projectionCoordinator.requestReconcile()));
+		this._register(this.terminalService.onDidChangeInstances(() => this.projectionCoordinator.requestReconcileFromEvent()));
 		this.terminalService.whenConnected.then(() => this.projectionCoordinator.requestReconcile()).catch(error => this.logService.error('Logical workspace terminal reconciliation could not await terminal connection', error));
 	}
 
 	requestReconcile(): Promise<void> {
 		return this.projectionCoordinator.requestReconcile();
+	}
+
+	prepareEditorTerminalsForWorkingSet(workspaceId: string, activationSequence: number): void {
+		for (const instance of [...this.terminalService.foregroundInstances]) {
+			if (!this.isCurrent(workspaceId, activationSequence)) {
+				return;
+			}
+			if (instance.target === TerminalLocation.Editor && this.getLogicalWorkspaceId(instance) === workspaceId) {
+				this.terminalService.moveToBackground(instance);
+			}
+		}
+	}
+
+	async restoreUnclaimedEditorTerminals(workspaceId: string, activationSequence: number): Promise<boolean> {
+		let restored = false;
+		const foregroundInstances = new Set(this.terminalService.foregroundInstances);
+		for (const instance of [...this.terminalService.instances]) {
+			if (!this.isCurrent(workspaceId, activationSequence)) {
+				return false;
+			}
+			if (foregroundInstances.has(instance) || instance.target !== TerminalLocation.Editor || instance.shellLaunchConfig.hideFromUser) {
+				continue;
+			}
+			if (this.getLogicalWorkspaceId(instance) === workspaceId) {
+				await this.terminalService.showBackgroundTerminal(instance, true);
+				if (!this.isCurrent(workspaceId, activationSequence)) {
+					return false;
+				}
+				restored = true;
+			}
+		}
+
+		return restored;
 	}
 
 	stateSlice(state: ILogicalWorkspaceStateSnapshot): unknown {
@@ -75,8 +108,9 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements ILogi
 			if (foregroundInstances.has(instance)) {
 				continue;
 			}
-			// Editor Terminal placement belongs to the serialized editor working set. Its
-			// serializer adopts the retained background instance instead of attaching twice.
+			// Editor Terminal placement belongs first to the serialized editor working set. Its
+			// serializer adopts retained instances; the editor adapter finalizes only those left
+			// unclaimed after that apply, so this preparation phase must not attach them early.
 			if (instance.target === TerminalLocation.Editor) {
 				continue;
 			}
@@ -97,6 +131,11 @@ export class LogicalWorkspaceTerminalAdapter extends Disposable implements ILogi
 		return logicalTerminalId
 			? this.logicalWorkspaceService.workspaces.find(workspace => workspace.terminalIds.includes(logicalTerminalId))?.id
 			: undefined;
+	}
+
+	private isCurrent(workspaceId: string, activationSequence: number): boolean {
+		return this.logicalWorkspaceService.activeWorkspace.id === workspaceId
+			&& this.logicalWorkspaceService.activationSequence === activationSequence;
 	}
 }
 

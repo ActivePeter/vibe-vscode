@@ -102,6 +102,57 @@ class TestSCMViewService extends mock<ISCMViewService>() {
 suite('ProjectContextService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('logs an event projection failure and continues with later work', async () => {
+		const store = disposables.add(new DisposableStore());
+		const folder = createFolder('project', 0);
+		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
+			override readonly onDidChangeWorkspaceFolders = Event.None;
+			override readonly onDidChangeWorkspaceName = Event.None;
+			override readonly onDidChangeWorkbenchState = Event.None;
+			override getWorkspace(): IWorkspace { return { id: 'physical', folders: [folder] }; }
+		};
+		const expectedError = new Error('explorer projection failed');
+		let activeRootCalls = 0;
+		const explorerService = new class extends mock<IExplorerService>() {
+			override async setActiveRoot(): Promise<void> {
+				activeRootCalls++;
+				if (activeRootCalls === 1) {
+					throw expectedError;
+				}
+			}
+		};
+		const onDidAddRepository = store.add(new Emitter<ISCMRepository>());
+		const scmService = new class extends mock<ISCMService>() {
+			override readonly onDidAddRepository = onDidAddRepository.event;
+			override readonly onDidRemoveRepository = Event.None;
+			override get repositories(): Iterable<ISCMRepository> { return []; }
+		};
+		const errors: unknown[] = [];
+		const logService = new class extends NullLogService {
+			override error(_message: string | Error, error?: unknown): void {
+				errors.push(error);
+			}
+		};
+		store.add(new ProjectContextService(
+			workspaceContextService,
+			new class extends mock<IQuickInputService>() { },
+			store.add(new TestStorageService()),
+			new class extends mock<ICommandService>() { },
+			new class extends mock<IPaneCompositePartService>() { },
+			explorerService,
+			scmService,
+			store.add(new TestSCMViewService(ISCMRepositorySelectionMode.Multiple)),
+			logService,
+		));
+
+		await timeout(0);
+		onDidAddRepository.fire(createRepository(folder.uri));
+		await timeout(0);
+
+		assert.deepStrictEqual({ activeRootCalls, errors }, { activeRootCalls: 2, errors: [expectedError] });
+		store.dispose();
+	});
+
 	test('focuses a non-first current folder, selects an added folder, and follows a repository registered later', async () => {
 		const store = disposables.add(new DisposableStore());
 		const firstFolder = createFolder('first', 0);

@@ -14,7 +14,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/comm
 import { getRandomTestPath } from '../../../base/test/node/testUtils.js';
 import { NullLogService } from '../../../platform/log/common/log.js';
 import { ILogicalWorkspaceSharedState, ILogicalWorkspaceShellLayout, LogicalWorkspaceMutationType } from '../../../workbench/services/logicalWorkspace/common/logicalWorkspace.js';
-import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand } from '../../../workbench/services/logicalWorkspace/common/logicalWorkspaceRemote.js';
+import { IRemoteLogicalWorkspaceStateResult, IRemoteLogicalWorkspaceStateSnapshot, RemoteLogicalWorkspaceStateCommand, RemoteLogicalWorkspaceStateErrorCode } from '../../../workbench/services/logicalWorkspace/common/logicalWorkspaceRemote.js';
 import { RemoteLogicalWorkspaceStateChannel, RemoteLogicalWorkspaceStateStorage } from '../../node/logicalWorkspaceStateChannel.js';
 
 class FailOnceStorageDatabase implements IStorageDatabase {
@@ -217,6 +217,74 @@ suite('RemoteLogicalWorkspaceStateChannel', () => {
 		} finally {
 			firstStorage.dispose();
 			await firstDatabase.whenClosed;
+			fs.rmSync(testDir, { recursive: true, force: true });
+		}
+	});
+
+	test('fails closed when the Logical Workspace database cannot be opened', async function () {
+		this.timeout(10000);
+		const testDir = getRandomTestPath(os.tmpdir(), 'vsctests', 'logical-workspace-open-failure');
+		const storagePath = join(testDir, 'logical-workspaces.vscdb');
+		const originalContents = 'not a sqlite database';
+		fs.mkdirSync(testDir, { recursive: true });
+		fs.writeFileSync(storagePath, originalContents);
+		const firstStorage = new RemoteLogicalWorkspaceStateStorage(storagePath, new NullLogService());
+		const firstChannel = new RemoteLogicalWorkspaceStateChannel(firstStorage);
+		let reopenedStorage: RemoteLogicalWorkspaceStateStorage | undefined;
+
+		try {
+			const initialize = await firstChannel.call<IRemoteLogicalWorkspaceStateResult<IRemoteLogicalWorkspaceStateSnapshot>>(
+				undefined,
+				RemoteLogicalWorkspaceStateCommand.Initialize,
+				{ physicalWorkspaceId: 'physical', state: state('workspace') },
+			);
+			const mutate = await firstChannel.call<IRemoteLogicalWorkspaceStateResult<IRemoteLogicalWorkspaceStateSnapshot>>(
+				undefined,
+				RemoteLogicalWorkspaceStateCommand.Mutate,
+				{
+					physicalWorkspaceId: 'physical',
+					mutation: { type: LogicalWorkspaceMutationType.SetEditorWorkingSet, workspaceId: 'workspace', editorWorkingSet: 'editor-state' },
+				},
+			);
+			const read = await firstChannel.call<IRemoteLogicalWorkspaceStateResult<IRemoteLogicalWorkspaceStateSnapshot | undefined>>(
+				undefined,
+				RemoteLogicalWorkspaceStateCommand.Read,
+				{ physicalWorkspaceId: 'physical' },
+			);
+			firstStorage.dispose();
+
+			reopenedStorage = new RemoteLogicalWorkspaceStateStorage(storagePath, new NullLogService());
+			const reopenedChannel = new RemoteLogicalWorkspaceStateChannel(reopenedStorage);
+			const reopenedRead = await reopenedChannel.call<IRemoteLogicalWorkspaceStateResult<IRemoteLogicalWorkspaceStateSnapshot | undefined>>(
+				undefined,
+				RemoteLogicalWorkspaceStateCommand.Read,
+				{ physicalWorkspaceId: 'physical' },
+			);
+
+			assert.deepStrictEqual({
+				initialize: initialize.status === 'error' ? {
+					status: initialize.status,
+					code: initialize.code,
+					noAutomaticRecovery: initialize.message.includes('No automatic recovery was attempted'),
+				} : initialize,
+				mutate: mutate.status === 'error' ? { status: mutate.status, code: mutate.code } : mutate,
+				read: read.status === 'error' ? { status: read.status, code: read.code } : read,
+				reopenedRead: reopenedRead.status === 'error' ? { status: reopenedRead.status, code: reopenedRead.code } : reopenedRead,
+				storageContents: fs.readFileSync(storagePath, 'utf8'),
+			}, {
+				initialize: {
+					status: 'error',
+					code: RemoteLogicalWorkspaceStateErrorCode.StorageUnavailable,
+					noAutomaticRecovery: true,
+				},
+				mutate: { status: 'error', code: RemoteLogicalWorkspaceStateErrorCode.StorageUnavailable },
+				read: { status: 'error', code: RemoteLogicalWorkspaceStateErrorCode.StorageUnavailable },
+				reopenedRead: { status: 'error', code: RemoteLogicalWorkspaceStateErrorCode.StorageUnavailable },
+				storageContents: originalContents,
+			});
+		} finally {
+			firstStorage.dispose();
+			reopenedStorage?.dispose();
 			fs.rmSync(testDir, { recursive: true, force: true });
 		}
 	});

@@ -4,15 +4,16 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { DeferredPromise } from '../../../../../base/common/async.js';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IPickOptions, IQuickInputService, IQuickPickItem, QuickPickInput } from '../../../../../platform/quickinput/common/quickInput.js';
 import { workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import { ILogicalWorkspace, ILogicalWorkspaceService, LogicalWorkspaceActivationActor } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
-import { PickLogicalWorkspaceAction } from '../../browser/logicalWorkspace.contribution.js';
+import { LogicalWorkspaceInitializationErrorContribution, PickLogicalWorkspaceAction } from '../../browser/logicalWorkspace.contribution.js';
 
 suite('Logical Workspace Contribution', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -91,5 +92,26 @@ suite('Logical Workspace Contribution', () => {
 		await action;
 		assert.deepStrictEqual(activations, [createdWorkspace.id]);
 		store.dispose();
+	});
+
+	test('reports initialization failure without choosing a recovery action', async () => {
+		const readiness = new DeferredPromise<void>();
+		const logicalWorkspaceService = new class extends mock<ILogicalWorkspaceService>() {
+			override readonly whenReady = readiness.p;
+		};
+		const errors: (string | Error)[] = [];
+		const notificationService = new class extends mock<INotificationService>() {
+			override error(message: string | Error): void {
+				errors.push(message);
+			}
+		};
+		new LogicalWorkspaceInitializationErrorContribution(logicalWorkspaceService, notificationService);
+
+		await readiness.error(new Error('The Logical Workspace state database is unavailable. No automatic recovery was attempted: database open failed'));
+		await timeout(0);
+
+		assert.deepStrictEqual(errors, [
+			'The Logical Workspace state database is unavailable. No automatic recovery was attempted: database open failed\n\nRepair or restore the server database, then reload this window.',
+		]);
 	});
 });

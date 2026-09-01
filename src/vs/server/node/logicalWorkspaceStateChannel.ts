@@ -24,6 +24,7 @@ interface IStoredLogicalWorkspaceState {
 
 class CorruptLogicalWorkspaceStateError extends Error { }
 class UninitializedLogicalWorkspaceStateError extends Error { }
+class UnavailableLogicalWorkspaceStateStorageError extends Error { }
 
 /**
  * Owns the server-side Logical Workspace database. A single sequencer establishes one mutation
@@ -43,6 +44,7 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 	) {
 		super();
 		this.whenReady = this.createDatabase();
+		void this.whenReady.catch(error => this.logService.error('The remote Logical Workspace state database is unavailable', error));
 	}
 
 	read(physicalWorkspaceId: string): Promise<IRemoteLogicalWorkspaceStateSnapshot | undefined> {
@@ -84,22 +86,27 @@ export class RemoteLogicalWorkspaceStateStorage extends Disposable {
 	}
 
 	private async createDatabase(): Promise<IStorageDatabase> {
-		if (this.storagePath) {
-			await fs.promises.mkdir(dirname(this.storagePath), { recursive: true });
+		try {
+			if (this.storagePath) {
+				await fs.promises.mkdir(dirname(this.storagePath), { recursive: true });
+			}
+			const database = this.databaseFactory?.(this.storagePath) ?? (this.storagePath
+				? new SQLiteStorageDatabase(this.storagePath, {
+					failOnOpenError: true,
+					logging: {
+						logTrace: this.logService.getLevel() === LogLevel.Trace ? message => this.logService.trace(message) : undefined,
+						logError: error => this.logService.error(error),
+					},
+				})
+				: new InMemoryStorageDatabase());
+			this.database = database;
+			for (const [key, value] of await database.getItems()) {
+				this.confirmedItems.set(key, value);
+			}
+			return database;
+		} catch (error) {
+			throw new UnavailableLogicalWorkspaceStateStorageError(`The Logical Workspace state database is unavailable. No automatic recovery was attempted: ${toErrorMessage(error)}`);
 		}
-		const database = this.databaseFactory?.(this.storagePath) ?? (this.storagePath
-			? new SQLiteStorageDatabase(this.storagePath, {
-				logging: {
-					logTrace: this.logService.getLevel() === LogLevel.Trace ? message => this.logService.trace(message) : undefined,
-					logError: error => this.logService.error(error),
-				},
-			})
-			: new InMemoryStorageDatabase());
-		this.database = database;
-		for (const [key, value] of await database.getItems()) {
-			this.confirmedItems.set(key, value);
-		}
-		return database;
 	}
 
 	private async doRead(physicalWorkspaceId: string): Promise<IRemoteLogicalWorkspaceStateSnapshot | undefined> {
@@ -186,6 +193,9 @@ export class RemoteLogicalWorkspaceStateChannel implements IServerChannel {
 					return this.error(RemoteLogicalWorkspaceStateErrorCode.InvalidRequest, `Call not found: ${command}`) as T;
 			}
 		} catch (error) {
+			if (error instanceof UnavailableLogicalWorkspaceStateStorageError) {
+				return this.error(RemoteLogicalWorkspaceStateErrorCode.StorageUnavailable, error.message) as T;
+			}
 			if (error instanceof CorruptLogicalWorkspaceStateError) {
 				return this.error(RemoteLogicalWorkspaceStateErrorCode.CorruptState, error.message) as T;
 			}

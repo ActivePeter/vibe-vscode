@@ -34,6 +34,7 @@ export const enum RemoteLogicalWorkspaceStateErrorCode {
 	CorruptState = 'corruptState',
 	InvalidRequest = 'invalidRequest',
 	NotInitialized = 'notInitialized',
+	StorageUnavailable = 'storageUnavailable',
 }
 
 export type IRemoteLogicalWorkspaceStateResult<T> =

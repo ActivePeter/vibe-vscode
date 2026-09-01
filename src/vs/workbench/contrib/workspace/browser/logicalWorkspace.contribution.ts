@@ -3,10 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
+import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { ILogicalWorkspace, ILogicalWorkspaceService, LogicalWorkspaceActivationActor, PICK_LOGICAL_WORKSPACE_COMMAND_ID } from '../../../services/logicalWorkspace/common/logicalWorkspace.js';
 
 interface ILogicalWorkspacePick extends IQuickPickItem {
@@ -73,3 +76,21 @@ export class PickLogicalWorkspaceAction extends Action2 {
 }
 
 registerAction2(PickLogicalWorkspaceAction);
+
+export class LogicalWorkspaceInitializationErrorContribution implements IWorkbenchContribution {
+
+	static readonly ID = 'workbench.contrib.logicalWorkspaceInitializationError';
+
+	constructor(
+		@ILogicalWorkspaceService logicalWorkspaceService: ILogicalWorkspaceService,
+		@INotificationService notificationService: INotificationService,
+	) {
+		void logicalWorkspaceService.whenReady.catch(error => notificationService.error(localize(
+			'logicalWorkspaceInitializationError',
+			"{0}\n\nRepair or restore the server database, then reload this window.",
+			toErrorMessage(error),
+		)));
+	}
+}
+
+registerWorkbenchContribution2(LogicalWorkspaceInitializationErrorContribution.ID, LogicalWorkspaceInitializationErrorContribution, WorkbenchPhase.BlockRestore);

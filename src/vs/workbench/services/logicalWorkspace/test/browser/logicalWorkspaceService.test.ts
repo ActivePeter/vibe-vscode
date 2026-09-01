@@ -114,6 +114,8 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 	private nextMutationResponseGate: DeferredPromise<void> | undefined;
 	private dropNextMutationResponse = false;
 	private failNextMutationBeforeCommit = false;
+	private initializationError: IRemoteLogicalWorkspaceStateResult<never> | undefined;
+	initializationCalls = 0;
 	mutationCalls = 0;
 
 	delayNextMutationResponse(): DeferredPromise<void> {
@@ -127,6 +129,10 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 
 	failNextMutationRequest(): void {
 		this.failNextMutationBeforeCommit = true;
+	}
+
+	failInitialization(): void {
+		this.initializationError = this.error('The Logical Workspace state database is unavailable. No automatic recovery was attempted.', RemoteLogicalWorkspaceStateErrorCode.StorageUnavailable);
 	}
 
 	getSnapshot(physicalWorkspaceId: string): IRemoteLogicalWorkspaceStateSnapshot | undefined {
@@ -145,6 +151,10 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 
 		switch (command) {
 			case RemoteLogicalWorkspaceStateCommand.Initialize: {
+				this.initializationCalls++;
+				if (this.initializationError) {
+					return this.initializationError as T;
+				}
 				const state = parseLogicalWorkspaceSharedState(request.state);
 				if (!state) {
 					return this.error('Invalid initial state') as T;
@@ -201,8 +211,8 @@ class TestRemoteLogicalWorkspaceChannel extends Disposable implements IChannel {
 		return { status: 'ok', value };
 	}
 
-	private error(message: string): IRemoteLogicalWorkspaceStateResult<never> {
-		return { status: 'error', code: RemoteLogicalWorkspaceStateErrorCode.InvalidRequest, message };
+	private error(message: string, code = RemoteLogicalWorkspaceStateErrorCode.InvalidRequest): IRemoteLogicalWorkspaceStateResult<never> {
+		return { status: 'error', code, message };
 	}
 }
 
@@ -225,6 +235,17 @@ suite('RemoteLogicalWorkspaceStateClient', () => {
 			existing: state('existing'),
 			newPage: state('existing'),
 		});
+	});
+
+	test('does not retry a terminal database-open error', async () => {
+		const channel = disposables.add(new TestRemoteLogicalWorkspaceChannel());
+		channel.failInitialization();
+		const client = disposables.add(new RemoteLogicalWorkspaceStateClient('physical', channel, new NullLogService(), [1]));
+
+		await assert.rejects(client.initialize(state('workspace')), /No automatic recovery was attempted/);
+		await timeout(10);
+
+		assert.deepStrictEqual({ initializationCalls: channel.initializationCalls }, { initializationCalls: 1 });
 	});
 
 	test('observes another page write after an explicit refresh', async () => {

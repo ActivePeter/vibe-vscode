@@ -25,6 +25,12 @@ export interface ISQLiteStorageDatabaseOptions {
 	readonly useWAL?: boolean;
 
 	/**
+	 * Fail when the configured database cannot be opened instead of attempting
+	 * backup recovery or falling back to an in-memory database.
+	 */
+	readonly failOnOpenError?: boolean;
+
+	/**
 	 * If set, configures SQLite's busy timeout in milliseconds.
 	 * When another process holds a write lock, SQLite will retry
 	 * for this duration before returning SQLITE_BUSY.
@@ -51,6 +57,7 @@ export class SQLiteStorageDatabase implements IStorageDatabase {
 	private readonly logger: SQLiteStorageDatabaseLogger;
 	private readonly useWAL: boolean;
 	private readonly busyTimeout: number | undefined;
+	private readonly failOnOpenError: boolean;
 
 	private readonly whenConnected: Promise<IDatabaseConnection>;
 
@@ -62,6 +69,7 @@ export class SQLiteStorageDatabase implements IStorageDatabase {
 		this.logger = new SQLiteStorageDatabaseLogger(options.logging);
 		this.useWAL = !!options.useWAL;
 		this.busyTimeout = options.busyTimeout;
+		this.failOnOpenError = !!options.failOnOpenError;
 		this.whenConnected = this.connect(this.path);
 	}
 
@@ -290,6 +298,10 @@ export class SQLiteStorageDatabase implements IStorageDatabase {
 				await timeout(SQLiteStorageDatabase.BUSY_OPEN_TIMEOUT);
 
 				return this.connect(path, false /* not another retry */);
+			}
+
+			if (this.failOnOpenError) {
+				throw error;
 			}
 
 			// Otherwise, best we can do is to recover from a backup if that exists, as such we

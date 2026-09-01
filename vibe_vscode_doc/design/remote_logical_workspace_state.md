@@ -45,6 +45,10 @@ Server 保留三个 command：
 
 ## 失败与 LWW
 
+Logical Workspace SQLite 使用严格打开策略。数据库目录、文件或 schema 无法打开时，Server 返回终止性的 `storageUnavailable`；浏览器停止重试并提示用户。该路径不得删除或替换原数据库、恢复 `.backup`、创建空库或回退 `:memory:`。修复或恢复数据库以及何时 reload 均由用户决定。
+
+定期一致性备份与 30 天保留策略由 [#10](https://github.com/ActivePeter/vibe-vscode/issues/10) 在独立 PR 实现；备份存在也不得改变上述显式恢复边界。
+
 每个 layout/editor view-state mutation 只发送一次。
 
 如果 response 丢失，客户端无法判断 Server 是否已提交，因此：

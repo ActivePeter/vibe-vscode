@@ -121,6 +121,7 @@ Session catalog 的 refresh 只有在取得完整结果后才能发布权威 rem
 - 页面只提交 `createWorkspace`、layout 和 editor 更新；Terminal bind/unbind 不属于该协议。
 - 服务端按到达顺序串行持久化，layout/editor 冲突字段采用 Last Write Wins；页面 optimistic projection 可由 `read` 重建。
 - layout/editor mutation transport outcome 未知时丢弃该写并重新读取，禁止自动重放旧视图写；`createWorkspace` 先读取对账，snapshot 缺少同一 UUID 时才重试这个幂等创建。
+- Logical Workspace SQLite 打开失败时返回终止性错误并停止客户端重试；不得自动替换、清空、恢复 backup 或回退内存库，恢复方式由用户决定。
 
 完整协议、迁移与失败边界见 [Logical Workspace 远程权威状态](./remote_logical_workspace_state.md)。
 durable write 的最小接口、上游复用边界和测试要求见 [远端持久化状态最小接口设计](./remote_persistent_state_minimal_interfaces.md)。
@@ -377,7 +378,7 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 
 | 领域 | 已有覆盖重点 | 合并前必须补齐 |
 | --- | --- | --- |
-| State Store | 远程原子初始化、durable revision、刷新后跨页面可见、未知 response 不重放、丢弃旧 `chatSessionResources` | 托管服务双页面与服务重启验收 |
+| State Store | 远程原子初始化、durable revision、刷新后跨页面可见、未知 response 不重放、SQLite 打开失败 fail-closed、丢弃旧 `chatSessionResources` | 托管服务双页面与服务重启验收 |
 | Layout | 初始恢复、显隐、active composite、隐藏 part 尺寸 | 保持现有覆盖通过 |
 | Terminal | initiating identity、PTY ownership metadata、旧 owner 迁移、批量 projection、editor A→B 快切、Remote background revive、同 process ID 的 authority 分区 | 托管 Remote background reload |
 | Agent Sessions | 全局 provider catalog、complete/partial/cancelled refresh、Workspace 切换后列表不变、无 Logical Workspace Session API | Session Tab working set 留待后续专项验收 |

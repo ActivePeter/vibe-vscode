@@ -121,12 +121,19 @@ if validate_runtime_links "$runtime_links_root" >/dev/null 2>&1; then
 	fail_test 'runtime accepted a symbolic link outside its immutable release'
 fi
 rm "$runtime_links_root/external-link"
-ln -s missing "$runtime_links_root/broken-link"
+mkdir -p "$runtime_links_root/node_modules/.bin"
+ln -s missing-build-tool "$runtime_links_root/node_modules/.bin/missing-build-tool"
+ln -s missing-runtime-entry "$runtime_links_root/broken-runtime-link"
 if validate_runtime_links "$runtime_links_root" >/dev/null 2>&1; then
 	fail_test 'runtime accepted an unresolved symbolic link'
 fi
-remove_unresolved_runtime_links "$runtime_links_root"
-[[ ! -e "$runtime_links_root/broken-link" && ! -L "$runtime_links_root/broken-link" ]] || fail_test 'staging cleanup retained an unresolved symbolic link'
+remove_unresolved_package_bin_links "$runtime_links_root"
+[[ ! -e "$runtime_links_root/node_modules/.bin/missing-build-tool" && ! -L "$runtime_links_root/node_modules/.bin/missing-build-tool" ]] || fail_test 'staging cleanup retained an omitted build-tool shim'
+[[ -L "$runtime_links_root/broken-runtime-link" ]] || fail_test 'staging cleanup removed an unresolved runtime link'
+if validate_runtime_links "$runtime_links_root" >/dev/null 2>&1; then
+	fail_test 'runtime accepted an unresolved non-.bin link after staging cleanup'
+fi
+rm "$runtime_links_root/broken-runtime-link"
 validate_runtime_links "$runtime_links_root"
 
 legacy_anchor="$({

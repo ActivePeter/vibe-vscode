@@ -294,18 +294,18 @@ validate_runtime_links() {
 	done < <(find "$runtime_root" -type l -print0)
 }
 
-remove_unresolved_runtime_links() {
+remove_unresolved_package_bin_links() {
 	local runtime_root="$1"
 	local link_path
 
 	# Package-manager .bin directories can contain links to intentionally omitted build tools.
-	# They have no usable runtime target, so omit them from the release before enforcing the
-	# stronger invariant that every remaining link resolves inside this snapshot.
+	# Only those known build-tool shims may be omitted. Any other unresolved runtime link must
+	# survive this cleanup so validation rejects the incomplete candidate.
 	while IFS= read -r -d '' link_path; do
 		if ! realpath -e -- "$link_path" >/dev/null 2>&1; then
 			rm -f -- "$link_path"
 		fi
-	done < <(find "$runtime_root" -type l -print0)
+	done < <(find "$runtime_root" -type l -path '*/node_modules/.bin/*' -print0)
 }
 
 resolve_runtime_link() {
@@ -396,7 +396,7 @@ create_runtime_snapshot() {
 		copy_runtime_tree "$node_modules_path" "$STAGING_RUNTIME_ROOT/$relative_path" "$previous_path"
 	done < <(find "$SOURCE_ROOT/extensions" -name node_modules -prune -print0)
 
-	remove_unresolved_runtime_links "$STAGING_RUNTIME_ROOT"
+	remove_unresolved_package_bin_links "$STAGING_RUNTIME_ROOT"
 	validate_candidate_runtime_root "$STAGING_RUNTIME_ROOT" || fail "staged runtime is incomplete or depends on state outside its immutable release: $STAGING_RUNTIME_ROOT"
 	mv -- "$STAGING_RUNTIME_ROOT" "$release_root"
 	STAGING_RUNTIME_ROOT=

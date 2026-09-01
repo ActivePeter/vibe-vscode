@@ -45,7 +45,7 @@ suite('Logical Workspace Contribution', () => {
 
 		assert.strictEqual(activeItemLabel, 'Active');
 		assert.deepStrictEqual(quickPickItems.map(item => ({ label: item.label, description: item.description })), [
-			{ label: 'First', description: "Restores this context's layout, terminals, and editors" },
+			{ label: 'First', description: 'Restores this context\'s layout, terminals, and editors' },
 			{ label: 'Active', description: 'Active workbench context' },
 			{ label: 'New Workspace...', description: 'Creates an independent layout, terminal, and editor context' },
 		]);

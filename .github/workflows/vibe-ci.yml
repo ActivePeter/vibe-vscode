@@ -179,6 +179,7 @@ jobs:
             --run src/vs/workbench/contrib/workspace/test/browser/projectContext.test.ts \
             --run src/vs/workbench/services/editor/test/browser/modalEditorGroup.test.ts \
             --run src/vs/workbench/services/logicalWorkspace/test/browser/logicalWorkspaceService.test.ts \
+            --run src/vs/workbench/test/browser/layout.test.ts \
             --run src/vs/workbench/test/browser/parts/editor/editorParts.test.ts \
             --run src/vs/workbench/test/browser/parts/editor/modalEditorResize.test.ts \
             --timeout 20000

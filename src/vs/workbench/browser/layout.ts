@@ -1006,7 +1006,11 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 			// first ensure the editor part is ready
 			await this.editorGroupService.whenReady;
-			await this.logicalWorkspaceEditorProjectionService.whenReady;
+			try {
+				await this.logicalWorkspaceEditorProjectionService.whenReady;
+			} catch (error) {
+				this.logService.error('[Workbench] Logical Workspace editor projection failed during restore', error);
+			}
 			mark('code/restoreEditors/editorGroupsReady');
 
 			// apply editor layout if any

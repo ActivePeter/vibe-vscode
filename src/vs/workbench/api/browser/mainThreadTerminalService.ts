@@ -202,6 +202,11 @@ export class MainThreadTerminalService extends Disposable implements MainThreadT
 	public async $show(id: ExtHostTerminalIdentifier, preserveFocus: boolean): Promise<void> {
 		const terminalInstance = await this._getTerminalInstance(id);
 		if (terminalInstance) {
+			if (terminalInstance.shellLaunchConfig.hideFromUser) {
+				// The RPC completes only after a hidden terminal has a real foreground host. This also
+				// propagates editor-open or panel-group failures back to the extension host.
+				await this._terminalService.showBackgroundTerminal(terminalInstance);
+			}
 			this._terminalService.setActiveInstance(terminalInstance);
 			if (terminalInstance.target === TerminalLocation.Editor) {
 				await this._terminalEditorService.revealActiveEditor(preserveFocus);

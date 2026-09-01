@@ -1,6 +1,6 @@
 {
-  "displayName": "vibe vscode",
-  "description": "打开受信任的 vibe vscode 全屏面板。",
-  "command.openFullscreenPanel": "打开全屏面板",
-  "command.closeFullscreenPanel": "关闭全屏面板"
+	"displayName": "vibe vscode",
+	"description": "打开受信任的 vibe vscode 全屏面板。",
+	"command.openFullscreenPanel": "打开全屏面板",
+	"command.closeFullscreenPanel": "关闭全屏面板"
 }

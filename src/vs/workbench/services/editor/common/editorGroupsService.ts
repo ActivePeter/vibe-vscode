@@ -622,6 +622,11 @@ export interface IEditorWorkingSet {
 
 export interface IEditorWorkingSetOptions {
 	readonly preserveFocus?: boolean;
+	/**
+	 * Invoked after the complete working set has been validated and its editor inputs prepared, but
+	 * before any existing editor group is closed or disposed.
+	 */
+	readonly onWillApply?: () => void;
 }
 
 export interface IEditorGroupContextKeyProvider<T extends ContextKeyValue> {

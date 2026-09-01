@@ -305,7 +305,7 @@ suite('Workbench - TerminalService', () => {
 			});
 		});
 
-		test('should wait for an editor terminal to finish opening before reporting it foregrounded', async () => {
+		test('should share the complete background editor restore with concurrent callers', async () => {
 			const openStarted = new DeferredPromise<void>();
 			const releaseOpen = new DeferredPromise<void>();
 			instantiationService.stub(ITerminalEditorService, 'detachInstance', () => { });
@@ -324,15 +324,16 @@ suite('Workbench - TerminalService', () => {
 			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
 			terminalService.moveToBackground(instance);
 
-			let completed = false;
-			const showing = terminalService.showBackgroundTerminal(instance).then(() => completed = true);
+			let completed = 0;
+			const showing = terminalService.showBackgroundTerminal(instance).then(() => completed++);
 			await openStarted.p;
+			const concurrentShowing = terminalService.showBackgroundTerminal(instance).then(() => completed++);
 			await timeout(0);
-			strictEqual(completed, false);
+			strictEqual(completed, 0);
 
 			await releaseOpen.complete();
-			await showing;
-			strictEqual(completed, true);
+			await Promise.all([showing, concurrentShowing]);
+			strictEqual(completed, 2);
 		});
 
 		test('should restore background ownership when an editor terminal fails to open', async () => {
@@ -366,6 +367,63 @@ suite('Workbench - TerminalService', () => {
 				backgroundInstances: [instance],
 				changeCount: 0,
 			});
+		});
+
+		test('should consume restoration failure at the synchronous active-instance boundary', async () => {
+			const expectedError = new Error('editor open failed');
+			let activeSetCount = 0;
+			instantiationService.stub(ITerminalEditorService, 'detachInstance', () => { });
+			instantiationService.stub(ITerminalEditorService, 'setActiveInstance', () => activeSetCount++);
+			instantiationService.stub(ITerminalEditorService, 'openEditor', async () => { throw expectedError; });
+
+			const disposalEmitter = store.add(new Emitter<ITerminalInstance>());
+			const instance = {
+				instanceId: 1,
+				target: TerminalLocation.Editor,
+				isDisposed: false,
+				shellLaunchConfig: { hideFromUser: true },
+				onDisposed: disposalEmitter.event,
+				detachFromElement: () => { },
+				setVisible: () => { },
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			terminalService.moveToBackground(instance);
+
+			terminalService.setActiveInstance(instance);
+			await timeout(0);
+
+			deepStrictEqual({
+				activeSetCount,
+				backgroundInstances: (Reflect.get(terminalService, '_backgroundedTerminalInstances') as Array<{ instance: ITerminalInstance }>).map(entry => entry.instance),
+			}, {
+				activeSetCount: 0,
+				backgroundInstances: [instance],
+			});
+		});
+
+		test('should propagate restoration failure from the asynchronous focus boundary', async () => {
+			const expectedError = new Error('editor open failed');
+			let activeSetCount = 0;
+			let focusCount = 0;
+			instantiationService.stub(ITerminalEditorService, 'detachInstance', () => { });
+			instantiationService.stub(ITerminalEditorService, 'setActiveInstance', () => activeSetCount++);
+			instantiationService.stub(ITerminalEditorService, 'focusInstance', async () => { focusCount++; });
+			instantiationService.stub(ITerminalEditorService, 'openEditor', async () => { throw expectedError; });
+
+			const disposalEmitter = store.add(new Emitter<ITerminalInstance>());
+			const instance = {
+				instanceId: 1,
+				target: TerminalLocation.Editor,
+				isDisposed: false,
+				shellLaunchConfig: { hideFromUser: true },
+				onDisposed: disposalEmitter.event,
+				detachFromElement: () => { },
+				setVisible: () => { },
+			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+			terminalService.moveToBackground(instance);
+
+			await rejects(terminalService.focusInstance(instance), error => error === expectedError);
+
+			deepStrictEqual({ activeSetCount, focusCount }, { activeSetCount: 0, focusCount: 0 });
 		});
 
 		test('should restore background ownership when a panel group fails to open', async () => {

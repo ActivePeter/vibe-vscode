@@ -16,7 +16,7 @@ import { LogicalWorkspaceProjectionCoordinator } from '../../../../services/logi
 import { LogicalWorkspaceService } from '../../../../services/logicalWorkspace/browser/logicalWorkspaceService.js';
 import { ILogicalWorkspaceStateStore, LOGICAL_WORKSPACE_SHARED_STATE_KEY, LogicalWorkspaceStateStore } from '../../../../services/logicalWorkspace/browser/logicalWorkspaceStateStore.js';
 import { ILogicalWorkspaceService, ILogicalWorkspaceShellLayout, ILogicalWorkspaceTerminalProjectionService, LogicalWorkspaceActivationActor, LogicalWorkspaceStateChangeKind } from '../../../../services/logicalWorkspace/common/logicalWorkspace.js';
-import { IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
+import { IEditorGroupsService, IEditorWorkingSetOptions } from '../../../../services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../test/common/workbenchTestServices.js';
@@ -106,8 +106,9 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		let editorApplyCount = 0;
 		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
 			override readonly whenReady = Promise.resolve();
-			override async applySerializedWorkingSet(): Promise<boolean> {
+			override async applySerializedWorkingSet(_workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> {
 				editorApplyCount++;
+				options?.onWillApply?.();
 				return true;
 			}
 		};
@@ -152,8 +153,9 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		let editorApplyCount = 0;
 		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
 			override readonly whenReady = Promise.resolve();
-			override async applySerializedWorkingSet(): Promise<boolean> {
+			override async applySerializedWorkingSet(_workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> {
 				editorApplyCount++;
+				options?.onWillApply?.();
 				return true;
 			}
 		};
@@ -173,6 +175,121 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		await assert.rejects(adapter.whenReady, error => error === expectedError);
 		assert.strictEqual(editorApplyCount, 0);
 		store.dispose();
+	});
+
+	test('does not prepare editor Terminals when working set validation returns false', async () => {
+		const store = disposables.add(new DisposableStore());
+		const instantiationService = store.add(workbenchInstantiationService(undefined, store));
+		const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+		await logicalWorkspaceService.whenReady;
+		logicalWorkspaceService.setEditorWorkingSet(logicalWorkspaceService.activeWorkspace.id, 'malformed-editor-working-set');
+		let terminalVisible = true;
+		let prepareCount = 0;
+		let restoreCount = 0;
+		const terminalProjectionService = new class extends mock<ILogicalWorkspaceTerminalProjectionService>() {
+			override readonly whenReady = Promise.resolve();
+			override async requestReconcile(): Promise<void> { }
+			override prepareEditorTerminalsForWorkingSet(): void {
+				prepareCount++;
+				terminalVisible = false;
+			}
+			override async restoreUnclaimedEditorTerminals(): Promise<boolean> {
+				restoreCount++;
+				terminalVisible = true;
+				return true;
+			}
+		};
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly whenReady = Promise.resolve();
+			override async applySerializedWorkingSet(): Promise<boolean> {
+				// Production EditorParts returns before onWillApply for malformed state.
+				return false;
+			}
+		};
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidEditorsChange = Event.None;
+			override getEditors(): [] { return []; }
+		};
+		const adapter = store.add(new LogicalWorkspaceEditorAdapter(
+			logicalWorkspaceService,
+			editorGroupsService,
+			editorService,
+			terminalProjectionService,
+			store.add(new TestStorageService()),
+			new NullLogService(),
+		));
+
+		await adapter.whenReady;
+
+		assert.deepStrictEqual({ terminalVisible, prepareCount, restoreCount }, {
+			terminalVisible: true,
+			prepareCount: 0,
+			restoreCount: 0,
+		});
+		store.dispose();
+	});
+
+	test('rolls back prepared editor Terminals when working set apply returns false or throws', async () => {
+		for (const outcome of ['false', 'throw'] as const) {
+			const store = disposables.add(new DisposableStore());
+			const instantiationService = store.add(workbenchInstantiationService(undefined, store));
+			const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+			await logicalWorkspaceService.whenReady;
+			logicalWorkspaceService.setEditorWorkingSet(logicalWorkspaceService.activeWorkspace.id, 'validated-editor-working-set');
+			const expectedError = new Error('editor apply failed');
+			let terminalVisible = true;
+			let prepareCount = 0;
+			let restoreCount = 0;
+			const terminalProjectionService = new class extends mock<ILogicalWorkspaceTerminalProjectionService>() {
+				override readonly whenReady = Promise.resolve();
+				override async requestReconcile(): Promise<void> { }
+				override prepareEditorTerminalsForWorkingSet(): void {
+					prepareCount++;
+					terminalVisible = false;
+				}
+				override async restoreUnclaimedEditorTerminals(): Promise<boolean> {
+					restoreCount++;
+					terminalVisible = true;
+					return true;
+				}
+			};
+			const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+				override readonly whenReady = Promise.resolve();
+				override async applySerializedWorkingSet(_workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> {
+					options?.onWillApply?.();
+					if (outcome === 'throw') {
+						throw expectedError;
+					}
+					return false;
+				}
+			};
+			const editorService = new class extends mock<IEditorService>() {
+				override readonly onDidEditorsChange = Event.None;
+				override getEditors(): [] { return []; }
+			};
+			const adapter = store.add(new LogicalWorkspaceEditorAdapter(
+				logicalWorkspaceService,
+				editorGroupsService,
+				editorService,
+				terminalProjectionService,
+				store.add(new TestStorageService()),
+				new NullLogService(),
+			));
+
+			if (outcome === 'throw') {
+				await assert.rejects(adapter.whenReady, error => error === expectedError);
+			} else {
+				await adapter.whenReady;
+			}
+
+			assert.deepStrictEqual({ outcome, terminalVisible, prepareCount, restoreCount }, {
+				outcome,
+				terminalVisible: true,
+				prepareCount: 1,
+				restoreCount: 1,
+			});
+			store.dispose();
+		}
 	});
 
 	test('finalizes unclaimed editor Terminals only after the editor working set is applied', async () => {
@@ -197,7 +314,8 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		};
 		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
 			override readonly whenReady = Promise.resolve();
-			override async applySerializedWorkingSet(): Promise<boolean> {
+			override async applySerializedWorkingSet(_workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> {
+				options?.onWillApply?.();
 				events.push('editor-apply');
 				return true;
 			}
@@ -242,8 +360,9 @@ suite('LogicalWorkspaceTerminalAdapter', () => {
 		let editorApplyCount = 0;
 		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
 			override readonly whenReady = Promise.resolve();
-			override async applySerializedWorkingSet(): Promise<boolean> {
+			override async applySerializedWorkingSet(_workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> {
 				editorApplyCount++;
+				options?.onWillApply?.();
 				return true;
 			}
 		};

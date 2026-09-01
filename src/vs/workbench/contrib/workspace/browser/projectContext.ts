@@ -57,9 +57,11 @@ export class ProjectContextService extends Disposable implements IProjectContext
 	private readonly _onDidChangeProjectContext = this._register(new Emitter<void>());
 	readonly onDidChangeProjectContext = this._onDidChangeProjectContext.event;
 	private readonly projectionCoordinator: AsyncProjectionCoordinator<IProjectContextProjectionIntent>;
+	private readonly whenWorkspaceComplete: Promise<void>;
 	private selectedFolderUri: URI | undefined;
 	private pendingRevealFolderUri: URI | undefined;
 	private applyingSCMProjection = false;
+	private workspaceCatalogComplete = false;
 
 	constructor(
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
@@ -73,18 +75,29 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		this.selectedFolderUri = this.resolveStoredFolder()?.uri;
+		const storedFolderUri = this.storageService.get(PROJECT_CONTEXT_STORAGE_KEY, StorageScope.WORKSPACE);
+		// The synchronous workspace can be a partial remote .code-workspace catalog. Preserve the
+		// stored URI as intent and only accept a match that is already present; absence is not yet an
+		// authoritative reason to fall back to the first folder.
+		this.selectedFolderUri = this.resolveFolder(storedFolderUri)?.uri;
 		this.projectionCoordinator = this._register(new AsyncProjectionCoordinator(
 			context => this.applyProjectContext(context),
 			(current, next) => current.folderUri === next.folderUri
 				|| (current.folderUri !== undefined && next.folderUri !== undefined && isEqual(current.folderUri, next.folderUri)),
 		));
 
-		const updateProjectContext = () => this.synchronizeAvailableFolders();
+		const updateProjectContext = () => {
+			if (this.workspaceCatalogComplete) {
+				this.synchronizeAvailableFolders();
+			}
+		};
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(updateProjectContext));
 		this._register(this.workspaceContextService.onDidChangeWorkbenchState(updateProjectContext));
 		this._register(this.workspaceContextService.onDidChangeWorkspaceName(() => this._onDidChangeProjectContext.fire()));
 		const requestSCMProjection = () => {
+			if (!this.workspaceCatalogComplete) {
+				return;
+			}
 			// An empty Project is also an authoritative target. Keep reprojecting its empty SCM set
 			// when repository discovery or a user visibility change tries to repopulate the view.
 			this.requestProjectContextProjectionFromEvent(this.selectedFolder);
@@ -99,7 +112,10 @@ export class ProjectContextService extends Disposable implements IProjectContext
 				requestSCMProjection();
 			}
 		}));
-		this.synchronizeAvailableFolders();
+		this.whenWorkspaceComplete = this.initializeProjectContext(storedFolderUri);
+		// Keep readiness rejection-bearing for callers such as the picker, but attach an owner now so
+		// a failed remote workspace load cannot become an unhandled rejection.
+		void this.whenWorkspaceComplete.catch(error => this.logService.error('Project Context could not await the complete workspace catalog', error));
 	}
 
 	get workspace(): IWorkspace {
@@ -113,6 +129,10 @@ export class ProjectContextService extends Disposable implements IProjectContext
 	}
 
 	async pickProjectContext(): Promise<void> {
+		await this.whenWorkspaceComplete;
+		if (this._store.isDisposed) {
+			return;
+		}
 		const folders = this.workspace.folders;
 		const selectedFolder = this.selectedFolder;
 		const picks: IProjectContextPick[] = folders.map(folder => ({
@@ -159,13 +179,21 @@ export class ProjectContextService extends Disposable implements IProjectContext
 		await this.selectFolder(currentFolder, true);
 	}
 
-	private resolveStoredFolder(): IWorkspaceFolder | undefined {
-		const selectedUri = this.storageService.get(PROJECT_CONTEXT_STORAGE_KEY, StorageScope.WORKSPACE);
-		return this.workspace.folders.find(folder => folder.uri.toString() === selectedUri) ?? this.workspace.folders[0];
+	private async initializeProjectContext(storedFolderUri: string | undefined): Promise<void> {
+		await this.workspaceContextService.getCompleteWorkspace();
+		if (this._store.isDisposed) {
+			return;
+		}
+		this.workspaceCatalogComplete = true;
+		this.synchronizeAvailableFolders(storedFolderUri);
 	}
 
-	private synchronizeAvailableFolders(): void {
-		const selectedFolder = this.selectedFolder ?? this.workspace.folders[0];
+	private resolveFolder(folderUri: string | undefined): IWorkspaceFolder | undefined {
+		return folderUri ? this.workspace.folders.find(folder => folder.uri.toString() === folderUri) : undefined;
+	}
+
+	private synchronizeAvailableFolders(preferredFolderUri?: string): void {
+		const selectedFolder = this.selectedFolder ?? this.resolveFolder(preferredFolderUri) ?? this.workspace.folders[0];
 		if (!selectedFolder) {
 			const changed = this.selectedFolderUri !== undefined;
 			this.selectedFolderUri = undefined;

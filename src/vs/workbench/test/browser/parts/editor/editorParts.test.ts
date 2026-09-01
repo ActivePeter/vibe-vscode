@@ -47,8 +47,39 @@ suite('Editor Parts', () => {
 
 	test('applies a serialized working set created by the editor parts', async () => {
 		const parts = await createEditorParts(createInstantiationService(), disposables);
+		let onWillApplyCount = 0;
 
-		assert.strictEqual(await parts.applySerializedWorkingSet(parts.serializeWorkingSet(), { preserveFocus: true }), true);
+		assert.strictEqual(await parts.applySerializedWorkingSet(parts.serializeWorkingSet(), {
+			preserveFocus: true,
+			onWillApply: () => onWillApplyCount++,
+		}), true);
+		assert.strictEqual(onWillApplyCount, 1);
+	});
+
+	test('keeps existing editors when the pre-apply transaction hook rejects', async () => {
+		const instantiationService = createInstantiationService();
+		disposables.add(registerTestEditor(testEditorId, [new SyncDescriptor(TestFileEditorInput)], testEditorId));
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, disposables);
+		const editor = disposables.add(new TestFileEditorInput(URI.file('/pre-apply-rejection.txt'), testEditorId));
+		await parts.activeGroup.openEditor(editor, { pinned: true });
+		const group = parts.activeGroup;
+		const expectedError = new Error('pre-apply failed');
+
+		await assert.rejects(parts.applySerializedWorkingSet(parts.serializeWorkingSet(), {
+			preserveFocus: true,
+			onWillApply: () => { throw expectedError; },
+		}), error => error === expectedError);
+
+		assert.deepStrictEqual({
+			groupPreserved: parts.groups.includes(group),
+			editorPreserved: group.contains(editor),
+			activeEditorPreserved: group.activeEditor === editor,
+		}, {
+			groupPreserved: true,
+			editorPreserved: true,
+			activeEditorPreserved: true,
+		});
 	});
 
 	test('keeps modal editors outside serialized working set state and apply', async () => {
@@ -282,13 +313,18 @@ suite('Editor Parts', () => {
 		];
 
 		const results = [];
+		let onWillApplyCount = 0;
 		for (const malformedWorkingSet of malformedWorkingSets) {
 			results.push({
-				applied: await parts.applySerializedWorkingSet(JSON.stringify(malformedWorkingSet), { preserveFocus: true }),
+				applied: await parts.applySerializedWorkingSet(JSON.stringify(malformedWorkingSet), {
+					preserveFocus: true,
+					onWillApply: () => onWillApplyCount++,
+				}),
 				groupCount: parts.groups.length,
 				editorCount: parts.activeGroup.count,
 				containsEditor: parts.activeGroup.contains(editor),
 				activeEditorUnchanged: parts.activeGroup.activeEditor === editor,
+				onWillApplyCount,
 			});
 		}
 
@@ -298,6 +334,7 @@ suite('Editor Parts', () => {
 			editorCount: 1,
 			containsEditor: true,
 			activeEditorUnchanged: true,
+			onWillApplyCount: 0,
 		})));
 	});
 

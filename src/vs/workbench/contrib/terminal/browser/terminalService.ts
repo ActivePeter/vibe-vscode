@@ -79,6 +79,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 	private _isMovingTerminalToBackground = false;
 	private _backgroundedTerminalInstances: IBackgroundTerminal[] = [];
 	private readonly _backgroundedTerminalDisposables = this._register(new DisposableMap<number>());
+	private readonly _backgroundTerminalRestorePromises = new Map<ITerminalInstance, Promise<void>>();
 	private _processSupportContextKey: IContextKey<boolean>;
 
 	private _primaryBackend?: ITerminalBackend;
@@ -395,9 +396,17 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 		// If this was a hideFromUser terminal created by the API this was triggered by show,
 		// in which case we need to create the terminal group
-		if (value.shellLaunchConfig.hideFromUser) {
-			this.showBackgroundTerminal(value);
+		if (value.shellLaunchConfig.hideFromUser && (this._backgroundedTerminalInstances.some(background => background.instance === value) || this._backgroundTerminalRestorePromises.has(value))) {
+			// This interface is intentionally synchronous. Own the asynchronous restoration here and
+			// activate only after its foreground host exists; callers that need completion or failure
+			// propagation use showBackgroundTerminal/focusInstance directly.
+			void this._restoreAndSetActiveInstance(value);
+			return;
 		}
+		this._setForegroundActiveInstance(value);
+	}
+
+	private _setForegroundActiveInstance(value: ITerminalInstance): void {
 		if (value.target === TerminalLocation.Editor) {
 			this._terminalEditorService.setActiveInstance(value);
 		} else {
@@ -405,8 +414,22 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 	}
 
+	private async _restoreAndSetActiveInstance(value: ITerminalInstance): Promise<void> {
+		try {
+			await this.showBackgroundTerminal(value);
+			this._setForegroundActiveInstance(value);
+		} catch (error) {
+			this._logService.error('Failed to restore a background terminal while setting it active', error);
+		}
+	}
+
 	async focusInstance(instance: ITerminalInstance): Promise<void> {
-		if (this._activeInstance !== instance) {
+		let restoredBackgroundInstance = false;
+		if (instance.shellLaunchConfig.hideFromUser) {
+			await this.showBackgroundTerminal(instance);
+			restoredBackgroundInstance = true;
+		}
+		if (restoredBackgroundInstance || this._activeInstance !== instance) {
 			this.setActiveInstance(instance);
 		}
 		if (instance.target === TerminalLocation.Editor) {
@@ -1501,7 +1524,23 @@ export class TerminalService extends Disposable implements ITerminalService {
 		this._onDidDisposeInstance.fire(instance);
 	}
 
-	public async showBackgroundTerminal(instance: ITerminalInstance, suppressSetActive?: boolean): Promise<void> {
+	public showBackgroundTerminal(instance: ITerminalInstance, suppressSetActive?: boolean): Promise<void> {
+		const pendingRestore = this._backgroundTerminalRestorePromises.get(instance);
+		if (pendingRestore) {
+			return pendingRestore;
+		}
+		const restore = this._showBackgroundTerminal(instance, suppressSetActive);
+		this._backgroundTerminalRestorePromises.set(instance, restore);
+		const clearPendingRestore = () => {
+			if (this._backgroundTerminalRestorePromises.get(instance) === restore) {
+				this._backgroundTerminalRestorePromises.delete(instance);
+			}
+		};
+		void restore.then(clearPendingRestore, clearPendingRestore);
+		return restore;
+	}
+
+	private async _showBackgroundTerminal(instance: ITerminalInstance, suppressSetActive?: boolean): Promise<void> {
 		const index = this._backgroundedTerminalInstances.findIndex(bg => bg.instance === instance);
 		if (index === -1) {
 			return;

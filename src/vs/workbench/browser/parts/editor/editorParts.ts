@@ -880,6 +880,11 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		}
 
 		try {
+			// Consumers that coordinate another projection may commit their preparation only after
+			// this working set is known to be safe to apply. From this point onward state application
+			// can close editors and dispose groups.
+			options?.onWillApply?.();
+
 			// Apply state: begin with auxiliary windows first because it helps to keep
 			// editors around that need confirmation by moving them into the main part.
 			// Also, in rare cases, the auxiliary part may not be able to apply the state

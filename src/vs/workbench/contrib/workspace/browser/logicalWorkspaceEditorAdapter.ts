@@ -70,28 +70,39 @@ export class LogicalWorkspaceEditorAdapter extends Disposable implements ILogica
 		}
 		this.captureScheduler.cancel();
 		this.restoring = true;
+		let editorTerminalsPrepared = false;
+		let editorTerminalFinalizationStarted = false;
+		const prepareEditorTerminals = () => {
+			editorTerminalsPrepared = true;
+			this.terminalProjectionService.prepareEditorTerminalsForWorkingSet(context.workspace.id, context.activationSequence);
+		};
+		const restorePreparedEditorTerminals = async (): Promise<boolean> => {
+			if (!editorTerminalsPrepared || editorTerminalFinalizationStarted) {
+				return false;
+			}
+			editorTerminalFinalizationStarted = true;
+			return this.terminalProjectionService.restoreUnclaimedEditorTerminals(context.workspace.id, context.activationSequence);
+		};
 		try {
 			let applied = true;
-			if (context.workspace.editorWorkingSet || context.activationSequence > 0) {
-				this.terminalProjectionService.prepareEditorTerminalsForWorkingSet(context.workspace.id, context.activationSequence);
-				if (!context.isCurrent()) {
-					return false;
-				}
-			}
 			if (context.workspace.editorWorkingSet) {
-				applied = await this.editorGroupsService.applySerializedWorkingSet(context.workspace.editorWorkingSet);
+				applied = await this.editorGroupsService.applySerializedWorkingSet(context.workspace.editorWorkingSet, { onWillApply: prepareEditorTerminals });
 			} else if (context.activationSequence > 0) {
-				applied = await this.editorGroupsService.applyWorkingSet('empty');
+				applied = await this.editorGroupsService.applyWorkingSet('empty', { onWillApply: prepareEditorTerminals });
 			}
 			if (!context.isCurrent()) {
 				return false;
 			}
 			if (!applied) {
 				this.projectedWorkspaceId = undefined;
+				await restorePreparedEditorTerminals();
+				if (!context.isCurrent()) {
+					return false;
+				}
 				this.logService.warn(`Logical workspace editor working set could not be restored: ${context.workspace.id}`);
 				return false;
 			}
-			const restoredUnclaimedEditorTerminals = await this.terminalProjectionService.restoreUnclaimedEditorTerminals(context.workspace.id, context.activationSequence);
+			const restoredUnclaimedEditorTerminals = await restorePreparedEditorTerminals();
 			if (!context.isCurrent()) {
 				return false;
 			}
@@ -105,6 +116,13 @@ export class LogicalWorkspaceEditorAdapter extends Disposable implements ILogica
 			return true;
 		} catch (error) {
 			this.projectedWorkspaceId = undefined;
+			if (editorTerminalsPrepared && !editorTerminalFinalizationStarted) {
+				try {
+					await restorePreparedEditorTerminals();
+				} catch (rollbackError) {
+					this.logService.error(`Logical workspace editor Terminal rollback failed: ${context.workspace.id}`, rollbackError);
+				}
+			}
 			throw error;
 		} finally {
 			this.restoring = false;

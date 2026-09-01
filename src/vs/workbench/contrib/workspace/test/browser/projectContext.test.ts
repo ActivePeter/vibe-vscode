@@ -16,6 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IPickOptions, IQuickInputService, IQuickPickItem, QuickPickInput } from '../../../../../platform/quickinput/common/quickInput.js';
+import { StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { TestStorageService } from '../../../../test/common/workbenchTestServices.js';
 import { IWorkspace, IWorkspaceContextService, IWorkspaceFolder, IWorkspaceFoldersChangeEvent } from '../../../../../platform/workspace/common/workspace.js';
 import { IPaneCompositePartService } from '../../../../services/panecomposite/browser/panecomposite.js';
@@ -34,6 +35,14 @@ function createRepository(rootUri: URI): ISCMRepository {
 			override readonly rootUri = rootUri;
 		};
 	};
+}
+
+class TestWorkspaceContextService extends mock<IWorkspaceContextService>() {
+	override readonly onDidChangeWorkspaceFolders = Event.None;
+	override readonly onDidChangeWorkspaceName = Event.None;
+	override readonly onDidChangeWorkbenchState = Event.None;
+	override async getCompleteWorkspace(): Promise<IWorkspace> { return this.getWorkspace(); }
+	override getWorkspace(): IWorkspace { throw new Error('Not implemented'); }
 }
 
 class TestSCMViewService extends mock<ISCMViewService>() {
@@ -102,13 +111,70 @@ class TestSCMViewService extends mock<ISCMViewService>() {
 suite('ProjectContextService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('preserves a stored Project until the remote workspace catalog is complete', async () => {
+		const store = disposables.add(new DisposableStore());
+		const firstFolder = createFolder('first', 0);
+		const storedFolder = createFolder('stored', 1);
+		let workspace: IWorkspace = { id: 'physical', folders: [firstFolder] };
+		const completeWorkspace = new DeferredPromise<IWorkspace>();
+		const workspaceContextService = new class extends TestWorkspaceContextService {
+			override getWorkspace(): IWorkspace { return workspace; }
+			override getCompleteWorkspace(): Promise<IWorkspace> { return completeWorkspace.p; }
+		};
+		const storageService = store.add(new TestStorageService());
+		storageService.store('workbench.projectContext.selectedFolderUri', storedFolder.uri.toString(), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		const projectedRoots: Array<string | undefined> = [];
+		const explorerService = new class extends mock<IExplorerService>() {
+			override async setActiveRoot(root: URI | undefined): Promise<void> { projectedRoots.push(root?.toString()); }
+		};
+		const scmService = new class extends mock<ISCMService>() {
+			override readonly onDidAddRepository = Event.None;
+			override readonly onDidRemoveRepository = Event.None;
+			override get repositories(): Iterable<ISCMRepository> { return []; }
+		};
+		const service = store.add(new ProjectContextService(
+			workspaceContextService,
+			new class extends mock<IQuickInputService>() { },
+			storageService,
+			new class extends mock<ICommandService>() { },
+			new class extends mock<IPaneCompositePartService>() { },
+			explorerService,
+			scmService,
+			store.add(new TestSCMViewService(ISCMRepositorySelectionMode.Multiple)),
+			new NullLogService(),
+		));
+
+		await timeout(0);
+		assert.deepStrictEqual({
+			selectedFolder: service.selectedFolder,
+			storedFolder: storageService.get('workbench.projectContext.selectedFolderUri', StorageScope.WORKSPACE),
+			projectedRoots,
+		}, {
+			selectedFolder: undefined,
+			storedFolder: storedFolder.uri.toString(),
+			projectedRoots: [],
+		});
+
+		workspace = { id: 'physical', folders: [firstFolder, storedFolder] };
+		await completeWorkspace.complete(workspace);
+		await timeout(0);
+
+		assert.deepStrictEqual({
+			selectedFolder: service.selectedFolder?.uri.toString(),
+			storedFolder: storageService.get('workbench.projectContext.selectedFolderUri', StorageScope.WORKSPACE),
+			projectedRoots,
+		}, {
+			selectedFolder: storedFolder.uri.toString(),
+			storedFolder: storedFolder.uri.toString(),
+			projectedRoots: [storedFolder.uri.toString()],
+		});
+		store.dispose();
+	});
+
 	test('logs an event projection failure and continues with later work', async () => {
 		const store = disposables.add(new DisposableStore());
 		const folder = createFolder('project', 0);
-		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
-			override readonly onDidChangeWorkspaceFolders = Event.None;
-			override readonly onDidChangeWorkspaceName = Event.None;
-			override readonly onDidChangeWorkbenchState = Event.None;
+		const workspaceContextService = new class extends TestWorkspaceContextService {
 			override getWorkspace(): IWorkspace { return { id: 'physical', folders: [folder] }; }
 		};
 		const expectedError = new Error('explorer projection failed');
@@ -159,10 +225,7 @@ suite('ProjectContextService', () => {
 		const currentFolder = createFolder('current', 1);
 		const addedFolder = createFolder('added', 2);
 		let folders: IWorkspaceFolder[] = [firstFolder, currentFolder];
-		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
-			override readonly onDidChangeWorkspaceFolders = Event.None;
-			override readonly onDidChangeWorkspaceName = Event.None;
-			override readonly onDidChangeWorkbenchState = Event.None;
+		const workspaceContextService = new class extends TestWorkspaceContextService {
 			override getWorkspace(): IWorkspace {
 				return { id: 'physical', folders };
 			}
@@ -259,10 +322,8 @@ suite('ProjectContextService', () => {
 		const removedFolder = createFolder('removed', 1);
 		let folders: IWorkspaceFolder[] = [firstFolder, removedFolder];
 		const foldersChanged = store.add(new Emitter<IWorkspaceFoldersChangeEvent>());
-		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
+		const workspaceContextService = new class extends TestWorkspaceContextService {
 			override readonly onDidChangeWorkspaceFolders = foldersChanged.event;
-			override readonly onDidChangeWorkspaceName = Event.None;
-			override readonly onDidChangeWorkbenchState = Event.None;
 			override getWorkspace(): IWorkspace { return { id: 'physical', folders }; }
 		};
 		const pickerOpened = new DeferredPromise<void>();
@@ -325,10 +386,8 @@ suite('ProjectContextService', () => {
 		const projectFolder = createFolder('project', 0);
 		let folders: IWorkspaceFolder[] = [projectFolder];
 		const foldersChanged = store.add(new Emitter<IWorkspaceFoldersChangeEvent>());
-		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
+		const workspaceContextService = new class extends TestWorkspaceContextService {
 			override readonly onDidChangeWorkspaceFolders = foldersChanged.event;
-			override readonly onDidChangeWorkspaceName = Event.None;
-			override readonly onDidChangeWorkbenchState = Event.None;
 			override getWorkspace(): IWorkspace { return { id: 'physical', folders }; }
 		};
 		const activeRoots: Array<URI | undefined> = [];
@@ -387,10 +446,7 @@ suite('ProjectContextService', () => {
 		const store = disposables.add(new DisposableStore());
 		const firstFolder = createFolder('first', 0);
 		const secondFolder = createFolder('second', 1);
-		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
-			override readonly onDidChangeWorkspaceFolders = Event.None;
-			override readonly onDidChangeWorkspaceName = Event.None;
-			override readonly onDidChangeWorkbenchState = Event.None;
+		const workspaceContextService = new class extends TestWorkspaceContextService {
 			override getWorkspace(): IWorkspace {
 				return { id: 'physical', folders: [firstFolder, secondFolder] };
 			}
@@ -497,10 +553,7 @@ suite('ProjectContextService', () => {
 		const store = disposables.add(new DisposableStore());
 		const firstFolder = createFolder('first', 0);
 		const secondFolder = createFolder('second', 1);
-		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
-			override readonly onDidChangeWorkspaceFolders = Event.None;
-			override readonly onDidChangeWorkspaceName = Event.None;
-			override readonly onDidChangeWorkbenchState = Event.None;
+		const workspaceContextService = new class extends TestWorkspaceContextService {
 			override getWorkspace(): IWorkspace { return { id: 'physical', folders: [firstFolder, secondFolder] }; }
 		};
 		const quickInputService = new class extends mock<IQuickInputService>() {
@@ -596,10 +649,7 @@ suite('ProjectContextService', () => {
 		const store = disposables.add(new DisposableStore());
 		const projectFolder = createFolder('project', 0);
 		const otherFolder = createFolder('other', 1);
-		const workspaceContextService = new class extends mock<IWorkspaceContextService>() {
-			override readonly onDidChangeWorkspaceFolders = Event.None;
-			override readonly onDidChangeWorkspaceName = Event.None;
-			override readonly onDidChangeWorkbenchState = Event.None;
+		const workspaceContextService = new class extends TestWorkspaceContextService {
 			override getWorkspace(): IWorkspace {
 				return { id: 'physical', folders: [projectFolder, otherFolder] };
 			}

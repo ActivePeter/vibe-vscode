@@ -1,6 +1,6 @@
 {
-  "displayName": "vibe vscode",
-  "description": "Opens the privileged vibe vscode fullscreen panel.",
-  "command.openFullscreenPanel": "Open Fullscreen Panel",
-  "command.closeFullscreenPanel": "Close Fullscreen Panel"
+	"displayName": "vibe vscode",
+	"description": "Opens the privileged vibe vscode fullscreen panel.",
+	"command.openFullscreenPanel": "Open Fullscreen Panel",
+	"command.closeFullscreenPanel": "Close Fullscreen Panel"
 }

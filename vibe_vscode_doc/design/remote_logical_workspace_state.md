@@ -33,7 +33,9 @@ interface LogicalWorkspaceSharedState {
 
 新代码不再向 `terminalIds` 增删 ownership；新 Terminal 保持该数组为空。旧记录仅用于把 owner 迁移到 Terminal process 的 `logicalWorkspaceId`。
 
-这里的隔离原则与 VS Code 原生 workspace storage 一致，存储拓扑不同：VS Code 桌面端通常为每个 Workspace ID 使用独立的 `state.vscdb`，Web 端使用按 Workspace ID 命名的 IndexedDB；Vibe 新增一个共享的 Logical Workspace 专用 SQLite，并以 `workspace.<physicalWorkspaceId>` record 分区。底层数据库接口仍复用 VS Code；共享数据库、record key、revision 与 mutation 协议均为 Vibe 新增。
+这里复用 VS Code workspace storage 按 Workspace ID 分区的原则，但存储拓扑不同：VS Code 桌面端通常为每个 Workspace ID 使用独立的 `state.vscdb`，Web 端使用按 Workspace ID 命名的 IndexedDB；Vibe 则新增一个共享的 Logical Workspace 专用 SQLite，并以 `workspace.<physicalWorkspaceId>` record 分区。
+
+必须保证的是不同 Physical Workspace 不混写，共用数据库文件不是产品要求。单库让 Remote Server 只需管理一个数据库实例，避免动态维护文件路径、连接和释放生命周期；代价是它只提供命名空间隔离，不提供独立文件、故障域或权限隔离。未来需要按 Workspace 备份、恢复或隔离故障时，可以拆库而不改变 RPC 与状态模型。底层数据库接口仍复用 VS Code；共享数据库、record key、revision 与 mutation 协议均为 Vibe 新增。
 
 ## 写入协议
 

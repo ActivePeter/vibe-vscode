@@ -8,14 +8,6 @@
 
 Logical Workspace 保存的是可覆盖的 Workbench 视图状态，不是资源生命周期 authority。
 
-| 状态 | Authority 与持久化 | 可见性与冲突规则 |
-| --- | --- | --- |
-| Workspace catalog identity（Workspace 列表与身份） | Remote Logical Workspace state service；SQLite 持久化 | durable 确认后才可激活；其他页面刷新/重连后可见 |
-| layout、editor working set（工作台视图快照） | Remote Logical Workspace state service；SQLite 持久化 | 当前页面 optimistic；其他页面刷新/重连后可见；Server 到达顺序 LWW |
-| `activeWorkspaceId`（当前页面选择） | 当前页面 selection；`sessionStorage` 持久化 | 仅当前页面 |
-| Terminal identity 与 ownership（终端身份与归属） | Terminal/PTY process metadata；随 persistent process 持久化 | Terminal 恢复后立即可用 |
-| Agent Session catalog（全局会话目录） | Session provider/history；持久化介质由 provider 决定 | 保持 VS Code 全局语义 |
-
 ## 状态说明
 
 ### Workspace catalog identity（Workspace 列表与身份）
@@ -40,7 +32,7 @@ Logical Workspace 保存的是可覆盖的 Workbench 视图状态，不是资源
 
 表示 provider/history 能发现的全局 Agent Session 列表，不是某个 Logical Workspace 当前打开的 Session tabs。它的 authority 和持久化介质仍由原有 provider/history 决定；Logical Workspace 切换不会过滤、迁移或删除这些 Session。
 
-表中的 durable 表示 SQLite 写入成功并由 Server 确认；“可见”表示其他页面何时能读取该状态，不是 Sidebar、Terminal 等界面元素是否显示。
+`durable` 表示 SQLite 写入成功并由 Server 确认；下文的“可见”表示其他页面何时能读取状态，不是 Sidebar、Terminal 等界面元素是否显示。
 
 ## 远端状态
 

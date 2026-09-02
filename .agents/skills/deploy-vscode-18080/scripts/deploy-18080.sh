@@ -214,7 +214,7 @@ resolve_workspace_path() {
 
 	while IFS= read -r -d '' candidate; do
 		candidates+=("$candidate")
-	done < <(find "$SERVICE_STATE_ROOT" -maxdepth 1 -type f -name '*.code-workspace' -print0)
+	done < <(find -H "$SERVICE_STATE_ROOT" -maxdepth 1 -type f -name '*.code-workspace' -print0)
 
 	[[ "${#candidates[@]}" -eq 1 ]] || fail "expected exactly one persistent workspace file in $SERVICE_STATE_ROOT"
 	printf '%s\n' "${candidates[0]}"

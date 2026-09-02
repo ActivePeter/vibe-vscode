@@ -1,6 +1,6 @@
 # PR #1：Logical Workspace 与全屏会话宿主
 
-> - 文档定位：PR #1 的统一设计与验收入口
+> - 文档定位：PR #1 的总览与专项设计入口
 > - PR：[feat: add vibe vscode logical workspaces and fullscreen panel](https://github.com/ActivePeter/vibe-vscode/pull/1)
 > - 审查基线：以 PR #1 当前 HEAD 与本仓库工作树为准
 > - 状态：Open；Logical Workspace 视图状态由远程 Server 持久化，Terminal ownership 由 PTY metadata 持有
@@ -15,6 +15,13 @@ vibe vscode 面向常驻个人工作站或云端的 Web 开发环境。PR #1 不
 - Fullscreen Session Host：承载未来全屏 Agent 会话管理面板。
 
 本 PR 的核心设计判断是：**业务状态由明确的 authority 持有，Workbench 现有组件只负责投影；切换上下文不等于销毁资源。**
+
+专项设计分别记录各自的 authority、持久化与失败边界：
+
+- [Logical Workspace 远端视图状态](./remote_logical_workspace_state.md)
+- [远端持久化状态最小接口](./remote_persistent_state_minimal_interfaces.md)
+- [Logical Workspace Terminal：identity、投影与持久化](./logical_workspace_terminal.md)
+- [Agent Session Catalog 的可靠刷新与失败处理](./reliable_agent_session_catalog.md)
 
 ## 2. 交付边界
 
@@ -230,50 +237,19 @@ State Store 通过 Remote Agent IPC 访问按 Physical Workspace ID 隔离的服
 
 ### 7.2 Shell layout
 
-Layout Adapter 保存三个 shell part 的 `visible`、`width`、`height` 与 `activeCompositeId`。恢复时先恢复 composite 和尺寸，再提交最终可见性；目标为隐藏的 part 也必须恢复自己的尺寸，避免以后显示时继承另一个 Workspace 的布局。
+Layout Adapter 保存三个 shell part 的 `visible`、`width`、`height` 与 `activeCompositeId`。恢复时先恢复 composite 和尺寸，再提交最终可见性；目标为隐藏的 part 也必须恢复自己的尺寸，避免以后显示时继承另一个 Workspace 的布局。Terminal 作为 active composite 只表示打开 Terminal view，不映射具体 Terminal。
 
 ### 7.3 Editor working set
 
 `LogicalWorkspaceEditorAdapter` 通过 Editor Groups Service 序列化和恢复 editor working set，并监听 Webview state 更新补充 capture。它只处理 editor input 的通用恢复 identity，不读取 Agent Session catalog，也不建立 Session owner。
 
-Terminal editor 的 tab 位置也由 editor working set 恢复；Terminal serializer 复用 Terminal/PTY authority 已保留或已 revive 的同一实例，不创建第二个 attach client。Terminal layout 的 background 列表只恢复 Panel Terminal，不同时持有 editor Terminal 的恢复权。
-切换事务采用 `Terminal prepare → editor working-set apply/adopt → Terminal finalize`：普通 reconcile 先隐藏其他 Workspace 的 Terminal；紧邻 destructive apply 的 prepare 再把当前 owner 的前台 editor Terminal 保护性 detach 到 background。随后 editor working set 关闭/替换 groups 并领养其中引用的实例，最后只把仍未被领养且 owner 为当前 Workspace 的可见用户 Terminal 恢复到 active editor group。这样创建跨越 Workspace 切换而晚完成、甚至尚未来得及执行旧 target reconcile 的 Editor Terminal 仍有可达入口，同时不会抢走 working set 中已有 Terminal 的原 group；hidden/tool Terminal 不参加 fallback finalize。
+Terminal editor 的 tab 位置也由 editor working set 恢复；它与 Terminal/PTY authority 的协调边界见 [Logical Workspace Terminal：identity、投影与持久化](./logical_workspace_terminal.md)。
 
 具备可恢复 editor identity 的 Session Tab 可以自然包含在 serialized working set 中；但 PR #1 尚未为 Session Tab 单独完成 open/close、多 Workspace 重复打开和恢复正文的产品验收，因此 README 仍标记为 Planned。window geometry、panel split 和 active terminal 不属于 editor working set。
 
 ## 8. Terminal ownership 与持久化
 
-### 8.1 已实现主链路
-
-Terminal 创建与投影遵循以下目标流程：
-
-1. 在发起边界捕获 Workspace ID，并为委托路径预分配稳定 Logical Terminal ID；
-2. 沿既有创建链传递 identity，不重新读取 active Workspace；
-3. 将 `logicalWorkspaceId` 和 `logicalTerminalId` 写入 Shell launch config 与 persistent PTY metadata；
-4. 非当前 Workspace 的实例移到 background，不关闭 PTY；
-5. 切回 owner Workspace 时，Panel Terminal 由 Terminal Adapter 挂回；editor Terminal 先由 editor working set 在原 group 中领养同一 background instance；
-6. working set 应用后仍留在 background 的当前 owner editor Terminal 由 Terminal Adapter 恢复到 active group，并通过受保护的下一次 capture 纳入 working set。
-
-`ITerminalCreationContext` 是只携带 initiating Workspace 与稳定 Logical Terminal ID 的小型 immutable value object。普通创建、Extension Host contributed profile 和 Agent Host profile 都沿已有调用链转发它。Terminal 创建失败只留下未使用的局部 config，不写 Workspace 共享状态，因此不会发布 ghost owner。
-
-Terminal projection 通过通用 Coordinator 把自身触发的 `onDidChangeInstances` 合并到同 target transaction 尾部，因此一次 reconcile 可以完成整批迁移，而不会每移动一个实例就启动新 generation。`showBackgroundTerminal()` 的完成语义包含 editor `openEditor()`；若期间切换到另一 Workspace，旧恢复完成后会被 generation check 截断，再由新 target transaction 收敛。
-
-Terminal ownership 随 PTY process 存活，不再根据 `TerminalExitReason.Shutdown` 修改 Workspace snapshot。是否可重连继续由 VS Code 原有的 PTY detach/persistence 生命周期决定；真正结束的进程自然不再出现在 Terminal authority 中。
-
-旧 snapshot 的 `terminalIds` 只用于一次兼容迁移：恢复老进程时查找对应 Workspace，把结果写入 `ProcessPropertyType.LogicalWorkspaceId`。后续投影只读取 Terminal instance metadata。
-
-### 8.2 Remote backend 分区
-
-Remote Workbench 的持久化不创建新的 Terminal 分类，而是复用每个 `ITerminalInstance.remoteAuthority` 与既有 backend 的对应关系：
-
-- 写入 Remote primary backend 时，panel group、active process 与 background 列表只序列化 `remoteAuthority` 等于当前 Remote authority 的实例；
-- Remote reload 复用 Local 分支已有的 background revive 流程，恢复 Remote layout 中的隐藏 Terminal；
-- process ID 的相等不代表资源相同；即使 Local 与 Remote backend 分配了相同 ID，也必须按实例的 authority 过滤后再序列化；
-- Remote Workbench 中 authority-less Local PTY 不写入 Remote layout。本 PR 不额外扩展这类 Local PTY 的跨 reload 持久化，保留 VS Code 现有生命周期语义。
-
-### 8.3 Planned：Closed Terminal Transcript
-
-进程结束后不会继续出现在 Live Terminal authority；若产品需要保留历史，应建立独立的只读 Transcript catalog，而不是把已关闭 ID 写回 Workspace snapshot。Transcript 可以保存有限输出、退出码、标题、CWD 与起止时间，并提供“以相同 CWD/Profile 新建终端”，但不允许输入，也不能称为重连。该 catalog 需要独立的容量、保留时间、手动清理与敏感输出策略，不属于 PR #1 的交付范围。
+Terminal/PTY 层管理进程生命周期，persistent PTY metadata 持有 identity 与 ownership；Logical Workspace 只投影现有实例，不保存第二份 owner map。Shell layout 只决定是否打开 Terminal view，不映射具体 Terminal。切换 Workspace 会把实例移入或移出 background，不关闭进程；进程结束、Editor Terminal 恢复、Remote backend 分区及失败语义统一见 [Logical Workspace Terminal：identity、投影与持久化](./logical_workspace_terminal.md)。
 
 ## 9. 全局 Agent Session catalog
 
@@ -359,7 +335,7 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 | Shell layout projection | [`logicalWorkspaceLayoutAdapter.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspaceLayoutAdapter.ts) |
 | Terminal projection | [`logicalWorkspaceTerminalAdapter.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspaceTerminalAdapter.ts) |
 | Editor working-set projection | [`logicalWorkspaceEditorAdapter.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspaceEditorAdapter.ts) |
-| Terminal identity、ownership metadata 与持久化入口 | [`terminalService.ts`](../../src/vs/workbench/contrib/terminal/browser/terminalService.ts) |
+| Terminal identity、ownership、投影与持久化 | [Logical Workspace Terminal 专项设计](./logical_workspace_terminal.md) |
 | 全局 Agent Session catalog | [`localAgentSessionsController.ts`](../../src/vs/workbench/contrib/chat/browser/agentSessions/localAgentSessionsController.ts)、[`agentSessionsModel.ts`](../../src/vs/workbench/contrib/chat/browser/agentSessions/agentSessionsModel.ts) |
 | Project selection 与 Explorer/SCM projection | [`projectContext.ts`](../../src/vs/workbench/contrib/workspace/browser/projectContext.ts) |
 | Fullscreen Webview authorization/lifecycle | [`mainThreadWebviewPanels.ts`](../../src/vs/workbench/api/browser/mainThreadWebviewPanels.ts) |

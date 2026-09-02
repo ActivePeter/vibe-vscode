@@ -71,15 +71,7 @@ Logical Workspace SQLite 使用严格打开策略。数据库目录、文件或 
 
 ## Terminal 边界
 
-Terminal 归属不经过 Logical Workspace mutation：
-
-1. Terminal 创建开始时捕获 `logicalWorkspaceId`；
-2. `logicalWorkspaceId` 与 `logicalTerminalId` 写入 Shell launch config；
-3. PTY host 将两者随 persistent process 保存并在 attach target 中返回；
-4. Terminal Adapter 根据实例元数据执行 foreground/background projection；
-5. 老进程缺少 `logicalWorkspaceId` 时，使用旧 `terminalIds` 查找一次 owner，并把结果写回 PTY metadata。
-
-Terminal 关闭或 detach 不再修改 Workspace 远端视图状态。
+Terminal process 与 ownership 不经过 Logical Workspace mutation。旧 `terminalIds` 只提供一次迁移输入，Terminal 关闭或 detach 不修改本协议的远端状态。完整创建、PTY 持久化、前后台投影和退出语义见 [Logical Workspace Terminal：identity、投影与持久化](./logical_workspace_terminal.md)。
 
 ## 关键验收
 
@@ -87,5 +79,3 @@ Terminal 关闭或 detach 不再修改 Workspace 远端视图状态。
 2. A mutation 已提交但 response 丢失，B 随后更新同一字段；A 不重放，Server 最终保持 B。
 3. Workspace create 未提交时 identity 不可激活；已提交但 response 丢失时 read 确认同一 UUID且不重复创建。
 4. 另一页面在收到刷新前保持旧值，显式 refresh 后读取最新 Server 状态。
-5. 新建 Terminal 的 `logicalWorkspaceId` 在异步 profile 创建期间不随 active Workspace 改变。
-6. Persistent Terminal 重连后从 PTY metadata 恢复 owner；旧 `terminalIds` 可迁移并写回 process metadata。

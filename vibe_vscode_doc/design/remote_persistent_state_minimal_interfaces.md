@@ -48,7 +48,7 @@ Layout 和 editor working set 是可覆盖的视图状态。mutation response �
 
 Workspace UUID 是 durable identity：创建结果未知时先 `read`，已存在即确认，不存在才重试相同的幂等 create。创建确认前不会进入可激活 catalog。
 
-Terminal ownership 不属于这套状态；它随 persistent Terminal process 保存。
+Terminal ownership 不属于这套状态；它随 persistent Terminal process 保存，详见 [Logical Workspace Terminal：identity、投影与持久化](./logical_workspace_terminal.md)。
 
 ## 验收
 

@@ -15,6 +15,7 @@ Apply an authority-first review to asynchronous state. Preserve the initiating i
    - `vibe_vscode_doc/design/pr1_logical_workspace_and_fullscreen.md`
    - `vibe_vscode_doc/design/remote_logical_workspace_state.md`
    - `vibe_vscode_doc/design/remote_persistent_state_minimal_interfaces.md`
+   - `vibe_vscode_doc/design/logical_workspace_terminal.md`
 4. Treat current source and tests as implementation evidence. Treat design documents as intended contracts and report any disagreement instead of silently choosing one.
 
 ## Review Workflow

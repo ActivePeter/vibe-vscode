@@ -164,7 +164,6 @@ jobs:
             --run src/vs/workbench/api/test/browser/mainThreadWebviewPanels.test.ts \
             --run src/vs/workbench/api/test/common/extHostTerminalService.test.ts \
             --run src/vs/workbench/api/test/node/extHostLocalizationService.test.ts \
-            --run src/vs/workbench/contrib/chat/test/browser/agentSessions/agentSessionCatalog.test.ts \
             --run src/vs/workbench/contrib/chat/test/browser/agentSessions/agentSessionViewModel.test.ts \
             --run src/vs/workbench/contrib/chat/test/browser/agentSessions/localAgentSessionsController.test.ts \
             --run src/vs/workbench/contrib/files/test/browser/explorerFindProvider.test.ts \

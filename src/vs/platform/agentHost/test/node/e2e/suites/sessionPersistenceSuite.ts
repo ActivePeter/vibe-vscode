@@ -78,6 +78,7 @@ export function defineSessionPersistenceTests(context: IAgentHostE2ETestContext)
 		context.client.notify('unsubscribe', { channel: sessionUri });
 		await timeout(50);
 
+		// Reconstruction includes asynchronous persistence and can exceed one second on shared CI runners.
 		await retry(async () => {
 			const restored = await fetchSessionWithChat(context.client, sessionUri);
 			const restoredResponsePartIds = responsePartIds(restored.turns);
@@ -89,7 +90,7 @@ export function defineSessionPersistenceTests(context: IAgentHostE2ETestContext)
 				context.client.notify('unsubscribe', { channel: sessionUri });
 				throw new Error('Session has not been reconstructed with complete durable provider state');
 			}
-		}, 50, 20);
+		}, 50, 100);
 	}
 
 	test('session metadata history and provider context survive a host restart', async function () {

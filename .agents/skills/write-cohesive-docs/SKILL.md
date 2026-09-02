@@ -26,13 +26,18 @@ Use these default ownership boundaries:
 
 Place a complete behavioral chain under the lifecycle stage where it occurs:
 
-```text
-trigger → precondition → data transformation → side effect → durable result → failure behavior
+```mermaid
+flowchart LR
+    Trigger --> Precondition --> Transform[Data transformation] --> Effect[Side effect] --> Outcome{Succeeded?}
+    Outcome -- Yes --> Result[Durable result]
+    Outcome -- No --> Failure[Failure behavior]
 ```
 
 Keep related types and their handoff in that same section. Do not explain half of a relationship in a type inventory and the other half in a lifecycle section.
 
 Move details instead of copying them. A non-owning section may retain one short invariant or dependency and link to the canonical explanation. Repeat a safety constraint only where a reader must act on it; keep the repeated form brief and semantically identical.
+
+Use fenced Mermaid diagrams for process, lifecycle, branching, and relationship visualizations. Use `sequenceDiagram` for role interactions, `stateDiagram-v2` for lifecycle transitions, and `flowchart` for decisions or data flow. Keep ordinary lists for requirements and checklists, and code fences for actual source or schemas; do not express a process as ASCII arrows or a numbered pseudo-flowchart.
 
 ## Limit the Restructure
 

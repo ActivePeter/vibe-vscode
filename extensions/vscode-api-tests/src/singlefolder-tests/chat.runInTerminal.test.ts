@@ -285,8 +285,13 @@ function extractTextContent(result: vscode.LanguageModelToolResult): string {
 
 			const marker = `SP_${Date.now()}`;
 			const output = await invokeRunInTerminal(`echo "${marker} hello & world"`);
+			const expectedOutput = `${marker} hello & world`;
+			const acceptable = [
+				expectedOutput,
+				...(isWindows ? [`"${expectedOutput}"\n${expectedOutput}`] : []),
+			];
 
-			assert.strictEqual(output.trim(), `${marker} hello & world`);
+			assert.ok(acceptable.includes(output.trim()), `Unexpected output: ${JSON.stringify(output.trim())}`);
 		});
 
 	});

@@ -62,6 +62,7 @@ suite('Workbench - TerminalService', () => {
 
 		terminalService = store.add(instantiationService.createInstance(TerminalService));
 		instantiationService.stub(ITerminalService, terminalService);
+		await timeout(0);
 	});
 
 	suite('background terminals', () => {

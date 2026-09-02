@@ -1,0 +1,4 @@
+interface:
+  display_name: "高内聚、低耦合文档写作"
+  short_description: "让技术文档中的概念归属集中、章节内聚，并减少重复解释和跨章节修改"
+  default_prompt: "Use $write-cohesive-docs to restructure this technical document around one canonical explanation for each concept."

@@ -10,11 +10,37 @@ Logical Workspace 保存的是可覆盖的 Workbench 视图状态，不是资源
 
 | 状态 | Authority 与持久化 | 可见性与冲突规则 |
 | --- | --- | --- |
-| Workspace catalog identity | Remote Logical Workspace state service；SQLite 持久化 | durable 确认后才可激活；其他页面刷新/重连后可见 |
-| layout、editor working set | Remote Logical Workspace state service；SQLite 持久化 | 当前页面 optimistic；其他页面刷新/重连后可见；Server 到达顺序 LWW |
-| `activeWorkspaceId` | 当前页面 selection；`sessionStorage` 持久化 | 仅当前页面 |
-| Terminal identity 与 ownership | Terminal/PTY process metadata；随 persistent process 持久化 | Terminal 恢复后立即可用 |
-| Agent Session catalog | Session provider/history；持久化介质由 provider 决定 | 保持 VS Code 全局语义 |
+| Workspace catalog identity（Workspace 列表与身份） | Remote Logical Workspace state service；SQLite 持久化 | durable 确认后才可激活；其他页面刷新/重连后可见 |
+| layout、editor working set（工作台视图快照） | Remote Logical Workspace state service；SQLite 持久化 | 当前页面 optimistic；其他页面刷新/重连后可见；Server 到达顺序 LWW |
+| `activeWorkspaceId`（当前页面选择） | 当前页面 selection；`sessionStorage` 持久化 | 仅当前页面 |
+| Terminal identity 与 ownership（终端身份与归属） | Terminal/PTY process metadata；随 persistent process 持久化 | Terminal 恢复后立即可用 |
+| Agent Session catalog（全局会话目录） | Session provider/history；持久化介质由 provider 决定 | 保持 VS Code 全局语义 |
+
+## 状态说明
+
+### Workspace catalog identity（Workspace 列表与身份）
+
+表示一个 Physical Workspace 内有哪些 Logical Workspace，以及每一项的稳定 ID 和名称。它决定某个 Logical Workspace 是否存在、能否被激活，不表示当前页面选中了哪一项。Remote state service 只有在 SQLite 写入成功后才确认新 identity；其他页面需要刷新、重连或重新打开后才能读到更新。
+
+### Layout 与 editor working set（工作台视图快照）
+
+`layout` 保存 Sidebar、Panel、Auxiliary Bar 的显隐、尺寸和 active composite；`editor working set` 保存 editor group 布局、可恢复的 editor inputs、MRU 和 active selection。两者都是可以重新投影的界面快照，不是文件内容、Terminal process 或 Agent Session 本体。
+
+当前页面可以先应用自己的修改，再等待 Server 结果，这就是 optimistic。其他页面不会实时跟随，只在下次读取时看到 Server 已确认的值；多个页面修改同一字段时，最后到达 Server 的写入生效，即 Last Write Wins（LWW）。
+
+### `activeWorkspaceId`（当前页面选择）
+
+表示当前浏览器页面正在使用哪个 Logical Workspace。每个页面独立选择，并用带 Physical Workspace ID 的 `sessionStorage` key 在本页刷新后恢复；它不写入远端 SQLite，也不会让其他页面同步切换。
+
+### Terminal identity 与 ownership（终端身份与归属）
+
+表示“这是哪个 Terminal”以及“它属于哪个 Logical Workspace”，不表示 Terminal 当前是否可见。identity 与 owner 随 persistent PTY process metadata 保存；Terminal 恢复或 attach 后即可重新取得。进程结束后不由 Logical Workspace snapshot 保留，完整规则见 [Logical Workspace Terminal：identity、投影与持久化](./logical_workspace_terminal.md)。
+
+### Agent Session catalog（全局会话目录）
+
+表示 provider/history 能发现的全局 Agent Session 列表，不是某个 Logical Workspace 当前打开的 Session tabs。它的 authority 和持久化介质仍由原有 provider/history 决定；Logical Workspace 切换不会过滤、迁移或删除这些 Session。
+
+表中的 durable 表示 SQLite 写入成功并由 Server 确认；“可见”表示其他页面何时能读取该状态，不是 Sidebar、Terminal 等界面元素是否显示。
 
 ## 远端状态
 

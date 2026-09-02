@@ -20,7 +20,7 @@ import type { Database } from '@vscode/sqlite3';
 
 class FailOnceStorageDatabase implements IStorageDatabase {
 
-	readonly onDidChangeItemsExternal = this.delegate.onDidChangeItemsExternal;
+	get onDidChangeItemsExternal() { return this.delegate.onDidChangeItemsExternal; }
 	readonly whenClosed: Promise<void>;
 
 	private readonly closed = new DeferredPromise<void>();
@@ -63,7 +63,7 @@ class FailOnceStorageDatabase implements IStorageDatabase {
 
 class FailInitialReadStorageDatabase implements IStorageDatabase {
 
-	readonly onDidChangeItemsExternal = this.delegate.onDidChangeItemsExternal;
+	get onDidChangeItemsExternal() { return this.delegate.onDidChangeItemsExternal; }
 	readonly whenClosed: Promise<boolean>;
 
 	private readonly closed = new DeferredPromise<boolean>();

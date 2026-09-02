@@ -23,14 +23,16 @@ Logical Workspace 不拥有 Terminal process，也不保存 Terminal owner map�
 - Terminal editor serializer 及现有 attach/relaunch 行为；
 - Local/Remote backend 与 `remoteAuthority` 分区。
 
+VS Code 原生 ID 只在各自边界内稳定：`instanceId` 标识当前 renderer 中的 Terminal instance，页面刷新后会重新生成；`persistentProcessId` 标识当前 PTY backend 中的 persistent process，PTY revive 时可能映射为新 ID。它们继续承担原有职责，但不能单独标识一个从创建委托到恢复始终归属同一 Logical Workspace 的逻辑 Terminal。
+
 Vibe 只新增：
 
 - `logicalWorkspaceId`：Terminal 所属的 Logical Workspace；
-- `logicalTerminalId`：跨委托创建与恢复保持稳定的 Terminal identity；
+- `logicalTerminalId`：创建入口生成一次，在委托创建、renderer reload、PTY attach/revive 与 reconnect 中保持不变的逻辑 Terminal ID；
 - `ITerminalCreationContext`：在创建入口一次捕获并沿既有调用链传递 identity；
 - `LogicalWorkspaceTerminalAdapter`：根据 metadata 在前台和 background 之间投影实例。
 
-这里不创建第二套 Terminal engine、进程表或持久化协议。
+`logicalTerminalId` 与 `logicalWorkspaceId` 一同保存，使同一个逻辑 Terminal 在上述生命周期内始终恢复到原 owner；用户另行创建的 Terminal 使用新 ID。这里不创建第二套 Terminal engine、进程表或持久化协议。
 
 ## 3. Authority 与持久化
 

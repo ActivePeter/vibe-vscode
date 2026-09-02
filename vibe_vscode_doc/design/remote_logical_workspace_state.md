@@ -63,7 +63,7 @@ Server 保留三个 command：
 - `read`：读取当前 durable snapshot；
 - `mutate`：串行应用 catalog/layout/editor mutation。
 
-每次 `mutate` 必须先成功写入 SQLite，再推进 confirmed revision 并返回。远端不广播 committed event；其他页面在刷新、重新打开或 Remote Agent 重连后执行 `read`。
+`mutate` 返回成功时，SQLite durable write 与 confirmed revision 推进都已完成；具体写入顺序见 [远端持久化：最小修改方案](./remote_persistent_state_minimal_interfaces.md#唯一正确顺序)。远端不广播 committed event；其他页面在刷新、重新打开或 Remote Agent 重连后执行 `read`。
 
 ## 失败与 LWW
 
@@ -71,19 +71,35 @@ Logical Workspace SQLite 使用严格打开策略。数据库目录、文件或 
 
 定期一致性备份与 30 天保留策略由 [#10](https://github.com/ActivePeter/vibe-vscode/issues/10) 在独立 PR 实现；备份存在也不得改变上述显式恢复边界。
 
-每个 layout/editor view-state mutation 只发送一次。
+Transport response 丢失时，客户端无法判断 Server 是否已经提交：
 
-如果 response 丢失，客户端无法判断 Server 是否已提交，因此：
-
-```text
-丢弃该 pending mutation
-→ read Server truth
-→ 用读取结果重建页面 projection
+```mermaid
+sequenceDiagram
+    participant Client as Browser client
+    participant Server as Remote state service
+    alt layout / editor view-state mutation
+        Client->>Server: mutate once
+        Note over Client,Server: response lost, commit outcome unknown
+        Client->>Client: discard pending mutation
+        Client->>Server: read after reconnect
+        Server-->>Client: durable snapshot
+        Client->>Client: rebuild projection
+    else createWorkspace identity transaction
+        Client->>Server: createWorkspace(uuid)
+        Note over Client,Server: response lost, commit outcome unknown
+        Client->>Server: read after reconnect
+        Server-->>Client: durable snapshot
+        alt snapshot contains uuid
+            Client->>Client: confirm creation
+        else snapshot does not contain uuid
+            Client->>Server: retry the same idempotent create
+        end
+    end
 ```
 
-禁止自动重放结果未知的旧 mutation。这样 A 的旧写不会在 B 的更新之后再次执行，也不需要 operation ID 或服务端去重表。代价是写入可能在传输失败时丢失；layout/editor 等视图状态允许这一取舍。
+Layout/editor mutation 只发送一次且不自动重放，因此 A 的旧写不会在 B 的更新之后再次执行，也不需要 operation ID 或服务端去重表；代价是传输失败时可能丢失一次视图状态写入。
 
-`createWorkspace` 不属于可丢弃的覆盖型视图写。客户端不 optimistic 发布新 UUID；response 丢失时先 `read`：snapshot 已包含该 UUID 就完成创建，否则才重试同一个 additive、idempotent create。调用方只能在创建 Promise 完成后激活它，因此 Terminal 等 durable resource 不会获得不可达 owner。
+`createWorkspace` 是 additive、idempotent identity transaction。客户端不 optimistic 发布新 UUID；调用方只能在创建 Promise 完成后激活它，因此 Terminal 等 durable resource 不会获得不可达 owner。
 
 同一字段的多个已到达写入按 Server 到达顺序生效，即 Last Write Wins。
 

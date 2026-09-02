@@ -8,8 +8,8 @@
 
 Session catalog refresh 同时承担两种不同职责：
 
-1. 发布本次成功读取到的 Session；
-2. 根据“本次没有读取到”推断已有 Session 已被删除。
+- 发布本次成功读取到的 Session；
+- 根据“本次没有读取到”推断已有 Session 已被删除。
 
 第二项只在所有必需数据源均成功返回时成立。过去 `LocalAgentsSessionsController` 会把 history/storage 异常转换为 `[]`，也会在 cancellation 跳过 history 后继续提交结果。这让以下三种情况变得无法区分：
 
@@ -102,16 +102,33 @@ Catalog 维护两个单调 generation：
 
 ```mermaid
 flowchart TD
-    Read[读取 catalog sources] --> Current{token 与 generation 仍有效?}
-    Current -- 否 --> Drop[静默丢弃]
-    Current -- 是 --> Kind{结果完整性}
-    Kind -- complete --> Replace[原子替换并计算 removal]
-    Kind -- partial --> Merge[只合并 add/update]
-    Kind -- cancelled --> Drop
-    Merge --> Failure{失败动作}
-    Failure -- Retry --> Loop[退避 loop]
-    Failure -- Preserve --> Keep[保留并返回]
-    Failure -- Throw --> Reject[记录 error 并 reject]
+    subgraph Provider["Provider boundary"]
+        Read[读取 catalog sources] --> Snapshot[返回 typed snapshot 与 failure action]
+    end
+
+    subgraph Catalog["AgentSessionCatalog authority"]
+        Current{token 与 generation 仍有效?}
+        Drop[静默丢弃]
+        Kind{结果完整性}
+        Replace[原子替换并计算 removal]
+        Merge[只合并 add/update]
+        Failure{失败动作}
+        Loop[退避 loop]
+        Keep[保留并返回]
+        Reject[记录 error 并 reject]
+
+        Current -- 否 --> Drop
+        Current -- 是 --> Kind
+        Kind -- complete --> Replace
+        Kind -- partial --> Merge
+        Kind -- cancelled --> Drop
+        Merge --> Failure
+        Failure -- Retry --> Loop
+        Failure -- Preserve --> Keep
+        Failure -- Throw --> Reject
+    end
+
+    Snapshot --> Current
 ```
 
 Event 只在状态已经提交后广播。失败和重试本身不能伪造 Session delta。
@@ -123,14 +140,22 @@ Local catalog 由两个数据源组成：
 - live models；
 - persisted history。
 
-接入后的行为：
+```mermaid
+flowchart TD
+    Start[读取 live models] --> Live{live enumeration 成功?}
+    Live -- 否 --> Throw[按 Throw 处理]
+    Live -- 是 --> CancelledAfterLive{token 已取消?}
+    CancelledAfterLive -- 是 --> Cancelled[返回 cancelled]
+    CancelledAfterLive -- 否 --> History[读取 persisted history]
+    History --> CancelledAfterHistory{token 已取消?}
+    CancelledAfterHistory -- 是 --> Cancelled
+    CancelledAfterHistory -- 否 --> HistoryResult{history 结果}
+    HistoryResult -- 成功 --> Complete[返回 complete live + history]
+    HistoryResult -- LocalAgentSessionHistoryReadError --> Partial[返回 partial live + error<br/>按 Retry 分类]
+    HistoryResult -- 其他程序错误 --> Throw
+```
 
-1. live 与 history 都成功：返回 `complete(live + history)`；
-2. live 成功、history 失败：返回 `partial(live, error)`；
-3. 任一步之后 token 已取消：返回 `cancelled`；
-4. Local history 的队列/存储读取异常被包装为明确的 `LocalAgentSessionHistoryReadError`，按 `Retry` 分类；
-5. live model dispose 只表示模型卸载，不等于持久化 Session 删除，因此触发完整 reconcile；
-6. 只有完整 catalog 不再包含该 Session，或收到语义明确的删除事件时，才发布 `removed`。
+Live model dispose 只表示模型卸载，不等于持久化 Session 删除，因此触发完整 reconcile。只有完整 catalog 不再包含该 Session，或收到语义明确的删除事件时，才发布 `removed`。
 
 未被包装的 live enumeration、item conversion 或其他程序错误按 `Throw` 处理，不进入无限重试。Local history 目前没有暴露更细的 typed error；若后续能区分临时 IO、用户配置和数据不变量，应继续在 provider classifier 中细化，而不是修改 catalog 的提交规则。
 

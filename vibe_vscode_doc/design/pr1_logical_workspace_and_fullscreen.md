@@ -59,15 +59,15 @@ vibe vscode 面向常驻个人工作站或云端的 Web 开发环境。PR #1 不
 
 层级关系如下：
 
-```text
-Physical Workspace
-├── Logical Workspace A
-│   ├── Shell layout snapshot
-│   ├── Terminal projection（owner 存在 PTY metadata）
-│   └── Serialized editor working set
-├── Logical Workspace B
-│   └── ...
-└── Project Context: 当前聚焦的 root folder
+```mermaid
+flowchart TD
+    Physical["Physical Workspace"] --> WorkspaceA["Logical Workspace A"]
+    Physical --> WorkspaceB["Logical Workspace B"]
+    Physical -. "page-local focus" .-> Project["Project Context：当前聚焦的 root folder"]
+    WorkspaceA --> LayoutA["Shell layout snapshot"]
+    WorkspaceA --> TerminalA["Terminal projection<br/>owner 位于 PTY metadata"]
+    WorkspaceA --> EditorsA["Serialized editor working set"]
+    WorkspaceB --> LayoutB["独立 layout / Terminal / editor projection"]
 ```
 
 Project Context 与 Logical Workspace 是正交维度：切 Project 不应关闭 editor、terminal 或 session；切 Logical Workspace 也不应隐式改变 Physical Workspace。
@@ -104,7 +104,7 @@ Project Context 与 Logical Workspace 是正交维度：切 Project 不应关闭
 - UI projection 通过 `AsyncProjectionCoordinator` 串行化，并以 `context.isCurrent()` 拒绝过期 generation。
 - Coordinator 以 projection target identity 区分“同一目标刷新”和“目标切换”：同一目标的 change event 合并为 transaction 尾部的一次刷新，不使当前 generation 失效；新的 Workspace activation 才立即 supersede 当前 generation。
 - `createWorkspace()` 是 identity transaction：UUID 由页面生成，但创建 Promise 只有在权威 snapshot 包含该 UUID 后才完成；完成前不能激活或让 durable resource 归属它。
-- Terminal 创建入口捕获 immutable identity，并在创建前写入 Shell launch config；不存在额外 Workspace ownership commit。
+- Terminal 创建统一遵守 [Logical Workspace Terminal 的创建契约](./logical_workspace_terminal.md#51-创建)，不存在额外 Workspace ownership commit。
 - Editor working-set capture/restore 使用统一 projection generation；未来 Session Tab 依赖这一层恢复，不建立 Session owner API。
 
 ### 4.5 完整 catalog 与 partial result 必须可区分
@@ -136,31 +136,57 @@ durable write 的最小接口、上游复用边界和测试要求见 [远端持�
 ## 5. 总体架构
 
 ```mermaid
-flowchart LR
-    RemoteDB[(Remote SQLite)] --> Server[Remote Logical Workspace State Channel]
-    Server --> Store[LogicalWorkspaceStateStore]
-    Session[Page sessionStorage] --> Store
-    Store --> Registry[LogicalWorkspaceService]
+flowchart TB
+    subgraph RemoteState["Remote Logical Workspace state authority"]
+        direction LR
+        RemoteDB[(Remote SQLite)] --> Server[Remote state channel]
+    end
 
-    Registry --> Projection[Projection Coordinators]
-    Projection --> Layout[Layout Adapter]
-    Projection --> Terminal[Terminal Adapter]
-    Projection --> Editor[Editor Working Set Adapter]
+    subgraph PageState["Page-local Logical Workspace role"]
+        direction LR
+        Session[sessionStorage selection] --> Store[LogicalWorkspaceStateStore]
+        Store --> Registry[LogicalWorkspaceService]
+        Registry --> Coordinator[Projection Coordinators]
+    end
 
-    Layout --> Shell[Sidebar / Panel / Auxiliary Bar]
-    PTY[Persistent PTY metadata] --> Terminal
-    Terminal --> ShellTerminal[Foreground / Background Terminal UI]
-    Editor --> Editors[Restorable Open Editors]
+    subgraph Workbench["Workbench projections"]
+        direction LR
+        LayoutAdapter[Layout Adapter]
+        TerminalAdapter[Terminal Adapter]
+        EditorAdapter[Editor Working Set Adapter]
+        LayoutAdapter --> Shell[Sidebar / Panel / Auxiliary Bar]
+        TerminalAdapter --> TerminalUI[Foreground / Background Terminal UI]
+        EditorAdapter --> Editors[Restorable Open Editors]
+    end
 
-    Providers[Provider + History] --> Catalog[Global Session Catalog]
-    Catalog --> AgentList[Global Agent Sessions List]
+    subgraph TerminalState["Terminal identity authority"]
+        PTY[Persistent PTY metadata]
+    end
 
-    Project[ProjectContextService] --> Explorer[Explorer visible root]
-    Project --> SCM[SCM visible repository set + focus]
+    subgraph Sessions["Agent Session catalog authority"]
+        direction LR
+        Providers[Provider + History] --> Catalog[Global Session Catalog]
+        Catalog --> AgentList[Global Agent Sessions List]
+    end
 
-    Builtin[Built-in Web Extension] --> ExtHost[ExtHost Webview Lifecycle]
-    ExtHost --> MainThread[MainThread Authorization]
-    MainThread --> Modal[Fullscreen Modal Editor Part]
+    subgraph Projects["Project selection authority"]
+        direction LR
+        Project[ProjectContextService] --> Explorer[Explorer visible root]
+        Project --> SCM[SCM visible repository set + focus]
+    end
+
+    subgraph Fullscreen["Fullscreen Session Host"]
+        direction LR
+        Builtin[Built-in Web Extension] --> ExtHost[ExtHost Webview Lifecycle]
+        ExtHost --> MainThread[MainThread Authorization]
+        MainThread --> Modal[Fullscreen Modal Editor Part]
+    end
+
+    Server --> Store
+    Coordinator --> LayoutAdapter
+    Coordinator --> TerminalAdapter
+    Coordinator --> EditorAdapter
+    PTY --> TerminalAdapter
 ```
 
 ## 6. Logical Workspace 状态
@@ -215,10 +241,19 @@ State Store 通过 Remote Agent IPC 访问按 Physical Workspace ID 隔离的服
 
 一次显式切换的顺序为：
 
-1. `onWillChangeActiveWorkspace`：捕获旧 Workspace 的可投影状态；
-2. 更新 page-local active ID 与 activation sequence；
-3. `onDidChangeActiveWorkspace`：请求目标 Workspace projection；
-4. 每个异步投影只允许仍为 current 的 generation 提交。
+```mermaid
+sequenceDiagram
+    participant Service as LogicalWorkspaceService
+    participant Coordinator as Projection Coordinator
+    participant Adapters as Projection Adapters
+    Service->>Coordinator: onWillChangeActiveWorkspace(A, B)
+    Coordinator->>Adapters: capture(A)
+    Adapters-->>Coordinator: capture complete
+    Service->>Service: update page-local active ID and activation sequence
+    Service->>Coordinator: onDidChangeActiveWorkspace(B, sequence)
+    Coordinator->>Adapters: restore(B, generation)
+    Adapters-->>Coordinator: commit only while generation is current
+```
 
 `onDidChangeState` 携带 previous/current immutable snapshot。`onWill/onDidChangeActiveWorkspace` 只表达 activation，不替代 Terminal、editor working-set 或全局 Session catalog 变更事件。
 
@@ -299,7 +334,29 @@ Project Context 以选中 folder URI 为 selection authority，并通过同一�
 
 Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `reveal()` 共用同一 presentation identity，不能逃入普通 editor group。
 
-创建 RPC 可等待 MainThread editor open。ExtHost 对同步返回的 `WebviewPanel` 建立 pending operation queue；创建失败时清理 handle、Webview 和 extension 侧引用。Workbench 内部 singleton 调用方使用共享 pending Promise，避免并发打开两个 Webview。
+```mermaid
+sequenceDiagram
+    participant Extension as Built-in extension
+    participant ExtHost
+    participant MainThread
+    participant Editor as Modal Editor Host
+    Extension->>ExtHost: createWebviewPanel(...)
+    ExtHost-->>Extension: synchronous WebviewPanel handle
+    ExtHost->>ExtHost: queue operations until creation settles
+    ExtHost->>MainThread: create fullscreen panel RPC
+    MainThread->>MainThread: validate extension, view type, location, and conflict
+    MainThread->>Editor: open in MODAL_GROUP
+    alt editor open succeeded
+        Editor-->>MainThread: mounted
+        MainThread-->>ExtHost: creation complete
+        ExtHost->>ExtHost: drain pending operations in order
+    else authorization or editor open failed
+        MainThread-->>ExtHost: reject creation
+        ExtHost->>ExtHost: dispose handle, Webview, and queued operations
+    end
+```
+
+创建 RPC 必须等待 MainThread editor open；Workbench 内部 singleton 调用方使用共享 pending Promise，避免并发打开两个 Webview。
 
 这一层只是安全、可靠的 UI 宿主。扩展当前仍是占位内容，不能称为“全屏会话管理面板已实现”。项目原生 ID 统一使用 `vibe-vscode.*`，用户可见品牌统一为 `vibe vscode`；仅隐藏的旧配置键保留用于一次性数据迁移。
 

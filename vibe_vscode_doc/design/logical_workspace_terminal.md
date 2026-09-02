@@ -42,25 +42,18 @@ Vibe 只新增：
 
 ## 4. 与 Shell layout、editor working set 的映射
 
-```text
-shellLayout.panel.activeCompositeId → 是否打开 Terminal view
-PTY metadata.logicalWorkspaceId    → 哪些 Terminal 属于当前 Workspace
-serialized editor working set      → Terminal editor 放在哪个 editor group
+```mermaid
+flowchart LR
+    ShellLayout["shellLayout.panel.activeCompositeId"] --> TerminalView["是否打开 Terminal view"]
+    Owner["PTY metadata.logicalWorkspaceId"] --> WorkspaceTerminals["哪些 Terminal 属于当前 Workspace"]
+    WorkingSet["serialized editor working set"] --> EditorGroup["Terminal editor 放在哪个 editor group"]
 ```
 
 Shell layout 不保存 Terminal ID、Panel 内部 split、Terminal 顺序或 active Terminal。目标 Workspace 的 Panel 即使打开 Terminal view，也可能没有任何 live Terminal。
 
 Panel Terminal 由 Terminal Adapter 从现有实例中筛选：其他 Workspace 的实例移入 background，目标 Workspace 的实例移回前台。Editor Terminal 先由 editor working set 领养到原 group；apply 后仍未被领养的目标实例才由 Terminal Adapter 放入 active editor group。
 
-Editor 切换事务固定为：
-
-```text
-Terminal prepare
-→ editor working-set apply / adopt
-→ Terminal finalize
-```
-
-这样 working set 与 Terminal Adapter 不会同时创建或抢占同一个 editor Terminal。
+Editor 切换事务的完整顺序见 [5.2 Workspace 切换](#52-workspace-切换)。
 
 ## 5. 生命周期
 
@@ -68,28 +61,54 @@ Terminal prepare
 
 `ITerminalCreationContext` 是创建期间使用的只读 identity，`IShellLaunchConfig` 是 VS Code 原有的实际启动配置。前者在异步委托前固定 initiating Workspace，并在委托需要关联结果时携带逻辑 Terminal ID；后者接收这组 identity 并将其送入 PTY。Creation context 本身不持久化。
 
-```text
-创建请求
-→ 等待 Logical Workspace authority ready
-→ 捕获 ITerminalCreationContext { logicalWorkspaceId, logicalTerminalId? }
-→ 在首次委托或创建 PTY 前生成 logicalTerminalId
-→ profile / Extension Host / Agent Host 委托保持同一 context
-→ 将 identity 填入 IShellLaunchConfig
-→ PTY 创建成功并保存为 persistent process metadata
+```mermaid
+sequenceDiagram
+    participant Caller as Creation caller
+    participant Terminal as TerminalService
+    participant Workspace as LogicalWorkspaceService
+    participant Delegate as Profile / Extension / Agent provider
+    participant PTY as PTY host
+    Caller->>Terminal: createTerminal(options)
+    alt explicit creation context or attach metadata
+        Terminal->>Terminal: preserve supplied identity
+    else implicit owner
+        Terminal->>Workspace: await whenReady
+        Workspace-->>Terminal: active logicalWorkspaceId
+    end
+    Terminal->>Terminal: preserve or generate one logicalTerminalId
+    opt delegated creation
+        Terminal->>Delegate: create(context)
+        Delegate->>Terminal: nested create(context)
+    end
+    Terminal->>Terminal: fill missing identity in IShellLaunchConfig
+    Terminal->>PTY: createProcess(shellLaunchConfig)
+    PTY->>PTY: persist identity metadata
+    PTY-->>Terminal: process created
 ```
 
-1. 显式 creation context 或 attach metadata 优先，不能重新绑定到当前 Workspace。
-2. 隐式 owner 必须等待 authority ready，再在后续异步操作前捕获一次。
-3. `logicalTerminalId` 在首次委托或创建 PTY 前生成一次；普通、contributed、fallback、Extension Host 和 Agent Host 路径转发同一 context。
-4. Shell launch config 只传递 identity，不成为第二个 authority；PTY 创建成功后，persistent process metadata 成为归属依据。
-5. 创建失败不得发布 ghost owner；用户另行创建的 Terminal 使用新 ID。
+- 显式 creation context 或 attach metadata 优先，不能重新绑定到当前 Workspace。
+- 隐式 owner 必须等待 authority ready，再在后续异步操作前捕获一次。
+- 缺少 `logicalTerminalId` 时，在首次委托或创建 PTY 前生成一次；普通、contributed、fallback、Extension Host 和 Agent Host 路径转发同一 context。
+- Shell launch config 只传递 identity，不成为第二个 authority；PTY 创建成功后，persistent process metadata 成为归属依据。
+- 创建失败不得发布 ghost owner；用户另行创建的 Terminal 使用新 ID。
 
 ### 5.2 Workspace 切换
 
-1. 其他 Workspace 的前台 Terminal 移入 background，但不结束进程。
-2. 当前 Workspace 的 Panel Terminal 从 background 移回前台。
-3. Editor Terminal 按 `prepare → apply/adopt → finalize` 恢复。
-4. 每个异步步骤检查 projection generation；过期恢复不得覆盖更新的 Workspace。
+```mermaid
+sequenceDiagram
+    participant Coordinator as Projection Coordinator
+    participant Terminal as Terminal Adapter
+    participant Editor as Editor Adapter
+    Coordinator->>Terminal: project target Workspace
+    Terminal->>Terminal: move non-target instances to background
+    Terminal->>Terminal: restore target Panel instances
+    Coordinator->>Editor: restore target editor working set
+    Editor->>Terminal: prepare target Editor Terminals
+    Editor->>Editor: apply working set and adopt
+    Editor->>Terminal: finalize unadopted target Terminals
+```
+
+这样 working set 与 Terminal Adapter 不会同时创建或抢占同一个 editor Terminal。每个异步步骤都检查 projection generation；过期恢复不得覆盖更新的 Workspace。
 
 ### 5.3 Reload 与 reconnect
 
@@ -101,10 +120,33 @@ Terminal prepare
 
 Workspace 切换只是 UI background，不等于进程结束。进程真正退出或用户关闭 Terminal 时，沿用 VS Code 的生命周期：
 
-- 普通 Panel Terminal instance 被 dispose 后从前台或 background 集合移除；切回 Workspace 时不会由 `shellLayout` 重建。
-- 配置了 `waitOnExit` 的 Terminal 可以暂时保留已结束的只读界面，直到用户关闭；它不是可重连的 live process。
-- 当前 Workspace 中关闭的 Terminal editor 会触发 editor working-set 重新 capture，后续不再恢复该 tab。
-- 若非当前 Workspace 的旧 working set 仍引用已经消失的 Terminal editor，VS Code serializer 会先尝试 attach 原 persistent PTY；attach 失败时，当前上游逻辑会启动一个新的 shell。它是替代进程，不是对旧进程的重连。
+```mermaid
+stateDiagram-v2
+    [*] --> Foreground
+    Foreground --> Background: switch away
+    Background --> Foreground: switch back
+    Foreground --> Disposed: user closes
+    Background --> Disposed: user closes
+    Foreground --> Exited: process exits
+    Background --> Exited: process exits
+    Exited --> ReadOnly: waitOnExit
+    Exited --> Disposed: no waitOnExit
+    ReadOnly --> Disposed: user closes
+    Disposed --> [*]
+```
+
+Disposed Terminal 会从前台或 background 集合移除，切回 Workspace 时不会由 `shellLayout` 重建。当前 Workspace 中关闭的 Terminal editor 会触发 editor working-set 重新 capture，后续不再恢复该 tab。`waitOnExit` 只保留已结束的只读界面，不保留可重连的 live process。
+
+旧 working set 引用已经消失的 Terminal editor 时，沿用上游恢复流程：
+
+```mermaid
+flowchart TD
+    Restore["恢复旧 Terminal editor identity"] --> Attach{"attach persistent PTY 成功?"}
+    Attach -- 是 --> Reuse["恢复原 Terminal editor"]
+    Attach -- 否 --> Relaunch["启动替代 shell"]
+```
+
+替代 shell 不是对旧进程的重连。
 
 本 PR 保持上述 VS Code Terminal editor 恢复语义，不新增“已关闭进程历史”或第二份 owner 状态。若产品以后要求旧 working set 绝不启动替代 shell，需要单独修改并验收上游 Terminal editor restore 契约。
 

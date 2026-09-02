@@ -19,26 +19,28 @@ VS Code 桌面端通常为每个 Workspace ID 使用独立的 `state.vscdb`，We
 
 当前 `Storage.set()` 先更新 cache；SQLite rejection 不会回滚 cache，重试可能把未落盘 revision 误认为成功。
 
-修复后直接使用数据库：
-
-```text
-RemoteLogicalWorkspaceStateStorage → IStorageDatabase → SQLite
-                                  ↘ confirmedItems
-```
+修复后，`RemoteLogicalWorkspaceStateStorage` 直接通过 `IStorageDatabase` 写入 SQLite，并只在数据库确认成功后更新自己的 `confirmedItems`。
 
 ## 唯一正确顺序
 
-```text
-await database.updateItems(...)
-→ 更新 confirmedItems
-→ RPC 返回成功
+```mermaid
+sequenceDiagram
+    participant RPC as Remote state RPC
+    participant Storage as RemoteLogicalWorkspaceStateStorage
+    participant DB as IStorageDatabase / SQLite
+    RPC->>Storage: mutate(operation)
+    Storage->>DB: await updateItems(...)
+    alt durable write succeeded
+        DB-->>Storage: success
+        Storage->>Storage: update confirmedItems
+        Storage-->>RPC: confirmed snapshot
+    else database rejected
+        DB-->>Storage: rejection
+        Storage-->>RPC: failure
+    end
 ```
 
-数据库失败时：
-
-- `confirmedItems` 保持旧 revision；
-- RPC 不返回成功；
-- recovery 只使用 confirmed state。
+数据库失败时，`confirmedItems` 保持旧 revision，RPC 不返回成功，recovery 只使用 confirmed state。
 
 数据库初始化失败时更严格：Server 返回 `storageUnavailable`，客户端停止重试并显示错误。不得自动删除或替换数据库、恢复 backup、创建空库或回退内存；恢复决策留给用户。定期备份另由 [#10](https://github.com/ActivePeter/vibe-vscode/issues/10) 跟踪。
 
@@ -52,13 +54,24 @@ Terminal ownership 不属于这套状态；它随 persistent Terminal process �
 
 ## 验收
 
-```text
-数据库中是 revision 1
-→ 写 revision 2 失败
-→ read 仍为 revision 1
-→ 后续写入成功
-→ 关闭并重新打开数据库
-→ 读到成功写入的 revision 2
+```mermaid
+sequenceDiagram
+    participant Test
+    participant Storage as RemoteLogicalWorkspaceStateStorage
+    participant DB as SQLite
+    Note over Storage,DB: durable revision = 1
+    Test->>Storage: write revision 2
+    Storage->>DB: updateItems(...)
+    DB-->>Storage: rejection
+    Test->>Storage: read
+    Storage-->>Test: revision 1
+    Test->>Storage: write revision 2 again
+    Storage->>DB: updateItems(...)
+    DB-->>Storage: success
+    Storage-->>Test: revision 2
+    Test->>Storage: close and reopen
+    Test->>Storage: read
+    Storage-->>Test: durable revision 2
 ```
 
 另需覆盖：mutation 已提交但 response 丢失，另一页面写入 revision 3；原页面只 refresh、不重放，最终保持 revision 3。

@@ -82,6 +82,17 @@ Tests using an always-ready fake cannot validate startup behavior. Production-st
 
 An authoritative update can change layout, editor working set, catalog content, or other projected state without changing the active identity or activation sequence. Subscribe to the complete semantic state slice consumed by each projection. Queue a same-target reconcile so an older in-flight snapshot cannot remain indefinitely current.
 
+### A12. Tracked artifacts are independent of the reviewer's machine
+
+Do not embed developer-specific mount points, home directories, usernames, certificate locations,
+state directories, or sibling checkout paths in tracked source, configuration, documentation,
+scripts, fixtures, or generated artifacts. Resolve repository resources relative to the checkout;
+provide environment-owned paths through one documented local input; use placeholders in published
+examples.
+
+Accept explicit absolute paths only when the path itself is part of a platform contract or a clearly
+synthetic test. Do not replace one hardcoded path with multiple overlapping configuration channels.
+
 ## Common Failure Timelines
 
 ### Provisional owner becomes orphaned
@@ -149,6 +160,7 @@ projection of Workspace A snapshot v1 starts
 | Persistent Terminal reconnect | Owner restores from PTY metadata; legacy state is migration-only. |
 | Local and remote processes share a numeric ID | Persistence and restore remain partitioned by backend authority. |
 | Remote read or mutation response fails | The client follows reconcile semantics and does not infer deletion or replay an unknown write. |
+| Checkout is moved and local service paths change | Tracked files remain unchanged; repository resources still resolve and environment-owned paths arrive through the declared local input. |
 
 ## History Review
 

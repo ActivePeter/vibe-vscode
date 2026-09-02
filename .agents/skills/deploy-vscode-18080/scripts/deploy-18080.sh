@@ -2,28 +2,31 @@
 
 set -euo pipefail
 
-readonly SOURCE_ROOT=/mnt/ceph/vibe-vscode
+readonly SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SOURCE_ROOT="$(cd -- "$SCRIPT_DIRECTORY/../../../.." && pwd -P)"
 readonly SERVICE_SESSION=vibe_vscode_latest
 readonly SERVICE_PORT=18080
 readonly SERVICE_URL="https://127.0.0.1:${SERVICE_PORT}/"
 readonly SERVICE_SOCKET_ROOT="${VIBE_VSCODE_SOCKET_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/vibe-vscode-18080}"
 readonly SERVICE_BACKEND_SOCKET="$SERVICE_SOCKET_ROOT/backend.sock"
-readonly SERVICE_STATE_ROOT=/mnt/ceph/dever_for_dev/.dever/vscode-services/state/latest
-readonly SERVICE_LOG=/mnt/ceph/dever_for_dev/.dever/vscode-services/logs/latest.log
+readonly SERVICE_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/vibe-vscode"
+readonly SERVICE_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/vibe-vscode"
+readonly SERVICE_STATE_ROOT="${VIBE_VSCODE_SERVICE_STATE_ROOT:-$SERVICE_STATE_HOME/services/${SERVICE_PORT}}"
+readonly SERVICE_LOG="${VIBE_VSCODE_SERVICE_LOG:-$SERVICE_STATE_HOME/logs/${SERVICE_PORT}.log}"
 readonly SERVICE_RUNTIME_ROOT="$SOURCE_ROOT/.build/vibe-vscode-18080"
 readonly SERVICE_RELEASES_ROOT="$SERVICE_RUNTIME_ROOT/releases"
 readonly SERVICE_CURRENT_LINK="$SERVICE_RUNTIME_ROOT/last-known-good"
 readonly SERVICE_PREVIOUS_LINK="$SERVICE_RUNTIME_ROOT/previous"
 readonly SERVICE_DEPLOY_LOCK="$SERVICE_RUNTIME_ROOT/deploy.lock"
-readonly TLS_KEY_PATH=/mnt/ceph/dever_for_dev/.dever/https/localhost-key.pem
-readonly TLS_CERT_PATH=/mnt/ceph/dever_for_dev/.dever/https/localhost-cert.pem
+readonly TLS_KEY_PATH="${VIBE_VSCODE_TLS_KEY_PATH:-$SERVICE_CONFIG_HOME/tls/localhost-key.pem}"
+readonly TLS_CERT_PATH="${VIBE_VSCODE_TLS_CERT_PATH:-$SERVICE_CONFIG_HOME/tls/localhost-cert.pem}"
 readonly CADDY_VERSION=2.11.4
 readonly CADDY_CACHE_ROOT="$SERVICE_RUNTIME_ROOT/tools/caddy/$CADDY_VERSION"
 readonly CADDY_BINARY="$CADDY_CACHE_ROOT/caddy"
 readonly CADDY_CONFIG_RELATIVE_PATH=resources/server/vibe-vscode/Caddyfile
 readonly DEPLOY_TIMEOUT_SECONDS="${VIBE_VSCODE_DEPLOY_TIMEOUT_SECONDS:-900}"
 readonly DEFAULT_DEPLOY_MODE="${VIBE_VSCODE_DEPLOY_MODE:-latest}"
-readonly SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
+readonly SCRIPT_PATH="$SCRIPT_DIRECTORY/$(basename -- "${BASH_SOURCE[0]}")"
 readonly NODE_VERSION="$(tr -d '[:space:]' < "$SOURCE_ROOT/.nvmrc")"
 readonly NODE_ROOT="$HOME/.nvm/versions/node/v$NODE_VERSION"
 readonly NODE_BIN="$NODE_ROOT/bin/node"

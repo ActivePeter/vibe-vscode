@@ -57,6 +57,8 @@ Require both properties: resolve implicit identity only after its authority is r
 
 Apply every relevant invariant and test scenario from the reference. Inspect focused history with `git log` and `git show` to learn which earlier behavior a change was protecting. Never fix a readiness race by reintroducing a previously fixed initiating-context race.
 
+For tracked deployment, persistence, documentation, or fixture changes, also inspect added lines for machine-specific paths and sibling-checkout dependencies before accepting the authority boundary.
+
 Separate findings into:
 
 - exact recurrence of an earlier defect;

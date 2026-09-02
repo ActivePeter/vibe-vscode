@@ -27,6 +27,11 @@ Keep one repository-owned deployment entry point. Record these separate authorit
 - recognized process identity;
 - public and private health boundaries.
 
+Resolve repository-owned files relative to the deployment entry point. Keep mutable state,
+credentials, certificates, and machine-specific service locations outside tracked files and pass
+them through one documented operator input. A checkout moved to another absolute path must not
+require a source edit.
+
 ## Preserve One Transaction
 
 Hold one exclusive `flock` across the entire operation:

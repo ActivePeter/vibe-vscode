@@ -332,11 +332,11 @@ Fullscreen presentation 始终映射到 `MODAL_GROUP`。首次创建与后续 `r
 
 托管服务遵循仓库级运行规约：
 
-- `/mnt/ceph/vibe-vscode` 是端口 `18080`、`18081` 唯一允许的构建源；
+- 当前 checkout 是端口 `18080`、`18081` 唯一允许的构建源，部署入口相对自身位置解析仓库根目录；
 - `18080` 运行当前 checkout 的可变开发输出；`18081` 可运行不可变 package，但 package 也必须由本 checkout 构建；
 - 两个服务的公开入口都监听 `0.0.0.0`；`18080` 由仓库固定版本的单文件 Caddy 终止 HTTPS/WSS，VS Code Server 恢复上游 HTTP 实现并只通过私有 Unix socket 接入；
 - 当前 `18080` 保持匿名访问，Caddy 为下一 PR 的统一登录、首次注册和 `forward_auth` 提供边界；在该能力落地前，私有 backend socket 不得对外暴露；
-- 服务 state 继续保存在 `/mnt/ceph/dever_for_dev/.dever/vscode-services`，源码 authority 与用户状态目录相互独立。
+- 服务 state 与 TLS material 由部署环境通过单一 operator input 提供，并保存在 checkout 与不可变 release 之外。
 
 本地通用 quick start 可以使用默认端口；它不覆盖上述托管端口和监听地址规约。
 

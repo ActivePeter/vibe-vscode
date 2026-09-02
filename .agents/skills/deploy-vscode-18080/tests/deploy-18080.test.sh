@@ -19,6 +19,11 @@ assert_equal() {
 
 bash -n "$DEPLOY_SCRIPT"
 source "$DEPLOY_SCRIPT"
+assert_equal "$(cd -- "$TEST_ROOT/../../../.." && pwd -P)" "$SOURCE_ROOT"
+host_mount_prefix='/mnt/'"ceph"
+if grep -Fq "$host_mount_prefix" "$DEPLOY_SCRIPT"; then
+	fail_test 'deployment script contains a machine-specific mount path'
+fi
 activate_definition="$(declare -f activate_candidate_runtime)"
 eval "${activate_definition/activate_candidate_runtime/activate_real_candidate_runtime}"
 snapshot_definition="$(declare -f prepare_snapshot_restart)"

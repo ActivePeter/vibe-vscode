@@ -23,30 +23,20 @@ Logical Workspace 不拥有 Terminal process，也不保存 Terminal owner map�
 - Terminal editor serializer 及现有 attach/relaunch 行为；
 - Local/Remote backend 与 `remoteAuthority` 分区。
 
-VS Code 原生 ID 只在各自边界内稳定：`instanceId` 标识当前 renderer 中的 Terminal instance，页面刷新后会重新生成；`persistentProcessId` 标识当前 PTY backend 中的 persistent process，PTY revive 时可能映射为新 ID。它们继续承担原有职责，但不能单独标识一个从创建委托到恢复始终归属同一 Logical Workspace 的逻辑 Terminal。
+VS Code 原生 ID 只在各自边界内稳定：`instanceId` 属于 renderer，`persistentProcessId` 属于 PTY backend。Vibe 继续复用两者，并补充一个跨创建委托与恢复稳定、可绑定 Logical Workspace 的逻辑 identity；完整创建链见 [5.1 创建](#51-创建)。
 
 Vibe 只新增：
 
 - `logicalWorkspaceId`：Terminal 所属的 Logical Workspace；
-- `logicalTerminalId`：创建入口生成一次，在委托创建、renderer reload、PTY attach/revive 与 reconnect 中保持不变的逻辑 Terminal ID；
-- `ITerminalCreationContext`：在创建入口一次捕获并沿既有调用链传递 identity；
+- `logicalTerminalId`：同一个逻辑 Terminal 的稳定 ID；
+- `ITerminalCreationContext`：Terminal 创建 identity 契约；
 - `LogicalWorkspaceTerminalAdapter`：根据 metadata 在前台和 background 之间投影实例。
 
-`logicalTerminalId` 与 `logicalWorkspaceId` 一同保存，使同一个逻辑 Terminal 在上述生命周期内始终恢复到原 owner；用户另行创建的 Terminal 使用新 ID。这里不创建第二套 Terminal engine、进程表或持久化协议。
+这里不创建第二套 Terminal engine、进程表或持久化协议。
 
 ## 3. Authority 与持久化
 
-```text
-创建请求
-→ authority ready 后捕获 Logical Workspace ID
-→ 写入 Shell launch config
-→ PTY host 保存 logicalWorkspaceId / logicalTerminalId
-→ attach target 在恢复时返回同一 metadata
-→ Terminal Adapter 据此投影
-```
-
-- Shell launch config 只负责把创建时 identity 送到 PTY，不是第二个 authority。
-- Persistent PTY metadata 随进程保存，是恢复后的归属依据。
+- Persistent PTY metadata 保存 `logicalWorkspaceId` 与 `logicalTerminalId`，是恢复后的归属依据。
 - `remoteAuthority`/backend 是 Terminal identity 的命名空间；不同 backend 的相同 process ID 不能合并。
 - Logical Workspace snapshot 中的旧 `terminalIds` 只用于一次迁移：找到旧 owner 后写回 PTY metadata，后续不再读取它裁决归属。
 
@@ -76,10 +66,23 @@ Terminal prepare
 
 ### 5.1 创建
 
-1. 隐式 owner 必须等待 Logical Workspace authority ready；显式 creation context 保持不变。
-2. 在后续 profile、extension、backend 等异步操作前捕获 initiating Workspace。
-3. 普通、contributed、fallback、Extension Host 和 Agent Host 路径转发同一 context。
-4. PTY 创建成功后，metadata 成为归属依据；创建失败不得发布 ghost owner。
+`ITerminalCreationContext` 是创建期间使用的只读 identity，`IShellLaunchConfig` 是 VS Code 原有的实际启动配置。前者在异步委托前固定 initiating Workspace，并在委托需要关联结果时携带逻辑 Terminal ID；后者接收这组 identity 并将其送入 PTY。Creation context 本身不持久化。
+
+```text
+创建请求
+→ 等待 Logical Workspace authority ready
+→ 捕获 ITerminalCreationContext { logicalWorkspaceId, logicalTerminalId? }
+→ 在首次委托或创建 PTY 前生成 logicalTerminalId
+→ profile / Extension Host / Agent Host 委托保持同一 context
+→ 将 identity 填入 IShellLaunchConfig
+→ PTY 创建成功并保存为 persistent process metadata
+```
+
+1. 显式 creation context 或 attach metadata 优先，不能重新绑定到当前 Workspace。
+2. 隐式 owner 必须等待 authority ready，再在后续异步操作前捕获一次。
+3. `logicalTerminalId` 在首次委托或创建 PTY 前生成一次；普通、contributed、fallback、Extension Host 和 Agent Host 路径转发同一 context。
+4. Shell launch config 只传递 identity，不成为第二个 authority；PTY 创建成功后，persistent process metadata 成为归属依据。
+5. 创建失败不得发布 ghost owner；用户另行创建的 Terminal 使用新 ID。
 
 ### 5.2 Workspace 切换
 

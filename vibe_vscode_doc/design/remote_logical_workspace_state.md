@@ -33,6 +33,8 @@ interface LogicalWorkspaceSharedState {
 
 新代码不再向 `terminalIds` 增删 ownership；新 Terminal 保持该数组为空。旧记录仅用于把 owner 迁移到 Terminal process 的 `logicalWorkspaceId`。
 
+这里的隔离原则与 VS Code 原生 workspace storage 一致，存储拓扑不同：VS Code 桌面端通常为每个 Workspace ID 使用独立的 `state.vscdb`，Web 端使用按 Workspace ID 命名的 IndexedDB；Vibe 新增一个共享的 Logical Workspace 专用 SQLite，并以 `workspace.<physicalWorkspaceId>` record 分区。底层数据库接口仍复用 VS Code；共享数据库、record key、revision 与 mutation 协议均为 Vibe 新增。
+
 ## 写入协议
 
 Server 保留三个 command：

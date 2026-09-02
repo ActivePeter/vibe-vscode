@@ -13,6 +13,8 @@
 | 复用 VS Code | `IStorageDatabase`、`SQLiteStorageDatabase`、`Sequencer` |
 | 保持不变 | 通用 `Storage`、`IStorageService` |
 
+VS Code 桌面端通常为每个 Workspace ID 使用独立的 `state.vscdb`，Web 端使用按 Workspace ID 命名的 IndexedDB。Vibe 保留这一隔离维度，但新增一个共享的 Logical Workspace 专用 SQLite，并以 `workspace.<physicalWorkspaceId>` record 在库内分区；该共享数据库、record key、revision 和 mutation 协议均非上游原生逻辑。
+
 当前 `Storage.set()` 先更新 cache；SQLite rejection 不会回滚 cache，重试可能把未落盘 revision 误认为成功。
 
 修复后直接使用数据库：

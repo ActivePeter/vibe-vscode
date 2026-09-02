@@ -183,6 +183,8 @@ interface LogicalWorkspaceSharedState {
 
 PR 早期版本写入过 `chatSessionResources`。当前 decoder 接受该额外字段以兼容已有开发态快照，但会在规范化时丢弃，不能把旧 owner 数据解释成 Session tabs。共享快照写入远程 Server 的独立 SQLite，不经过 Configuration Service，因此不会修改用户的 `.vscode/settings.json` 或 `.code-workspace`。浏览器 `WORKSPACE/MACHINE` 旧值只用于一次性迁移候选，远程状态确认后即删除。
 
+按 Physical Workspace ID 隔离沿用 VS Code 的 workspace-storage 思路，但存储拓扑不同。VS Code 桌面端通常为每个 Workspace ID 使用独立的 `<workspaceStorageHome>/<workspaceId>/state.vscdb`，Web 端使用 `vscode-web-state-db-<workspaceId>` IndexedDB；本 PR 复用 `IStorageDatabase` 与 `SQLiteStorageDatabase`，新增一个共享的 Logical Workspace 专用数据库，并以 `workspace.<physicalWorkspaceId>` record 保存各自 snapshot、revision 和 mutation 结果。该共享数据库、record key、revision 与 mutation 协议均不是上游原生逻辑。
+
 外部输入始终从 `unknown` 开始逐层校验。schema、Workspace 元素、旧 Terminal ID、shell layout 和 editor working set 任一层畸形时应拒绝该输入，而不是在 Workbench 启动阶段抛出异常。
 
 ### 6.2 远程初始化与刷新一致性

@@ -8,13 +8,13 @@
 
 Logical Workspace 保存的是可覆盖的 Workbench 视图状态，不是资源生命周期 authority。
 
-| 状态 | Authority | 可见性与冲突规则 |
+| 状态 | Authority 与持久化 | 可见性与冲突规则 |
 | --- | --- | --- |
-| Workspace catalog identity | Remote SQLite | durable 确认后才可激活；其他页面刷新/重连后可见 |
-| layout、editor working set | Remote SQLite | 当前页面 optimistic；其他页面刷新/重连后可见；Server 到达顺序 LWW |
-| `activeWorkspaceId` | 页面 `sessionStorage` | 仅当前页面 |
-| Terminal identity 与 ownership | Terminal/PTY process metadata | Terminal 恢复后立即可用 |
-| Agent Session catalog | Session provider/history | 保持 VS Code 全局语义 |
+| Workspace catalog identity | Remote Logical Workspace state service；SQLite 持久化 | durable 确认后才可激活；其他页面刷新/重连后可见 |
+| layout、editor working set | Remote Logical Workspace state service；SQLite 持久化 | 当前页面 optimistic；其他页面刷新/重连后可见；Server 到达顺序 LWW |
+| `activeWorkspaceId` | 当前页面 selection；`sessionStorage` 持久化 | 仅当前页面 |
+| Terminal identity 与 ownership | Terminal/PTY process metadata；随 persistent process 持久化 | Terminal 恢复后立即可用 |
+| Agent Session catalog | Session provider/history；持久化介质由 provider 决定 | 保持 VS Code 全局语义 |
 
 ## 远端状态
 

@@ -17,11 +17,16 @@
     "ui"
   ],
   "enabledApiProposals": [
-    "vibeVscodeFullscreenPanel"
+    "vibeVscodeFullscreenPanel",
+    "vibeWorkspaceContext"
   ],
   "activationEvents": [
+    "onCommand:vibe-vscode.openSim",
+    "onCommand:vibe-vscode.openSimFullscreen",
     "onCommand:vibe-vscode.openFullscreenPanel",
-    "onCommand:vibe-vscode.closeFullscreenPanel"
+    "onCommand:vibe-vscode.closeFullscreenPanel",
+    "onWebviewPanel:vibe-vscode.sim.editor",
+    "onView:vibe-vscode.sim.sidebar"
   ],
   "capabilities": {
     "virtualWorkspaces": true,
@@ -30,18 +35,55 @@
     }
   },
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "vibe-vscode-sim",
+          "title": "%viewContainer.sim%",
+          "icon": "resources/sim.svg"
+        }
+      ]
+    },
+    "views": {
+      "vibe-vscode-sim": [
+        {
+          "id": "vibe-vscode.sim.sidebar",
+          "name": "%view.sim%",
+          "type": "webview"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "vibe-vscode.openFullscreenPanel",
-        "title": "%command.openFullscreenPanel%",
+        "command": "vibe-vscode.openSim",
+        "title": "%command.openSim%",
         "category": "vibe vscode"
       },
       {
-        "command": "vibe-vscode.closeFullscreenPanel",
-        "title": "%command.closeFullscreenPanel%",
+        "command": "vibe-vscode.openSimFullscreen",
+        "title": "%command.openSimFullscreen%",
         "category": "vibe vscode"
       }
-    ]
+    ],
+    "menus": {
+      "menubar/view": [
+        {
+          "command": "vibe-vscode.openSim",
+          "group": "1_vibe"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "vibe vscode",
+      "properties": {
+        "vibe-vscode.sim.baseUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "markdownDescription": "%configuration.sim.baseUrl%"
+        }
+      }
+    }
   },
   "scripts": {
     "compile-web": "npm-run-all2 -lp bundle-web typecheck-web",

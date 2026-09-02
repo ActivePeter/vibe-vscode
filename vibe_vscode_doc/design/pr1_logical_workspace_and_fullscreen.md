@@ -21,7 +21,6 @@ vibe vscode 面向常驻个人工作站或云端的 Web 开发环境。PR #1 不
 - [Logical Workspace 远端视图状态](./remote_logical_workspace_state.md)
 - [远端持久化状态最小接口](./remote_persistent_state_minimal_interfaces.md)
 - [Logical Workspace Terminal：identity、投影与持久化](./logical_workspace_terminal.md)
-- [Agent Session Catalog 的可靠刷新与失败处理](./reliable_agent_session_catalog.md)
 
 ## 2. 交付边界
 
@@ -107,21 +106,15 @@ Project Context 与 Logical Workspace 是正交维度：切 Project 不应关闭
 - Terminal 创建统一遵守 [Logical Workspace Terminal 的创建契约](./logical_workspace_terminal.md#51-创建)，不存在额外 Workspace ownership commit。
 - Editor working-set capture/restore 使用统一 projection generation；未来 Session Tab 依赖这一层恢复，不建立 Session owner API。
 
-### 4.5 完整 catalog 与 partial result 必须可区分
-
-Session catalog 的 refresh 只有在取得完整结果后才能发布权威 removed delta。失败、取消或跳过某一数据源不能降级成空数组，否则临时错误会被解释为“删除全部 Session”。该规则属于全局 catalog 正确性，不应通过 Workspace owner 补丁解决。
-
-完整的数据结果协议、失败动作、后台重试与日志规约见 [Agent Session Catalog 的可靠刷新与失败处理](./reliable_agent_session_catalog.md)。
-
-### 4.6 消费者声明 state slice，不猜事件
+### 4.5 消费者声明 state slice，不猜事件
 
 消费者通过 `onDidChangeLogicalWorkspaceStateSlice(service, selector)` 声明自己读取的完整语义切片，并用结构相等抑制无关变化。Terminal Adapter 监听 Terminal instances，并读取进程 metadata；全局 Agent Sessions catalog 不订阅任何 Workspace slice。
 
-### 4.7 Event 不承担远端复制
+### 4.6 Event 不承担远端复制
 
 跨组件的控制流优先使用直接方法和 service transaction。Logical Workspace Server 不广播 committed snapshot；其他页面通过刷新、重连或重新打开执行 `read`。Terminal 和 Session 使用各自 authority 的事件，不拼接跨层事务。
 
-### 4.8 远程单主与语义 mutation
+### 4.7 远程单主与语义 mutation
 
 - 浏览器 IndexedDB 不是共享业务状态 authority；旧值只允许作为首次远程初始化的 migration candidate。
 - 服务端以 `initialize-if-absent` 原子建立首份状态，并独占 revision 分配。
@@ -290,7 +283,7 @@ Terminal/PTY 层管理进程生命周期，persistent PTY metadata 持有 identi
 
 ### 9.1 PR #1 的决定
 
-Session 本体、provider/history catalog 和 Agent Sessions 列表保持 VS Code 原有的全局语义。PR #1 不再让 `AgentSessionsModel` 或 `LocalAgentsSessionsController` 依赖 `ILogicalWorkspaceService`，具体约束为：
+Session 本体、provider/history catalog 和 Agent Sessions 列表保持 VS Code 原有的全局语义。PR #1 不给这些组件增加 Logical Workspace 依赖，具体约束为：
 
 - `AgentSessionsModel.sessions` 返回全局 catalog，不按 active Workspace 过滤；
 - model create、provider delta、cache restore 和删除 action 不写 Logical Workspace state；
@@ -305,8 +298,6 @@ Session 本体、provider/history catalog 和 Agent Sessions 列表保持 VS Cod
 Workspace 未来只关心“哪些 Session Tabs 当前打开”，不拥有 Session。本 PR 已有的通用 `editorWorkingSet` 是承载这一关系的正确层级：同一 Session editor identity 可以分别出现在 A、B 的 serialized working set 中；关闭 A 的 Tab 不删除 Session，也不改变 B。
 
 后续实现应验证 Session editor input 的序列化与恢复闭包，而不是重新添加 Session owner 字段。验收至少覆盖：相同 Session 同时存在于 A/B、切换只恢复目标 tabs、关闭一个 tab 不删除 Session、删除 Session 后旧 editor identity 安全失效。
-
-全局 catalog 自身仍需保证 refresh 失败或取消时不会把 partial `[]` 当成权威删除；这是独立的 provider catalog 正确性问题。
 
 ## 10. Project Context
 
@@ -393,7 +384,6 @@ sequenceDiagram
 | Terminal projection | [`logicalWorkspaceTerminalAdapter.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspaceTerminalAdapter.ts) |
 | Editor working-set projection | [`logicalWorkspaceEditorAdapter.ts`](../../src/vs/workbench/contrib/workspace/browser/logicalWorkspaceEditorAdapter.ts) |
 | Terminal identity、ownership、投影与持久化 | [Logical Workspace Terminal 专项设计](./logical_workspace_terminal.md) |
-| 全局 Agent Session catalog | [`localAgentSessionsController.ts`](../../src/vs/workbench/contrib/chat/browser/agentSessions/localAgentSessionsController.ts)、[`agentSessionsModel.ts`](../../src/vs/workbench/contrib/chat/browser/agentSessions/agentSessionsModel.ts) |
 | Project selection 与 Explorer/SCM projection | [`projectContext.ts`](../../src/vs/workbench/contrib/workspace/browser/projectContext.ts) |
 | Fullscreen Webview authorization/lifecycle | [`mainThreadWebviewPanels.ts`](../../src/vs/workbench/api/browser/mainThreadWebviewPanels.ts) |
 | Fullscreen Modal Editor 宿主 | [`modalEditorPart.ts`](../../src/vs/workbench/browser/parts/editor/modalEditorPart.ts) |
@@ -405,7 +395,6 @@ sequenceDiagram
 
 - 删除 Session owner state，关闭空 ChatModel ghost owner 与错误独占语义；
 - generation-aware Find 恢复关闭 Project/Explorer projection 冲突；
-- `AgentSessionCatalog` 的 complete/partial/cancelled 结果协议关闭 history 失败被当作权威空 catalog；
 - 远程原子初始化、服务端 revision 和语义 mutation 关闭同 revision 默认 catalog 覆盖；
 - view-state mutation 单次发送并在未知结果后 refresh，关闭旧写跨越新写再次执行；
 - Terminal ownership 下沉到 persistent PTY metadata，关闭 Workspace mutation 复活资源；
@@ -418,7 +407,7 @@ sequenceDiagram
 | State Store | 远程原子初始化、durable revision、刷新后跨页面可见、未知 response 不重放、SQLite 打开失败 fail-closed、丢弃旧 `chatSessionResources` | 托管服务双页面与服务重启验收 |
 | Layout | 初始恢复、显隐、active composite、隐藏 part 尺寸 | 保持现有覆盖通过 |
 | Terminal | initiating identity、PTY ownership metadata、旧 owner 迁移、批量 projection、editor A→B 快切、Remote background revive、同 process ID 的 authority 分区 | 托管 Remote background reload |
-| Agent Sessions | 全局 provider catalog、complete/partial/cancelled refresh、Workspace 切换后列表不变、无 Logical Workspace Session API | Session Tab working set 留待后续专项验收 |
+| Agent Sessions | Workspace 切换后全局列表不变、无 Logical Workspace Session API | Session Tab working set 留待后续专项验收 |
 | Project | active item、新增 folder、全局/可见 roots、Find generation、快速切换 stale projection、SCM exact-set、single/multiple、延迟 add/remove；隔离 Workbench 已用两个真实 Git repositories 验收 A/B 双向切换 | 托管 Web 服务中的多根 Project 与 Git 扩展联动 |
 | Fullscreen Host | authorization、创建失败清理、pending 操作、reveal、singleton | 保持现有覆盖通过 |
 | Build/Web | extension bundle+typecheck、产品打包入口、locale fallback | 干净 checkout 的 compile/watch 验证 |
@@ -429,7 +418,7 @@ sequenceDiagram
 
 PR #1 可以进入合并状态的条件是：
 
-1. Session catalog 已恢复全局语义，且全部有效 Review gate 均由代码与针对性测试关闭；
+1. Session catalog 保持全局语义，且 Workspace 切换回归测试通过；
 2. README 对 Available、In progress、Planned 的标识与实际边界一致；
 3. Terminal ownership、Workspace view state、全局 Session catalog 和 projection transaction 之间没有语义混用或旁路实现；
 4. Web 开发构建与产品打包都能从干净 checkout 生成并加载 builtin extension；

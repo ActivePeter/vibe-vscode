@@ -136,7 +136,7 @@ Agent Session catalog 表示 provider/history 提供的全局 Session 集合，�
 #### 复用与改动
 
 - 保持 VS Code 原有的全局 catalog、provider 和 history 语义，不新增 Logical Workspace 绑定或持久化路径。
-- Vibe 只收束可靠刷新和失败边界，详见 [Agent Session Catalog 的可靠刷新与失败处理](./reliable_agent_session_catalog.md)。
+- 本 PR 不修改 Agent Session catalog 的刷新、失败恢复或持久化实现。
 
 ### Project selection（Physical Workspace-local）
 

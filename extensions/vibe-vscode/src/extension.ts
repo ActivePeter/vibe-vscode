@@ -74,15 +74,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
 function registerSubPluginContextSubscriptions(context: vscode.ExtensionContext, simSidebarViewProvider: SimSidebarViewProvider): void {
 	const subscriptions = getVibeSubPlugins().map(plugin => plugin.contextSubscriptions);
-	const needsWorkspaceContext = subscriptions.some(subscription => subscription.physicalWorkspace || subscription.logicalWorkspace || subscription.project);
 	const needsActiveFile = subscriptions.some(subscription => subscription.activeFile || subscription.selection);
 	const needsSelection = subscriptions.some(subscription => subscription.selection);
 
-	if (needsWorkspaceContext) {
-		context.subscriptions.push(vscode.workspace.onDidChangeVibeWorkspaceContext(workspaceContext => {
-			broadcastHostContext(simSidebarViewProvider, createHostContext(getSimPlugin(), workspaceContext));
-		}));
-	}
 	if (needsActiveFile) {
 		context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
 			if (editor) {
@@ -253,43 +247,24 @@ function getSimPlugin(): VibeSubPlugin {
 	return plugin;
 }
 
-function createHostContext(plugin: VibeSubPlugin, workspaceContext = vscode.workspace.vibeWorkspaceContext): VibeSubPluginHostContext {
+function createHostContext(plugin: VibeSubPlugin): VibeSubPluginHostContext {
 	const subscriptions = plugin.contextSubscriptions;
 	const activeEditor = vscode.window.activeTextEditor ?? lastActiveTextEditor;
 	return {
 		language: vscode.env.language,
-		...(subscriptions.physicalWorkspace && workspaceContext ? {
-			physicalWorkspace: {
-				id: workspaceContext.physicalWorkspace.id,
-				name: workspaceContext.physicalWorkspace.name,
-				folders: workspaceContext.physicalWorkspace.folders.map(folder => ({
-					name: folder.name,
-					uri: folder.uri.toString(),
-					index: folder.index,
-				})),
-			},
+		...((subscriptions.activeFile || subscriptions.selection) && activeEditor ? {
+			activeFile: {
+				uri: activeEditor.document.uri.toString(),
+				...(subscriptions.selection ? {
+					selection: {
+						startLine: activeEditor.selection.start.line,
+						startCharacter: activeEditor.selection.start.character,
+						endLine: activeEditor.selection.end.line,
+						endCharacter: activeEditor.selection.end.character,
+					}
+				} : undefined),
+			}
 		} : undefined),
-		...(subscriptions.logicalWorkspace && workspaceContext ? {
-			logicalWorkspace: {
-				id: workspaceContext.logicalWorkspace.id,
-				name: workspaceContext.logicalWorkspace.name,
-			},
-		} : undefined),
-		...(subscriptions.project && workspaceContext?.project ? {
-			project: {
-				name: workspaceContext.project.name,
-				uri: workspaceContext.project.uri.toString(),
-			},
-		} : undefined),
-		...((subscriptions.activeFile || subscriptions.selection) && activeEditor ? { activeFile: {
-			uri: activeEditor.document.uri.toString(),
-			...(subscriptions.selection ? { selection: {
-				startLine: activeEditor.selection.start.line,
-				startCharacter: activeEditor.selection.start.character,
-				endLine: activeEditor.selection.end.line,
-				endCharacter: activeEditor.selection.end.character,
-			} } : undefined),
-		} } : undefined),
 	};
 }
 
@@ -300,10 +275,17 @@ function getConfiguredSimBaseUrl(): string {
 	}
 	try {
 		const uri = vscode.Uri.parse(configured, true);
-		if (uri.scheme !== 'https' && uri.scheme !== 'http') {
+		if (
+			(uri.scheme !== 'https' && uri.scheme !== 'http')
+			|| !uri.authority
+			|| uri.authority.includes('@')
+			|| uri.query
+			|| uri.fragment
+		) {
 			return '';
 		}
-		return uri.toString(true).replace(/\/$/, '');
+		const root = uri.with({ path: uri.path.replace(/\/+$/, '') || '/' }).toString(true);
+		return root.replace(/\/$/, '');
 	} catch {
 		return '';
 	}

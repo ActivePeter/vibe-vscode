@@ -17,8 +17,7 @@
     "ui"
   ],
   "enabledApiProposals": [
-    "vibeVscodeFullscreenPanel",
-    "vibeWorkspaceContext"
+    "vibeVscodeFullscreenPanel"
   ],
   "activationEvents": [
     "onCommand:vibe-vscode.openSim",
@@ -88,6 +87,7 @@
   "scripts": {
     "compile-web": "npm-run-all2 -lp bundle-web typecheck-web",
     "bundle-web": "node ./esbuild.browser.mts",
+    "test-web": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test ./scripts/simWebviewProtocol.test.mts",
     "typecheck-web": "node ../../node_modules/@typescript/native/lib/tsc.js --project ./tsconfig.browser.json --noEmit",
     "watch-web": "npm-run-all2 -lp watch-bundle-web watch-typecheck-web",
     "watch-bundle-web": "node ./esbuild.browser.mts --watch",

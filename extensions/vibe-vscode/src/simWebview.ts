@@ -5,7 +5,10 @@
 
 import * as vscode from 'vscode';
 import type { VibeSubPluginHostContext } from './subplugins';
+import { SIM_ROUTE_VALIDATION_ORIGIN } from './simWebviewProtocol';
 import { createNonce, escapeHtml, safeJson } from './webviewUtils';
+
+export { isSafeSimPath } from './simWebviewProtocol';
 
 export const enum SimWebviewSurface {
 	Editor = 'editor',
@@ -41,10 +44,6 @@ interface RenderSimWebviewOptions {
 	readonly surface: SimWebviewSurface;
 }
 
-export function isSafeSimPath(value: string | undefined): value is string {
-	return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//');
-}
-
 export function isSimWebviewMessage(value: unknown): value is SimWebviewMessage {
 	if (typeof value !== 'object' || value === null || !('type' in value)) {
 		return false;
@@ -76,6 +75,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 	const serializedInitialPath = safeJson(options.initialPath);
 	const serializedSurface = safeJson(options.surface === SimWebviewSurface.Fullscreen ? '' : options.surface);
 	const serializedTokenSeed = safeJson(bridgeTokenSeed);
+	const serializedValidationOrigin = safeJson(SIM_ROUTE_VALIDATION_ORIGIN);
 
 	return `<!DOCTYPE html>
 <html lang="${language}">
@@ -140,6 +140,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 		const configuredBaseUrl = ${serializedBaseUrl};
 		const failureUi = ${serializedFailureUi};
 		const bridgeTokenSeed = ${serializedTokenSeed};
+		const routeValidationOrigin = ${serializedValidationOrigin};
 		const surface = ${serializedSurface};
 		let hostContext = ${serializedHostContext};
 		let currentPath = ${serializedInitialPath};
@@ -174,12 +175,43 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			return configuredBaseUrl || workbenchOrigin();
 		}
 
+		function hasUnsafePathCharacters(value) {
+			for (let index = 0; index < value.length; index++) {
+				const code = value.charCodeAt(index);
+				if (code === 92 || code <= 31 || code === 127) return true;
+			}
+			return false;
+		}
+
+		function isSafePath(path) {
+			if (typeof path !== 'string' || !path.startsWith('/') || hasUnsafePathCharacters(path)) return false;
+			try {
+				const resolved = new URL(path, routeValidationOrigin);
+				const rawPath = path.split(/[?#]/, 1)[0];
+				const decodedRawPath = decodeURIComponent(rawPath);
+				const decodedPath = decodeURIComponent(resolved.pathname);
+				return resolved.origin === routeValidationOrigin
+					&& !decodedRawPath.split('/').some(segment => segment === '.' || segment === '..')
+					&& !decodedPath.startsWith('//')
+					&& !hasUnsafePathCharacters(decodedRawPath)
+					&& !hasUnsafePathCharacters(decodedPath);
+			} catch {
+				return false;
+			}
+		}
+
 		function routeUrl(path, token) {
 			const base = baseUrl();
-			if (!base) return '';
-			const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
-			const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
-			const url = new URL(normalizedBase + '/' + normalizedPath);
+			if (!base || !isSafePath(path)) return '';
+			let root;
+			let url;
+			try {
+				root = new URL(base.endsWith('/') ? base : base + '/');
+				url = new URL('.' + path, root);
+			} catch {
+				return '';
+			}
+			if (url.origin !== root.origin || !url.pathname.startsWith(root.pathname)) return '';
 			if (surface) url.searchParams.set('_vscodeSurface', surface);
 			url.hash = '_vscodeEmbed=' + encodeURIComponent(token);
 			return url.toString();
@@ -251,7 +283,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 		}
 
 		function load(path = currentPath, requestLocalNetworkAccess = false) {
-			if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) return;
+			if (!isSafePath(path)) return;
 			const generation = ++navigationGeneration;
 			const token = bridgeTokenSeed + ':' + generation;
 			const url = routeUrl(path, token);
@@ -278,7 +310,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 				if (message.type === 'context') {
 					hostContext = message.context;
 					sendToSim('context', hostContext);
-				} else if (message.type === 'navigate' && typeof message.path === 'string') {
+				} else if (message.type === 'navigate' && isSafePath(message.path)) {
 					load(message.path);
 				}
 				return;
@@ -290,7 +322,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 				sendToSim('context', hostContext);
 				return;
 			}
-			if (message.type === 'routeChanged' && message.payload && typeof message.payload.path === 'string') {
+			if (message.type === 'routeChanged' && message.payload && isSafePath(message.payload.path)) {
 				currentPath = message.payload.path;
 				vscode.setState({ path: currentPath });
 				vscode.postMessage({
@@ -307,7 +339,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 
 		retryButton.addEventListener('click', () => load(currentPath, overlay.dataset.failure === 'local-network'));
 		const persistedState = vscode.getState();
-		if (persistedState && typeof persistedState.path === 'string' && persistedState.path.startsWith('/') && !persistedState.path.startsWith('//')) currentPath = persistedState.path;
+		if (persistedState && isSafePath(persistedState.path)) currentPath = persistedState.path;
 		load();
 	</script>
 </body>

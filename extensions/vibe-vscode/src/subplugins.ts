@@ -11,9 +11,6 @@ export interface VibeSubPluginRoute {
 
 /** Context slices delivered by the trusted host to a subplugin. */
 export interface VibeSubPluginContextSubscriptions {
-	readonly physicalWorkspace?: boolean;
-	readonly logicalWorkspace?: boolean;
-	readonly project?: boolean;
 	readonly activeFile?: boolean;
 	readonly selection?: boolean;
 }
@@ -21,19 +18,6 @@ export interface VibeSubPluginContextSubscriptions {
 /** Immutable context snapshot delivered by the trusted host to a subplugin surface. */
 export interface VibeSubPluginHostContext {
 	readonly language: string;
-	readonly physicalWorkspace?: {
-		readonly id: string;
-		readonly name: string;
-		readonly folders: readonly { readonly name: string; readonly uri: string; readonly index: number }[];
-	};
-	readonly logicalWorkspace?: {
-		readonly id: string;
-		readonly name: string;
-	};
-	readonly project?: {
-		readonly name: string;
-		readonly uri: string;
-	};
 	readonly activeFile?: {
 		readonly uri: string;
 		readonly selection?: {
@@ -68,9 +52,6 @@ export function getVibeSubPlugins(): readonly VibeSubPlugin[] {
 			description: 'Workflow and PR dependency DAG',
 			defaultPath: '/workspace',
 			contextSubscriptions: {
-				physicalWorkspace: true,
-				logicalWorkspace: true,
-				project: true,
 				activeFile: true,
 				selection: true,
 			},

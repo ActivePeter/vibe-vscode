@@ -145,6 +145,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 		let hostContext = ${serializedHostContext};
 		let currentPath = ${serializedInitialPath};
 		let currentFrameToken = '';
+		let frameReady = false;
 		let navigationGeneration = 0;
 		let simOrigin = '';
 		let loadTimer;
@@ -247,7 +248,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 		}
 
 		function sendToSim(type, payload) {
-			if (!frame.contentWindow || !simOrigin || !currentFrameToken) return;
+			if (!frameReady || !frame.contentWindow || !simOrigin || !currentFrameToken) return;
 			frame.contentWindow.postMessage({ source: 'vibe-vscode', token: currentFrameToken, type, payload }, simOrigin);
 		}
 
@@ -289,6 +290,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			const url = routeUrl(path, token);
 			currentPath = path;
 			currentFrameToken = token;
+			frameReady = false;
 			overlay.className = 'overlay';
 			overlay.dataset.failure = '';
 			clearTimeout(loadTimer);
@@ -317,11 +319,13 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			}
 			if (event.source !== frame.contentWindow || event.origin !== simOrigin || !message || message.source !== 'sim' || message.token !== currentFrameToken) return;
 			if (message.type === 'ready') {
+				frameReady = true;
 				clearTimeout(loadTimer);
 				overlay.className = 'overlay hidden';
 				sendToSim('context', hostContext);
 				return;
 			}
+			if (!frameReady) return;
 			if (message.type === 'routeChanged' && message.payload && isSafePath(message.payload.path)) {
 				currentPath = message.payload.path;
 				vscode.setState({ path: currentPath });

@@ -3,15 +3,17 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { onUnexpectedError } from '../../../base/common/errors.js';
 import { Emitter } from '../../../base/common/event.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { URI } from '../../../base/common/uri.js';
 import { generateUuid } from '../../../base/common/uuid.js';
 import { IExtensionDescription } from '../../../platform/extensions/common/extensions.js';
 import * as typeConverters from './extHostTypeConverters.js';
-import { serializeWebviewOptions, ExtHostWebview, ExtHostWebviews, toExtensionData, shouldSerializeBuffersForPostMessage } from './extHostWebview.js';
+import { serializeWebviewOptions, ExtHostWebview, ExtHostWebviewOperationQueue, ExtHostWebviews, toExtensionData, shouldSerializeBuffersForPostMessage } from './extHostWebview.js';
 import { IExtHostWorkspace } from './extHostWorkspace.js';
 import { EditorGroupColumn } from '../../services/editor/common/editorGroupColumn.js';
+import { checkProposedApiEnabled } from '../../services/extensions/common/extensions.js';
 import type * as vscode from 'vscode';
 import * as extHostProtocol from './extHost.protocol.js';
 import * as extHostTypes from './extHostTypes.js';
@@ -24,6 +26,7 @@ class ExtHostWebviewPanel extends Disposable implements vscode.WebviewPanel {
 
 	readonly #webview: ExtHostWebview;
 	readonly #options: vscode.WebviewPanelOptions;
+	readonly #operationQueue: ExtHostWebviewOperationQueue;
 
 	#title: string;
 	#iconPath?: vscode.IconPath;
@@ -48,7 +51,8 @@ class ExtHostWebviewPanel extends Disposable implements vscode.WebviewPanel {
 			viewColumn: vscode.ViewColumn | undefined;
 			panelOptions: vscode.WebviewPanelOptions;
 			active: boolean;
-		}
+		},
+		operationQueue = new ExtHostWebviewOperationQueue(),
 	) {
 		super();
 		this.#handle = handle;
@@ -56,6 +60,7 @@ class ExtHostWebviewPanel extends Disposable implements vscode.WebviewPanel {
 		this.#webview = webview;
 		this.#viewType = params.viewType;
 		this.#options = params.panelOptions;
+		this.#operationQueue = operationQueue;
 		this.#viewColumn = params.viewColumn;
 		this.#title = params.title;
 		this.#active = params.active;
@@ -69,7 +74,7 @@ class ExtHostWebviewPanel extends Disposable implements vscode.WebviewPanel {
 		this.#isDisposed = true;
 		this.#onDidDispose.fire();
 
-		this.#proxy.$disposeWebview(this.#handle);
+		this.#operationQueue.enqueue(() => this.#proxy.$disposeWebview(this.#handle));
 		this.#webview.dispose();
 
 		super.dispose();
@@ -94,7 +99,7 @@ class ExtHostWebviewPanel extends Disposable implements vscode.WebviewPanel {
 		this.assertNotDisposed();
 		if (this.#title !== value) {
 			this.#title = value;
-			this.#proxy.$setTitle(this.#handle, value);
+			this.#operationQueue.enqueue(() => this.#proxy.$setTitle(this.#handle, value));
 		}
 	}
 
@@ -109,9 +114,9 @@ class ExtHostWebviewPanel extends Disposable implements vscode.WebviewPanel {
 			this.#iconPath = value;
 
 			if (URI.isUri(value)) {
-				this.#proxy.$setIconPath(this.#handle, { light: value, dark: value });
+				this.#operationQueue.enqueue(() => this.#proxy.$setIconPath(this.#handle, { light: value, dark: value }));
 			} else {
-				this.#proxy.$setIconPath(this.#handle, value as { light: URI; dark: URI } | vscode.ThemeIcon);
+				this.#operationQueue.enqueue(() => this.#proxy.$setIconPath(this.#handle, value as { light: URI; dark: URI } | vscode.ThemeIcon));
 			}
 		}
 	}
@@ -155,10 +160,10 @@ class ExtHostWebviewPanel extends Disposable implements vscode.WebviewPanel {
 
 	public reveal(viewColumn?: vscode.ViewColumn, preserveFocus?: boolean): void {
 		this.assertNotDisposed();
-		this.#proxy.$reveal(this.#handle, {
+		this.#operationQueue.enqueue(() => this.#proxy.$reveal(this.#handle, {
 			viewColumn: typeof viewColumn === 'undefined' ? undefined : typeConverters.ViewColumn.from(viewColumn),
 			preserveFocus: !!preserveFocus
-		});
+		}));
 	}
 
 	private assertNotDisposed() {
@@ -214,15 +219,24 @@ export class ExtHostWebviewPanels extends Disposable implements extHostProtocol.
 
 		const serializeBuffersForPostMessage = shouldSerializeBuffersForPostMessage(extension);
 		const handle = ExtHostWebviewPanels.newHandle();
-		this._proxy.$createWebviewPanel(toExtensionData(extension), handle, viewType, {
+		const createWebviewPanel = this._proxy.$createWebviewPanel(toExtensionData(extension), handle, viewType, {
 			title,
-			panelOptions: serializeWebviewPanelOptions(options),
+			panelOptions: serializeWebviewPanelOptions(extension, options),
 			webviewOptions: serializeWebviewOptions(extension, this.workspace, options),
 			serializeBuffersForPostMessage,
 		}, webviewShowOptions);
 
-		const webview = this.webviews.createNewWebview(handle, options, extension);
-		const panel = this.createNewWebviewPanel(handle, viewType, title, viewColumn, options, webview, true);
+		const operationQueue = new ExtHostWebviewOperationQueue(createWebviewPanel);
+		const webview = this.webviews.createNewWebview(handle, options, extension, operationQueue);
+		const panel = this.createNewWebviewPanel(handle, viewType, title, viewColumn, options, webview, true, operationQueue);
+		void createWebviewPanel.catch(error => {
+			if (this._webviewPanels.get(handle) === panel) {
+				panel.dispose();
+				this._webviewPanels.delete(handle);
+				this.webviews.deleteWebview(handle);
+			}
+			onUnexpectedError(error);
+		});
 
 		return panel;
 	}
@@ -311,8 +325,8 @@ export class ExtHostWebviewPanels extends Disposable implements extHostProtocol.
 		await serializer.deserializeWebviewPanel(revivedPanel, initData.state);
 	}
 
-	public createNewWebviewPanel(webviewHandle: string, viewType: string, title: string, position: vscode.ViewColumn, options: extHostProtocol.IWebviewPanelOptions, webview: ExtHostWebview, active: boolean) {
-		const panel = new ExtHostWebviewPanel(webviewHandle, this._proxy, webview, { viewType, title, viewColumn: position, panelOptions: options, active });
+	public createNewWebviewPanel(webviewHandle: string, viewType: string, title: string, position: vscode.ViewColumn, options: extHostProtocol.IWebviewPanelOptions, webview: ExtHostWebview, active: boolean, operationQueue?: ExtHostWebviewOperationQueue) {
+		const panel = new ExtHostWebviewPanel(webviewHandle, this._proxy, webview, { viewType, title, viewColumn: position, panelOptions: options, active }, operationQueue);
 		this._webviewPanels.set(webviewHandle, panel);
 		return panel;
 	}
@@ -322,9 +336,14 @@ export class ExtHostWebviewPanels extends Disposable implements extHostProtocol.
 	}
 }
 
-function serializeWebviewPanelOptions(options: vscode.WebviewPanelOptions): extHostProtocol.IWebviewPanelOptions {
+function serializeWebviewPanelOptions(extension: IExtensionDescription, options: vscode.WebviewPanelOptions): extHostProtocol.IWebviewPanelOptions {
+	if (options.vibeVscodeFullscreen) {
+		checkProposedApiEnabled(extension, 'vibeVscodeFullscreenPanel');
+	}
+
 	return {
 		enableFindWidget: options.enableFindWidget,
 		retainContextWhenHidden: options.retainContextWhenHidden,
+		vibeVscodeFullscreen: options.vibeVscodeFullscreen,
 	};
 }

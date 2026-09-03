@@ -23,6 +23,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { TerminalContextKeys } from '../common/terminalContextKey.js';
 import { ConfirmResult, IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { Emitter } from '../../../../base/common/event.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 
 export class TerminalEditorInput extends EditorInput implements IEditorCloseHandler {
 
@@ -72,7 +73,15 @@ export class TerminalEditorInput extends EditorInput implements IEditorCloseHand
 	}
 
 	override copy(): EditorInput {
-		const instance = this._terminalInstanceService.createInstance(this._copyLaunchConfig || {}, TerminalLocation.Editor);
+		const sourceLaunchConfig = this._copyLaunchConfig ?? {};
+		const isLogicalWorkspaceTerminal = sourceLaunchConfig.logicalWorkspaceId !== undefined || sourceLaunchConfig.logicalTerminalId !== undefined;
+		const instance = this._terminalInstanceService.createInstance({
+			...sourceLaunchConfig,
+			// A copy is a new process, not another client for the original persistent process.
+			attachPersistentProcess: undefined,
+			parentTerminalId: undefined,
+			logicalTerminalId: isLogicalWorkspaceTerminal ? generateUuid() : undefined,
+		}, TerminalLocation.Editor);
 		instance.focusWhenReady();
 		this._copyLaunchConfig = undefined;
 		return this._instantiationService.createInstance(TerminalEditorInput, instance.resource, instance);

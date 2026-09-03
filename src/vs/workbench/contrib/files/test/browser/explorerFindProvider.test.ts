@@ -12,6 +12,7 @@ import { ICompressedTreeNode } from '../../../../../base/browser/ui/tree/compres
 import { ICompressibleTreeRenderer } from '../../../../../base/browser/ui/tree/objectTree.js';
 import { IAsyncDataSource, ITreeFilter, ITreeNode, TreeFilterResult } from '../../../../../base/browser/ui/tree/tree.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { FuzzyScore } from '../../../../../base/common/filters.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { basename } from '../../../../../base/common/resources.js';
@@ -82,15 +83,18 @@ class VirtualDelegate implements IListVirtualDelegate<ExplorerItem> {
 	getTemplateId(element: ExplorerItem): string { return 'default'; }
 }
 
-class DataSource implements IAsyncDataSource<ExplorerItem, ExplorerItem> {
-	hasChildren(element: ExplorerItem): boolean {
-		return !!element.children && element.children.size > 0;
+class DataSource implements IAsyncDataSource<ExplorerItem | ExplorerItem[], ExplorerItem> {
+	hasChildren(element: ExplorerItem | ExplorerItem[]): boolean {
+		return Array.isArray(element) || (!!element.children && element.children.size > 0);
 	}
-	getChildren(element: ExplorerItem): Promise<ExplorerItem[]> {
+	getChildren(element: ExplorerItem | ExplorerItem[]): Promise<ExplorerItem[]> {
+		if (Array.isArray(element)) {
+			return Promise.resolve(element);
+		}
 		return Promise.resolve(Array.from(element.children.values()) || []);
 	}
-	getParent(element: ExplorerItem): ExplorerItem {
-		return element.parent!;
+	getParent(element: ExplorerItem): ExplorerItem | ExplorerItem[] {
+		return element.parent ?? [element];
 	}
 
 }
@@ -137,6 +141,8 @@ suite('Find Provider - ExplorerView', () => {
 	}
 
 	let root: ExplorerItem;
+	let secondRoot: ExplorerItem;
+	let visibleRoots: ExplorerItem[];
 
 	let instantiationService: TestInstantiationService;
 
@@ -146,6 +152,8 @@ suite('Find Provider - ExplorerView', () => {
 
 	setup(() => {
 		root = createStat.call(this, '/root', true);
+		secondRoot = createStat.call(this, '/second-root', true);
+		visibleRoots = [root];
 		const a = createStat.call(this, '/root/a', true);
 		const aa = createStat.call(this, '/root/a/aa', true);
 		const ab = createStat.call(this, '/root/a/ab', true);
@@ -170,7 +178,8 @@ suite('Find Provider - ExplorerView', () => {
 
 		instantiationService = workbenchInstantiationService(undefined, disposables);
 		instantiationService.stub(IExplorerService, {
-			roots: [root],
+			roots: [root, secondRoot],
+			get visibleRoots() { return visibleRoots; },
 			refresh: () => Promise.resolve(),
 			findClosest: (resource: URI) => {
 				return find(root, basename(resource)) ?? null;
@@ -192,21 +201,32 @@ suite('Find Provider - ExplorerView', () => {
 		});
 	});
 
+	function createTree(store: DisposableStore, id: string): WorkbenchCompressibleAsyncDataTree<ExplorerItem | ExplorerItem[], ExplorerItem, FuzzyScore> {
+		const container = document.createElement('div');
+		const dataSource = new DataSource();
+		const options: IWorkbenchCompressibleAsyncDataTreeOptions<ExplorerItem, FuzzyScore> = {
+			identityProvider: new IdentityProvider(),
+			keyboardNavigationLabelProvider: new KeyboardNavigationLabelProvider(),
+			accessibilityProvider: new AccessibilityProvider(),
+		};
+		const tree = store.add(instantiationService.createInstance(
+			WorkbenchCompressibleAsyncDataTree<ExplorerItem | ExplorerItem[], ExplorerItem, FuzzyScore>,
+			id,
+			container,
+			new VirtualDelegate(),
+			new CompressionDelegate(dataSource),
+			[new Renderer()],
+			dataSource,
+			options,
+		));
+		tree.layout(200);
+		return tree;
+	}
+
 	test('find provider', async function () {
 		const disposables = new DisposableStore();
-
-		// Tree Stuff
-		const container = document.createElement('div');
-
-		const dataSource = new DataSource();
-		const compressionDelegate = new CompressionDelegate(dataSource);
-		const keyboardNavigationLabelProvider = new KeyboardNavigationLabelProvider();
-		const accessibilityProvider = new AccessibilityProvider();
 		const filter = instantiationService.createInstance(TestFilesFilter) as unknown as FilesFilter;
-
-		const options: IWorkbenchCompressibleAsyncDataTreeOptions<ExplorerItem, FuzzyScore> = { identityProvider: new IdentityProvider(), keyboardNavigationLabelProvider, accessibilityProvider };
-		const tree = disposables.add(instantiationService.createInstance(WorkbenchCompressibleAsyncDataTree<ExplorerItem | ExplorerItem[], ExplorerItem, FuzzyScore>, 'test', container, new VirtualDelegate(), compressionDelegate, [new Renderer()], dataSource, options));
-		tree.layout(200);
+		const tree = createTree(disposables, 'test');
 
 		await tree.setInput(root);
 
@@ -254,6 +274,56 @@ suite('Find Provider - ExplorerView', () => {
 		assert.strictEqual(find(root, 'b')?.isMarkedAsFiltered(), false);
 		assert.strictEqual(find(root, 'bb')?.isMarkedAsFiltered(), false);
 
+		disposables.dispose();
+	});
+
+	test('restores the current visible Project instead of the filter session input', async function () {
+		const disposables = new DisposableStore();
+		const filter = instantiationService.createInstance(TestFilesFilter) as unknown as FilesFilter;
+		const tree = createTree(disposables, 'test-project-switch');
+		await tree.setInput([root]);
+
+		const findProvider = instantiationService.createInstance(ExplorerFindProvider, filter, () => tree);
+		findProvider.startSession();
+		await findProvider.find('bb', { matchType: TreeFindMatchType.Contiguous, findMode: TreeFindMode.Filter }, CancellationToken.None);
+
+		visibleRoots = [secondRoot];
+		await findProvider.endSession();
+
+		const input = tree.getInput();
+		assert.deepStrictEqual({
+			input: (Array.isArray(input) ? input : input ? [input] : []).map(item => item.name),
+			oldRootMarked: root.isMarkedAsFiltered(),
+		}, {
+			input: ['second-root'],
+			oldRootMarked: false,
+		});
+
+		disposables.dispose();
+	});
+
+	test('an invalidated in-flight filter cannot overwrite the current Project input', async function () {
+		const pendingSearch = new DeferredPromise<ISearchComplete>();
+		instantiationService.stub(ISearchService, {
+			fileSearch: () => pendingSearch.p,
+			schemeHasFileSearchProvider: () => true,
+		});
+
+		const disposables = new DisposableStore();
+		const tree = createTree(disposables, 'test-project-switch-in-flight');
+		await tree.setInput([root]);
+		const filter = instantiationService.createInstance(TestFilesFilter) as unknown as FilesFilter;
+		const findProvider = instantiationService.createInstance(ExplorerFindProvider, filter, () => tree);
+		findProvider.startSession();
+		const find = findProvider.find('bb', { matchType: TreeFindMatchType.Contiguous, findMode: TreeFindMode.Filter }, CancellationToken.None);
+
+		visibleRoots = [secondRoot];
+		await findProvider.endSession();
+		pendingSearch.complete({ results: [], messages: [] });
+		await find;
+
+		const input = tree.getInput();
+		assert.deepStrictEqual((Array.isArray(input) ? input : input ? [input] : []).map(item => item.name), ['second-root']);
 		disposables.dispose();
 	});
 });

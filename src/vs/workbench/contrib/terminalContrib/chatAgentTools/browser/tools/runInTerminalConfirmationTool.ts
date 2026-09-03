@@ -72,6 +72,7 @@ export const ConfirmTerminalCommandToolData: IToolData = {
 	}
 };
 
+/** @skipMangle Dynamically imported by the terminal tool tests. */
 export class ConfirmTerminalCommandTool extends RunInTerminalTool {
 	protected override get _enableCommandLineSandboxRewriting() {
 		return false;

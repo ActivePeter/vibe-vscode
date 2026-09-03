@@ -42,7 +42,11 @@ export class ReleaseNotesManager extends Disposable {
 	private readonly _releaseNotesCache = new Map<string, Promise<string>>();
 
 	private _currentReleaseNotes: WebviewInput | undefined = undefined;
+	private _currentReleaseNotesCreation: Promise<WebviewInput> | undefined;
 	private _lastMeta: { text: string; base: URI } | undefined;
+	private _showRequestSequence = 0;
+	private _showCommitSequence = 0;
+	private _htmlGeneration = 0;
 
 	constructor(
 		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
@@ -62,7 +66,7 @@ export class ReleaseNotesManager extends Disposable {
 		super();
 
 		this._register(TokenizationRegistry.onDidChange(() => {
-			return this.updateHtml();
+			void this.updateHtml().catch(onUnexpectedError);
 		}));
 
 		this._register(_configurationService.onDidChangeConfiguration((e) => this.onDidChangeConfiguration(e)));
@@ -71,12 +75,15 @@ export class ReleaseNotesManager extends Disposable {
 	}
 
 	private async updateHtml() {
-		if (!this._currentReleaseNotes || !this._lastMeta) {
+		const releaseNotes = this._currentReleaseNotes;
+		const meta = this._lastMeta;
+		if (!releaseNotes || !meta) {
 			return;
 		}
-		const html = await this.renderBody(this._lastMeta);
-		if (this._currentReleaseNotes) {
-			this._currentReleaseNotes.webview.setHtml(html);
+		const generation = ++this._htmlGeneration;
+		const html = await this.renderBody(meta);
+		if (generation === this._htmlGeneration && this._currentReleaseNotes === releaseNotes && this._lastMeta === meta) {
+			releaseNotes.webview.setHtml(html);
 		}
 	}
 
@@ -91,60 +98,112 @@ export class ReleaseNotesManager extends Disposable {
 	}
 
 	public async show(version: string, useCurrentFile: boolean): Promise<boolean> {
+		const showSequence = ++this._showRequestSequence;
 		const releaseNoteText = await this.loadReleaseNotes(version, useCurrentFile);
+		if (showSequence < this._showCommitSequence) {
+			return true;
+		}
 		const base = await this.getBase(useCurrentFile);
-		this._lastMeta = { text: releaseNoteText, base };
-		const html = await this.renderBody(this._lastMeta);
+		if (showSequence < this._showCommitSequence) {
+			return true;
+		}
+		const meta = { text: releaseNoteText, base };
+		const html = await this.renderBody(meta);
+		if (showSequence < this._showCommitSequence) {
+			return true;
+		}
+		this._showCommitSequence = showSequence;
+		this._lastMeta = meta;
+		const htmlGeneration = ++this._htmlGeneration;
 		const title = nls.localize('releaseNotesInputName', "Release Notes: {0}", version);
 
 		const activeEditorPane = this._editorService.activeEditorPane;
-		if (this._currentReleaseNotes) {
-			this._currentReleaseNotes.setWebviewTitle(title);
-			this._currentReleaseNotes.webview.setHtml(html);
-			this._webviewWorkbenchService.revealWebview(this._currentReleaseNotes, activeEditorPane ? activeEditorPane.group : this._editorGroupService.activeGroup, false);
-		} else {
-			this._currentReleaseNotes = this._webviewWorkbenchService.openWebview(
-				{
-					title,
-					options: {
-						tryRestoreScrollPosition: true,
-						enableFindWidget: true,
-						disableServiceWorker: useCurrentFile ? false : true,
-					},
-					contentOptions: {
-						localResourceRoots: useCurrentFile ? [base] : [],
-						allowScripts: true
-					},
-					extension: undefined
-				},
-				'releaseNotes',
-				title,
-				Codicon.vscode,
-				{ group: ACTIVE_GROUP, preserveFocus: false });
-
-			const disposables = new DisposableStore();
-
-			disposables.add(this._currentReleaseNotes.webview.onDidClickLink(uri => this.onDidClickLink(URI.parse(uri))));
-
-			disposables.add(this._currentReleaseNotes.webview.onMessage(e => {
-				if (e.message.type === 'showReleaseNotes') {
-					this._configurationService.updateValue('update.showReleaseNotes', e.message.value);
-				} else if (e.message.type === 'clickSetting') {
-					const x = this._currentReleaseNotes?.webview.container.offsetLeft + e.message.value.x;
-					const y = this._currentReleaseNotes?.webview.container.offsetTop + e.message.value.y;
-					this._simpleSettingRenderer.updateSetting(URI.parse(e.message.value.uri), x, y);
-				}
-			}));
-
-			disposables.add(this._currentReleaseNotes.onWillDispose(() => {
-				disposables.dispose();
-				this._currentReleaseNotes = undefined;
-			}));
-
-			this._currentReleaseNotes.webview.setHtml(html);
+		const shouldReveal = !!this._currentReleaseNotes || !!this._currentReleaseNotesCreation;
+		const releaseNotes = this._currentReleaseNotes ?? await this.getOrCreateReleaseNotes(title, useCurrentFile, base);
+		if (showSequence !== this._showCommitSequence || this._lastMeta !== meta || this._currentReleaseNotes !== releaseNotes) {
+			return true;
+		}
+		releaseNotes.setWebviewTitle(title);
+		if (htmlGeneration === this._htmlGeneration) {
+			releaseNotes.webview.setHtml(html);
+		}
+		if (shouldReveal) {
+			this._webviewWorkbenchService.revealWebview(releaseNotes, {
+				group: activeEditorPane ? activeEditorPane.group : this._editorGroupService.activeGroup,
+				preserveFocus: false,
+			});
 		}
 
 		return true;
+	}
+
+	private getOrCreateReleaseNotes(title: string, useCurrentFile: boolean, base: URI): Promise<WebviewInput> {
+		if (this._currentReleaseNotes) {
+			return Promise.resolve(this._currentReleaseNotes);
+		}
+		if (!this._currentReleaseNotesCreation) {
+			const creation = Promise.resolve().then(() => this.createReleaseNotes(title, useCurrentFile, base));
+			this._currentReleaseNotesCreation = creation;
+			creation.then(
+				() => {
+					if (this._currentReleaseNotesCreation === creation) {
+						this._currentReleaseNotesCreation = undefined;
+					}
+				},
+				() => {
+					if (this._currentReleaseNotesCreation === creation) {
+						this._currentReleaseNotesCreation = undefined;
+					}
+				},
+			);
+		}
+
+		return this._currentReleaseNotesCreation;
+	}
+
+	private async createReleaseNotes(title: string, useCurrentFile: boolean, base: URI): Promise<WebviewInput> {
+		const releaseNotes = await this._webviewWorkbenchService.openWebview(
+			{
+				title,
+				options: {
+					tryRestoreScrollPosition: true,
+					enableFindWidget: true,
+					disableServiceWorker: useCurrentFile ? false : true,
+				},
+				contentOptions: {
+					localResourceRoots: useCurrentFile ? [base] : [],
+					allowScripts: true
+				},
+				extension: undefined
+			},
+			'releaseNotes',
+			title,
+			Codicon.vscode,
+			{ group: ACTIVE_GROUP, preserveFocus: false });
+		this._currentReleaseNotes = releaseNotes;
+
+		const disposables = new DisposableStore();
+
+		disposables.add(releaseNotes.webview.onDidClickLink(uri => this.onDidClickLink(URI.parse(uri))));
+
+		disposables.add(releaseNotes.webview.onMessage(e => {
+			if (e.message.type === 'showReleaseNotes') {
+				this._configurationService.updateValue('update.showReleaseNotes', e.message.value);
+			} else if (e.message.type === 'clickSetting') {
+				const x = releaseNotes.webview.container.offsetLeft + e.message.value.x;
+				const y = releaseNotes.webview.container.offsetTop + e.message.value.y;
+				this._simpleSettingRenderer.updateSetting(URI.parse(e.message.value.uri), x, y);
+			}
+		}));
+
+		disposables.add(releaseNotes.onWillDispose(() => {
+			disposables.dispose();
+			if (this._currentReleaseNotes === releaseNotes) {
+				this._currentReleaseNotes = undefined;
+			}
+		}));
+
+		return releaseNotes;
 	}
 
 	private async loadReleaseNotes(version: string, useCurrentFile: boolean): Promise<string> {

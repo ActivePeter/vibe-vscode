@@ -30,7 +30,7 @@ import { IEditorGroupView, IEditorPartsView } from './editor.js';
 import { EditorPart } from './editorPart.js';
 import { GroupDirection, GroupsOrder, IModalEditorPart, GroupActivationReason } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService, USE_MODAL_EDITOR_SETTING, UseModalEditorMode } from '../../../services/editor/common/editorService.js';
-import { EditorPartModalContext, EditorPartModalMaximizedContext, EditorPartModalNavigationContext, EditorPartModalSidebarContext, EditorPartModalSidebarVisibleContext } from '../../../common/contextkeys.js';
+import { EditorPartModalContext, EditorPartModalFullscreenContext, EditorPartModalMaximizedContext, EditorPartModalNavigationContext, EditorPartModalSidebarContext, EditorPartModalSidebarVisibleContext } from '../../../common/contextkeys.js';
 import { EditorResourceAccessor, IEditorCommandsContext, SideBySideEditor, Verbosity } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { ResourceLabel } from '../../labels.js';
@@ -55,6 +55,26 @@ const MODAL_SIDEBAR_MIN_WIDTH = 160;
 const MODAL_SIDEBAR_DEFAULT_WIDTH = 260;
 const MODAL_SIDEBAR_PADDING = 8; // matches CSS padding on sidebar container
 const MODAL_SIDEBAR_BORDER_RIGHT = 1; // matches CSS border-right on sidebar container
+
+/**
+ * Presentation modes for the modal editor host.
+ */
+export const enum ModalEditorPresentation {
+	Modal,
+	Fullscreen,
+}
+
+/**
+ * Returns the minimum size constraint for a modal editor presentation.
+ */
+export function getModalEditorMinimumSize(presentation: ModalEditorPresentation, hasSidebar: boolean): Dimension {
+	if (presentation === ModalEditorPresentation.Fullscreen) {
+		return Dimension.None;
+	}
+
+	const effectiveMinWidth = MODAL_MIN_WIDTH + (hasSidebar ? MODAL_SIDEBAR_MIN_WIDTH : 0);
+	return new Dimension(effectiveMinWidth, MODAL_MIN_HEIGHT);
+}
 
 const defaultModalEditorAllowableCommands = new Set([
 
@@ -152,10 +172,17 @@ export class ModalEditorPart {
 	}
 
 	async create(options?: IModalEditorPartOptions): Promise<ICreateModalEditorPartResult> {
+		const presentation = options?.fullscreen === true ? ModalEditorPresentation.Fullscreen : ModalEditorPresentation.Modal;
+		const fullscreen = presentation === ModalEditorPresentation.Fullscreen;
+		if (fullscreen && (options?.maximized !== undefined || options?.size !== undefined || options?.position !== undefined || options?.sidebar !== undefined)) {
+			throw new Error(localize('fullscreenModalEditorIncompatibleOptions', "Fullscreen modal editors cannot use maximized, size, position, or sidebar options."));
+		}
+
 		const disposables = new DisposableStore();
 
 		// Modal container
 		const modalElement = $('.monaco-modal-editor-block');
+		modalElement.classList.toggle('fullscreen', fullscreen);
 		this.layoutService.mainContainer.appendChild(modalElement);
 		disposables.add(toDisposable(() => modalElement.remove()));
 
@@ -204,8 +231,7 @@ export class ModalEditorPart {
 		const resizableElement = new ResizableHTMLElement();
 		disposables.add(toDisposable(() => resizableElement.dispose()));
 		resizableElement.domNode.classList.add('modal-editor-resizable');
-		const effectiveMinWidth = MODAL_MIN_WIDTH + (options?.sidebar ? MODAL_SIDEBAR_MIN_WIDTH : 0);
-		resizableElement.minSize = new Dimension(effectiveMinWidth, MODAL_MIN_HEIGHT);
+		resizableElement.minSize = getModalEditorMinimumSize(presentation, !!options?.sidebar);
 		modalElement.appendChild(resizableElement.domNode);
 
 		const shadowElement = resizableElement.domNode.appendChild($('.modal-editor-shadow'));
@@ -215,8 +241,12 @@ export class ModalEditorPart {
 		const editorPartContainer = $('.part.editor.modal-editor-part', {
 			role: 'dialog',
 			'aria-modal': 'true',
-			'aria-labelledby': titleId,
 		});
+		if (fullscreen) {
+			editorPartContainer.setAttribute('aria-label', localize('fullscreenModalEditorLabel', "Fullscreen Editor"));
+		} else {
+			editorPartContainer.setAttribute('aria-labelledby', titleId);
+		}
 		shadowElement.appendChild(editorPartContainer);
 
 		// Header
@@ -435,13 +465,15 @@ export class ModalEditorPart {
 			const { width: modalWidth, height: modalHeight } = resizableElement.size;
 			const { top: topPx, left: leftPx } = resizableElement.domNode.style;
 			const sidebarWidth = sidebarResult?.getWidth() ?? 0;
-			const headerHeight = headerElement.offsetHeight;
+			const headerHeight = fullscreen ? 0 : headerElement.offsetHeight;
+			const borderSize = fullscreen ? 0 : MODAL_BORDER_SIZE;
+			const borderWidth = fullscreen ? 0 : MODAL_BORDER_WIDTH;
 
 			editorPart.layout(
-				Math.max(0, modalWidth - MODAL_BORDER_SIZE - sidebarWidth),
-				modalHeight - MODAL_BORDER_SIZE - headerHeight,
-				parseFloat(topPx) + MODAL_BORDER_WIDTH + headerHeight,
-				parseFloat(leftPx) + MODAL_BORDER_WIDTH + sidebarWidth,
+				Math.max(0, modalWidth - borderSize - sidebarWidth),
+				modalHeight - borderSize - headerHeight,
+				parseFloat(topPx) + borderWidth + headerHeight,
+				parseFloat(leftPx) + borderWidth + sidebarWidth,
 			);
 
 			if (sizeChanged) {
@@ -667,7 +699,10 @@ export class ModalEditorPart {
 			let width: number;
 			let height: number;
 
-			if (editorPart.maximized) {
+			if (fullscreen) {
+				width = containerDimension.width;
+				height = containerDimension.height;
+			} else if (editorPart.maximized) {
 				const verticalPadding = Math.max(titleBarOffset /* keep away from title bar to prevent clipping issues with WCO */, MODAL_MAXIMIZED_PADDING);
 				width = Math.max(containerDimension.width - MODAL_MAXIMIZED_PADDING, 0);
 				height = Math.max(availableHeight - verticalPadding, 0);
@@ -679,7 +714,9 @@ export class ModalEditorPart {
 				height = defaultSize.height;
 			}
 
-			height = Math.min(height, availableHeight); // Ensure the modal never exceeds available height (below the title bar)
+			if (!fullscreen) {
+				height = Math.min(height, availableHeight); // Ensure the modal never exceeds available height (below the title bar)
+			}
 
 			// On first layout, clamp sidebar width if it would leave the editor too narrow
 			if (isFirstLayout) {
@@ -688,16 +725,19 @@ export class ModalEditorPart {
 			}
 
 			// Update resizable element size and constraints
-			resizableElement.maxSize = new Dimension(containerDimension.width, availableHeight);
+			resizableElement.maxSize = new Dimension(containerDimension.width, fullscreen ? containerDimension.height : availableHeight);
 			resizableElement.preferredSize = defaultSize;
 			resizableElement.layout(height, width);
 
 			// Enable/disable sashes based on maximized state
-			const canResize = !editorPart.maximized;
+			const canResize = !fullscreen && !editorPart.maximized;
 			resizableElement.enableSashes(canResize, canResize, canResize, canResize);
 
 			// Position: use custom position if available (clamped to bounds), otherwise center
-			if (!editorPart.maximized && editorPart.position) {
+			if (fullscreen) {
+				resizableElement.domNode.style.left = '0';
+				resizableElement.domNode.style.top = '0';
+			} else if (!editorPart.maximized && editorPart.position) {
 				const clampedLeft = Math.max(0, Math.min(editorPart.position.left, containerDimension.width - width));
 				const clampedTop = Math.max(titleBarOffset, Math.min(editorPart.position.top, titleBarOffset + availableHeight - height));
 				resizableElement.domNode.style.left = `${clampedLeft}px`;
@@ -726,8 +766,10 @@ export class ModalEditorPart {
 		}));
 
 		// Dim window controls to match the modal overlay
-		this.hostService.setWindowDimmed(mainWindow, true);
-		disposables.add(toDisposable(() => this.hostService.setWindowDimmed(mainWindow, false)));
+		if (!fullscreen) {
+			this.hostService.setWindowDimmed(mainWindow, true);
+			disposables.add(toDisposable(() => this.hostService.setWindowDimmed(mainWindow, false)));
+		}
 
 		// Focus
 		editorPart.activeGroup.focus();
@@ -856,6 +898,7 @@ class ModalEditorPartImpl extends EditorPart implements IModalEditorPart {
 
 	private readonly _onDidChangeMaximized = this._register(new Emitter<boolean>());
 	readonly onDidChangeMaximized = this._onDidChangeMaximized.event;
+	readonly fullscreen: boolean;
 
 	private readonly _onDidRequestLayout = this._register(new Emitter<void>());
 	readonly onDidRequestLayout = this._onDidRequestLayout.event;
@@ -915,6 +958,7 @@ class ModalEditorPartImpl extends EditorPart implements IModalEditorPart {
 		const id = ModalEditorPartImpl.COUNTER++;
 		super(editorPartsView, `workbench.parts.modalEditor.${id}`, localize('modalEditorPart', "Modal Editor Area"), windowId, instantiationService, themeService, configurationService, storageService, layoutService, hostService, modalContextKeyService);
 
+		this.fullscreen = options?.fullscreen === true;
 		this._maximized = options?.maximized ?? false;
 		this._size = options?.size;
 		this._position = options?.position;
@@ -963,6 +1007,10 @@ class ModalEditorPartImpl extends EditorPart implements IModalEditorPart {
 	}
 
 	updateOptions(options?: IModalEditorPartOptions): void {
+		if (this.fullscreen !== (options?.fullscreen === true)) {
+			throw new Error(localize('fullscreenModalEditorExclusive', "A fullscreen modal editor cannot share its host with a regular modal editor."));
+		}
+
 		if (typeof options?.maximized === 'boolean' && options.maximized !== this._maximized) {
 			this.toggleMaximized();
 		}
@@ -973,6 +1021,10 @@ class ModalEditorPartImpl extends EditorPart implements IModalEditorPart {
 	}
 
 	toggleMaximized(): void {
+		if (this.fullscreen) {
+			return;
+		}
+
 		this._maximized = !this._maximized;
 
 		if (this._maximized) {
@@ -1019,6 +1071,9 @@ class ModalEditorPartImpl extends EditorPart implements IModalEditorPart {
 		// focus.
 		const isModalEditorPartContext = EditorPartModalContext.bindTo(this.modalContextKeyService);
 		isModalEditorPartContext.set(true);
+
+		const isFullscreenContext = EditorPartModalFullscreenContext.bindTo(this.modalContextKeyService);
+		isFullscreenContext.set(this.fullscreen);
 
 		const isMaximizedContext = EditorPartModalMaximizedContext.bindTo(this.modalContextKeyService);
 		isMaximizedContext.set(this._maximized);

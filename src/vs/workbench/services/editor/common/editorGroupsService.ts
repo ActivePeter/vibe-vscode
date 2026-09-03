@@ -535,6 +535,11 @@ export interface IModalEditorPart extends IEditorPart {
 	readonly modalElement: unknown /* HTMLElement */;
 
 	/**
+	 * Whether this modal editor part covers the complete workbench.
+	 */
+	readonly fullscreen: boolean;
+
+	/**
 	 * Whether the modal editor part is currently maximized.
 	 */
 	readonly maximized: boolean;
@@ -617,6 +622,11 @@ export interface IEditorWorkingSet {
 
 export interface IEditorWorkingSetOptions {
 	readonly preserveFocus?: boolean;
+	/**
+	 * Invoked after the complete working set has been validated and its editor inputs prepared, but
+	 * before any existing editor group is closed or disposed.
+	 */
+	readonly onWillApply?: () => void;
 }
 
 export interface IEditorGroupContextKeyProvider<T extends ContextKeyValue> {
@@ -696,6 +706,18 @@ export interface IEditorGroupsService extends IEditorGroupsContainer {
 	 * UI is scoped to that part.
 	 */
 	getScopedInstantiationService(part: IEditorPart): IInstantiationService;
+
+	/**
+	 * Serializes the currently opened editors and group layout into a portable working set.
+	 */
+	serializeWorkingSet(): string;
+
+	/**
+	 * Applies a working set previously returned by {@link serializeWorkingSet}.
+	 *
+	 * @returns `true` when the working set was applied.
+	 */
+	applySerializedWorkingSet(workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean>;
 
 	/**
 	 * Save a new editor working set from the currently opened

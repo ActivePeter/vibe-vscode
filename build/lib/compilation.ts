@@ -299,6 +299,9 @@ function generateApiProposalNames() {
 
 	const pattern = /vscode\.proposed\.([a-zA-Z\d]+)\.d\.ts$/;
 	const proposals = new Map<string, { proposal: string }>();
+	const proposalUrlOverrides = new Map<string, string>([
+		['vibeVscodeFullscreenPanel', 'https://raw.githubusercontent.com/ActivePeter/vibe-vscode/main/src/vscode-dts/vscode.proposed.vibeVscodeFullscreenPanel.d.ts'],
+	]);
 
 	const input = es.through();
 	const output = input
@@ -314,7 +317,8 @@ function generateApiProposalNames() {
 			const proposalName = match[1];
 
 			proposals.set(proposalName, {
-				proposal: `https://raw.githubusercontent.com/microsoft/vscode/main/src/vscode-dts/vscode.proposed.${proposalName}.d.ts`,
+				proposal: proposalUrlOverrides.get(proposalName)
+					?? `https://raw.githubusercontent.com/microsoft/vscode/main/src/vscode-dts/vscode.proposed.${proposalName}.d.ts`,
 			});
 		}, function () {
 			const names = [...proposals.keys()].sort();

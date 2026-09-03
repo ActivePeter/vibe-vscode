@@ -19,7 +19,7 @@ import { MultiWindowParts } from '../../part.js';
 import { DeferredPromise } from '../../../../base/common/async.js';
 import { IStorageService, IStorageValueChangeEvent, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { IAuxiliaryWindowOpenOptions, IAuxiliaryWindowService } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
+import { AuxiliaryWindowMode, IAuxiliaryWindowOpenOptions, IAuxiliaryWindowService } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { ContextKeyValue, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { getActiveElement, IDimension, isAncestor, isHTMLElement } from '../../../../base/browser/dom.js';
@@ -30,6 +30,9 @@ import { IStatusbarService } from '../../../services/statusbar/browser/statusbar
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IModalEditorPartOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorPartModalVisibleContext } from '../../../common/contextkeys.js';
+import { ISerializedNode, Orientation } from '../../../../base/browser/ui/grid/grid.js';
+import { clearPreparedSerializedEditorInput, ISerializedEditorGroupModel, ISerializedEditorInput, prepareSerializedEditorInput } from '../../../common/editor/editorGroupModel.js';
+import { EditorInput } from '../../../common/editor/editorInput.js';
 
 interface IEditorPartsUIState {
 	readonly auxiliary: IAuxiliaryEditorPartState[];
@@ -44,6 +47,197 @@ interface IAuxiliaryEditorPartState extends IAuxiliaryWindowOpenOptions {
 interface IEditorWorkingSetState extends IEditorWorkingSet {
 	readonly main: IEditorPartUIState;
 	readonly auxiliary: IEditorPartsUIState;
+}
+
+interface ISerializedEditorWorkingSetState {
+	readonly main: IEditorPartUIState;
+	readonly auxiliary: IEditorPartsUIState;
+}
+
+function isSerializedEditorWorkingSetState(candidate: unknown): candidate is ISerializedEditorWorkingSetState {
+	if (!isRecord(candidate)) {
+		return false;
+	}
+
+	const groupIds = new Set<number>();
+	return isEditorPartUIState(candidate.main, groupIds) && isEditorPartsUIState(candidate.auxiliary, groupIds);
+}
+
+function isEditorPartsUIState(candidate: unknown, groupIds: Set<number>): candidate is IEditorPartsUIState {
+	if (!isRecord(candidate) || !Array.isArray(candidate.auxiliary) || !Array.isArray(candidate.mru)) {
+		return false;
+	}
+
+	if (!isIndexPermutation(candidate.mru, candidate.auxiliary.length + 1)) {
+		return false;
+	}
+
+	return candidate.auxiliary.every(auxiliary => isAuxiliaryEditorPartState(auxiliary, groupIds));
+}
+
+function isAuxiliaryEditorPartState(candidate: unknown, groupIds: Set<number>): candidate is IAuxiliaryEditorPartState {
+	if (!isRecord(candidate) || !isEditorPartUIState(candidate.state, groupIds)) {
+		return false;
+	}
+
+	if (candidate.bounds !== undefined && !isAuxiliaryWindowBounds(candidate.bounds)) {
+		return false;
+	}
+
+	if (candidate.mode !== undefined && candidate.mode !== AuxiliaryWindowMode.Maximized && candidate.mode !== AuxiliaryWindowMode.Normal && candidate.mode !== AuxiliaryWindowMode.Fullscreen) {
+		return false;
+	}
+
+	if (candidate.zoomLevel !== undefined && !isFiniteNumber(candidate.zoomLevel)) {
+		return false;
+	}
+
+	if (candidate.backgroundColor !== undefined && typeof candidate.backgroundColor !== 'string') {
+		return false;
+	}
+
+	const booleanProperties = ['compact', 'alwaysOnTop', 'nativeTitlebar', 'disableFullscreen', 'frameless', 'transparent', 'notResizable', 'disableMaximize', 'noBackgroundThrottling'] as const;
+	return booleanProperties.every(property => candidate[property] === undefined || typeof candidate[property] === 'boolean');
+}
+
+function isAuxiliaryWindowBounds(candidate: unknown): boolean {
+	if (!isRecord(candidate)) {
+		return false;
+	}
+
+	for (const property of ['x', 'y', 'width', 'height'] as const) {
+		const value = candidate[property];
+		if (value !== undefined && (!isFiniteNumber(value) || ((property === 'width' || property === 'height') && value < 0))) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function isEditorPartUIState(candidate: unknown, allGroupIds: Set<number>): candidate is IEditorPartUIState {
+	if (!isRecord(candidate) || !isGroupIdentifier(candidate.activeGroup) || !Array.isArray(candidate.mostRecentActiveGroups)) {
+		return false;
+	}
+
+	const groupIds = new Set<number>();
+	if (!isSerializedEditorGrid(candidate.serializedGrid, groupIds) || !groupIds.has(candidate.activeGroup) || !hasSameIdentifiers(candidate.mostRecentActiveGroups, groupIds)) {
+		return false;
+	}
+
+	for (const groupId of groupIds) {
+		if (allGroupIds.has(groupId)) {
+			return false;
+		}
+	}
+	for (const groupId of groupIds) {
+		allGroupIds.add(groupId);
+	}
+
+	return true;
+}
+
+function isSerializedEditorGrid(candidate: unknown, groupIds: Set<number>): boolean {
+	if (!isRecord(candidate) || (candidate.orientation !== Orientation.HORIZONTAL && candidate.orientation !== Orientation.VERTICAL) || !isNonNegativeFiniteNumber(candidate.width) || !isNonNegativeFiniteNumber(candidate.height)) {
+		return false;
+	}
+
+	return isSerializedEditorGridNode(candidate.root, groupIds, true);
+}
+
+function isSerializedEditorGridNode(candidate: unknown, groupIds: Set<number>, root: boolean): boolean {
+	if (!isRecord(candidate) || !isNonNegativeFiniteNumber(candidate.size) || (candidate.visible !== undefined && typeof candidate.visible !== 'boolean')) {
+		return false;
+	}
+
+	if (candidate.type === 'branch') {
+		return Array.isArray(candidate.data) && candidate.data.length > 0 && candidate.data.every(child => isSerializedEditorGridNode(child, groupIds, false));
+	}
+
+	if (root || candidate.type !== 'leaf' || (candidate.maximized !== undefined && typeof candidate.maximized !== 'boolean') || !isSerializedEditorGroup(candidate.data)) {
+		return false;
+	}
+
+	const groupId = candidate.data.id;
+	if (groupIds.has(groupId)) {
+		return false;
+	}
+	groupIds.add(groupId);
+
+	return true;
+}
+
+function isSerializedEditorGroup(candidate: unknown): candidate is ISerializedEditorGroupModel {
+	if (!isRecord(candidate) || !isGroupIdentifier(candidate.id) || !Array.isArray(candidate.editors) || !Array.isArray(candidate.mru)) {
+		return false;
+	}
+
+	if (candidate.locked !== undefined && typeof candidate.locked !== 'boolean') {
+		return false;
+	}
+
+	if (!candidate.editors.every(editor => isRecord(editor) && typeof editor.id === 'string' && typeof editor.value === 'string')) {
+		return false;
+	}
+
+	if (!isIndexPermutation(candidate.mru, candidate.editors.length)) {
+		return false;
+	}
+
+	return (candidate.preview === undefined || isIndex(candidate.preview, candidate.editors.length)) &&
+		(candidate.sticky === undefined || isIndex(candidate.sticky, candidate.editors.length));
+}
+
+function hasSameIdentifiers(candidate: unknown[], identifiers: Set<number>): boolean {
+	if (candidate.length !== identifiers.size) {
+		return false;
+	}
+
+	const seen = new Set<number>();
+	for (const identifier of candidate) {
+		if (!isGroupIdentifier(identifier) || !identifiers.has(identifier) || seen.has(identifier)) {
+			return false;
+		}
+		seen.add(identifier);
+	}
+
+	return true;
+}
+
+function isIndexPermutation(candidate: unknown[], length: number): boolean {
+	return candidate.length === length && isIndexList(candidate, length);
+}
+
+function isIndexList(candidate: unknown[], length: number): boolean {
+	const seen = new Set<number>();
+	for (const index of candidate) {
+		if (!isIndex(index, length) || seen.has(index)) {
+			return false;
+		}
+		seen.add(index);
+	}
+
+	return true;
+}
+
+function isIndex(candidate: unknown, length: number): candidate is number {
+	return Number.isSafeInteger(candidate) && (candidate as number) >= 0 && (candidate as number) < length;
+}
+
+function isGroupIdentifier(candidate: unknown): candidate is number {
+	return Number.isSafeInteger(candidate) && (candidate as number) >= 0;
+}
+
+function isNonNegativeFiniteNumber(candidate: unknown): candidate is number {
+	return isFiniteNumber(candidate) && candidate >= 0;
+}
+
+function isFiniteNumber(candidate: unknown): candidate is number {
+	return typeof candidate === 'number' && Number.isFinite(candidate);
+}
+
+function isRecord(candidate: unknown): candidate is Record<string, unknown> {
+	return !!candidate && typeof candidate === 'object' && !Array.isArray(candidate);
 }
 
 interface IModalEditorPartState {
@@ -211,7 +405,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 			return part;
 		}
 
-		const createPromise = this.doCreateModalEditorPart(options).finally(() => {
+		const createPromise = Promise.resolve().then(() => this.doCreateModalEditorPart(options)).finally(() => {
 			this.modalEditorPartCreatePromise = undefined;
 		});
 		this.modalEditorPartCreatePromise = createPromise;
@@ -223,7 +417,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		this.modalEditorVisibleContext.set(true);
 		let result;
 		try {
-			result = await this.instantiationService.createInstance(ModalEditorPart, this).create({
+			const resolvedOptions: IModalEditorPartOptions = options?.fullscreen ? options : {
 				...options,
 				maximized: options?.maximized ?? this.modalEditorMaximized,
 				size: options?.size ?? this.modalEditorSize,
@@ -233,7 +427,8 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 					sidebarWidth: options.sidebar.sidebarWidth ?? this.modalEditorSidebarWidth,
 					sidebarHidden: options.sidebar.sidebarHidden ?? this.modalEditorSidebarHidden
 				} : undefined
-			});
+			};
+			result = await this.instantiationService.createInstance(ModalEditorPart, this).create(resolvedOptions);
 		} catch (error) {
 			this.modalEditorVisibleContext.set(false);
 			throw error;
@@ -246,12 +441,14 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 		// Remember state on dispose to restore when opening next time
 		disposables.add(toDisposable(() => {
-			this.modalEditorMaximized = part.maximized;
-			this.modalEditorSize = part.size;
-			this.modalEditorPosition = part.position;
-			if (part.hasSidebar) {
-				this.modalEditorSidebarWidth = part.sidebarWidth;
-				this.modalEditorSidebarHidden = part.sidebarHidden || undefined;
+			if (!part.fullscreen) {
+				this.modalEditorMaximized = part.maximized;
+				this.modalEditorSize = part.size;
+				this.modalEditorPosition = part.position;
+				if (part.hasSidebar) {
+					this.modalEditorSidebarWidth = part.sidebarWidth;
+					this.modalEditorSidebarHidden = part.sidebarHidden || undefined;
+				}
 			}
 
 			this.modalPartInstantiationService = undefined;
@@ -479,7 +676,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	private saveModalState(): void {
 
 		// Also capture state from any currently open modal editor part
-		if (this.modalEditorPart) {
+		if (this.modalEditorPart && !this.modalEditorPart.fullscreen) {
 			this.modalEditorMaximized = this.modalEditorPart.maximized;
 			this.modalEditorSize = this.modalEditorPart.size;
 			this.modalEditorPosition = this.modalEditorPart.position;
@@ -506,16 +703,25 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		}
 	}
 
+	private get auxiliaryEditorParts(): (EditorPart & IAuxiliaryEditorPart)[] {
+		return this.parts.filter((part): part is EditorPart & IAuxiliaryEditorPart => part !== this.mainPart && this.auxiliaryWindowService.getWindow(part.windowId) !== undefined);
+	}
+
+	private get stateParts(): EditorPart[] {
+		return [this.mainPart, ...this.auxiliaryEditorParts];
+	}
+
 	private createState(): IEditorPartsUIState {
+		const parts = this.stateParts;
 		return {
-			auxiliary: this.parts
+			auxiliary: parts
 				.map(part => ({ part, auxiliaryWindow: this.auxiliaryWindowService.getWindow(part.windowId) }))
 				.filter(({ auxiliaryWindow }) => auxiliaryWindow !== undefined)
 				.map(({ part, auxiliaryWindow }) => ({
 					state: part.createState(),
 					...auxiliaryWindow!.createState()
 				})),
-			mru: this.mostRecentActiveParts.map(part => this.parts.indexOf(part))
+			mru: this.mostRecentActiveParts.filter(part => parts.includes(part)).map(part => parts.indexOf(part))
 		};
 	}
 
@@ -531,20 +737,28 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 			// Await creation
 			await Promise.allSettled(auxiliaryEditorPartPromises);
 
-			// Update MRU list
-			if (state.mru.length === this.parts.length) {
-				this.mostRecentActiveParts = state.mru.map(index => this.parts[index]);
+			const parts = this.stateParts;
+			const ephemeralPart = this.mostRecentActiveParts.find(part => !parts.includes(part));
+			const ephemeralPartIndex = ephemeralPart ? this.mostRecentActiveParts.indexOf(ephemeralPart) : -1;
+
+			// Update MRU list while preserving the ephemeral modal part, which is not
+			// represented by persisted editor part state.
+			if (state.mru.length === parts.length) {
+				this.mostRecentActiveParts = state.mru.map(index => parts[index]);
 			} else {
-				this.mostRecentActiveParts = [...this.parts];
+				this.mostRecentActiveParts = [...parts];
+			}
+			if (ephemeralPart && ephemeralPartIndex !== -1) {
+				this.mostRecentActiveParts.splice(Math.min(ephemeralPartIndex, this.mostRecentActiveParts.length), 0, ephemeralPart);
 			}
 
 			// Await ready
-			await Promise.allSettled(this.parts.map(part => part.whenReady));
+			await Promise.allSettled(parts.map(part => part.whenReady));
 		}
 	}
 
 	get hasRestorableState(): boolean {
-		return this.parts.some(part => part.hasRestorableState);
+		return this.stateParts.some(part => part.hasRestorableState);
 	}
 
 	private onDidChangeMementoState(e: IStorageValueChangeEvent): void {
@@ -565,16 +779,12 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		// (for example when being dirty). This is to be able to have
 		// them merge into the main part.
 
-		for (const part of this.parts) {
-			if (part === this.mainPart) {
-				continue; // main part takes care on its own
-			}
-
+		for (const part of this.auxiliaryEditorParts) {
 			for (const group of part.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)) {
 				await group.closeAllEditors({ excludeConfirming: true, force: true });
 			}
 
-			const closed = (part as unknown as IAuxiliaryEditorPart).close(); // will move remaining editors to main part
+			const closed = part.close(); // will move remaining editors to main part
 			if (!closed) {
 				return false; // this indicates that closing was vetoed
 			}
@@ -595,6 +805,27 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	private static readonly EDITOR_WORKING_SETS_STORAGE_KEY = 'editor.workingSets';
 
 	private editorWorkingSets: IEditorWorkingSetState[];
+
+	serializeWorkingSet(): string {
+		return JSON.stringify({
+			main: this.mainPart.createState(),
+			auxiliary: this.createState(),
+		} satisfies ISerializedEditorWorkingSetState);
+	}
+
+	async applySerializedWorkingSet(serializedWorkingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> {
+		let workingSet: unknown;
+		try {
+			workingSet = JSON.parse(serializedWorkingSet);
+			if (!isSerializedEditorWorkingSetState(workingSet)) {
+				return false;
+			}
+		} catch {
+			return false;
+		}
+
+		return this.doApplyWorkingSet(workingSet, options);
+	}
 
 	saveWorkingSet(name: string): IEditorWorkingSet {
 		const workingSet: IEditorWorkingSetState = {
@@ -635,30 +866,95 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 			workingSetState = this.editorWorkingSets[this.indexOfWorkingSet(workingSet) ?? -1];
 		}
 
-		if (!workingSetState) {
+		if (!workingSetState || (workingSetState !== 'empty' && !isSerializedEditorWorkingSetState(workingSetState))) {
 			return false;
 		}
 
-		// Apply state: begin with auxiliary windows first because it helps to keep
-		// editors around that need confirmation by moving them into the main part.
-		// Also, in rare cases, the auxiliary part may not be able to apply the state
-		// for certain editors that cannot move to the main part.
-		const applied = await this.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.auxiliary);
-		if (!applied) {
+		return this.doApplyWorkingSet(workingSetState, options);
+	}
+
+	private async doApplyWorkingSet(workingSetState: ISerializedEditorWorkingSetState | 'empty', options?: IEditorWorkingSetOptions): Promise<boolean> {
+		const preparedInputs = workingSetState === 'empty' ? undefined : this.prepareWorkingSetEditorInputs(workingSetState);
+		if (preparedInputs === false) {
 			return false;
 		}
-		await this.mainPart.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.main, options);
 
-		// Restore Focus unless instructed otherwise
-		if (!options?.preserveFocus) {
-			const mostRecentActivePart = this.mostRecentActiveParts.at(0);
-			if (mostRecentActivePart) {
-				await mostRecentActivePart.whenReady;
-				mostRecentActivePart.activeGroup.focus();
+		try {
+			// Consumers that coordinate another projection may commit their preparation only after
+			// this working set is known to be safe to apply. From this point onward state application
+			// can close editors and dispose groups.
+			options?.onWillApply?.();
+
+			// Apply state: begin with auxiliary windows first because it helps to keep
+			// editors around that need confirmation by moving them into the main part.
+			// Also, in rare cases, the auxiliary part may not be able to apply the state
+			// for certain editors that cannot move to the main part.
+			const applied = await this.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.auxiliary);
+			if (!applied) {
+				return false;
+			}
+			await this.mainPart.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.main, options);
+
+			// Restore Focus unless instructed otherwise
+			if (!options?.preserveFocus) {
+				const mostRecentActivePart = this.mostRecentActiveParts.at(0);
+				if (mostRecentActivePart) {
+					await mostRecentActivePart.whenReady;
+					mostRecentActivePart.activeGroup.focus();
+				}
+			}
+
+			return true;
+		} finally {
+			if (preparedInputs) {
+				this.clearPreparedWorkingSetEditorInputs(preparedInputs);
 			}
 		}
+	}
 
-		return true;
+	private prepareWorkingSetEditorInputs(workingSetState: ISerializedEditorWorkingSetState): readonly ISerializedEditorInput[] | false {
+		const serializedInputs: ISerializedEditorInput[] = [];
+		const collect = (node: ISerializedNode): void => {
+			if (node.type === 'branch') {
+				for (const child of node.data) {
+					collect(child);
+				}
+			} else {
+				serializedInputs.push(...(node.data as ISerializedEditorGroupModel).editors);
+			}
+		};
+		collect(workingSetState.main.serializedGrid.root);
+		for (const auxiliary of workingSetState.auxiliary.auxiliary) {
+			collect(auxiliary.state.serializedGrid.root);
+		}
+
+		try {
+			for (const input of serializedInputs) {
+				const editor = prepareSerializedEditorInput(input, this.instantiationService);
+				if (editor && this.containsEditorInput(editor)) {
+					// Some serializers deliberately return a cached live input. Do not carry that
+					// object across close/dispose; deserialize it again after the old groups close.
+					clearPreparedSerializedEditorInput(input);
+				}
+			}
+			return serializedInputs;
+		} catch {
+			this.clearPreparedWorkingSetEditorInputs(serializedInputs);
+			return false;
+		}
+	}
+
+	private clearPreparedWorkingSetEditorInputs(serializedInputs: readonly ISerializedEditorInput[]): void {
+		for (const input of serializedInputs) {
+			const editor = clearPreparedSerializedEditorInput(input);
+			if (editor && !this.containsEditorInput(editor)) {
+				editor.dispose();
+			}
+		}
+	}
+
+	private containsEditorInput(editor: EditorInput): boolean {
+		return this.parts.some(part => part.getGroups(GroupsOrder.CREATION_TIME).some(group => group.contains(editor, { strictEquals: true })));
 	}
 
 	private indexOfWorkingSet(workingSet: IEditorWorkingSet): number | undefined {

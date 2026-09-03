@@ -1,0 +1,342 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+import assert from 'assert';
+import { URI } from '../../../../../base/common/uri.js';
+import { Event } from '../../../../../base/common/event.js';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { mock } from '../../../../../base/test/common/mock.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
+import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
+import { Registry } from '../../../../../platform/registry/common/platform.js';
+import { EditorExtensions, EditorsOrder, IEditorFactoryRegistry, IEditorSerializer } from '../../../../common/editor.js';
+import { EditorInput } from '../../../../common/editor/editorInput.js';
+import { FileEditorInput } from '../../../../contrib/files/browser/editors/fileEditorInput.js';
+import { FileEditorInputSerializer } from '../../../../contrib/files/browser/editors/fileEditorHandler.js';
+import { FILE_EDITOR_INPUT_ID } from '../../../../contrib/files/common/files.js';
+import { ITerminalInstance, ITerminalService } from '../../../../contrib/terminal/browser/terminal.js';
+import { TerminalEditorInput } from '../../../../contrib/terminal/browser/terminalEditorInput.js';
+import { TerminalInputSerializer } from '../../../../contrib/terminal/browser/terminalEditorSerializer.js';
+import { TerminalLocation, TitleEventSource } from '../../../../../platform/terminal/common/terminal.js';
+import { IAuxiliaryWindowService } from '../../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
+import { GroupDirection } from '../../../../services/editor/common/editorGroupsService.js';
+import { ITextEditorService } from '../../../../services/textfile/common/textEditorService.js';
+import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../workbenchTestServices.js';
+
+suite('Editor Parts', () => {
+
+	const disposables = new DisposableStore();
+	const testEditorId = 'workbench.test.editorParts';
+
+	teardown(() => disposables.clear());
+
+	function createInstantiationService() {
+		const instantiationService = workbenchInstantiationService(undefined, disposables);
+		instantiationService.stub(IAuxiliaryWindowService, {
+			_serviceBrand: undefined,
+			onDidOpenAuxiliaryWindow: Event.None,
+			open: async () => { throw new Error('Unexpected auxiliary window'); },
+			getWindow: () => undefined,
+		});
+
+		return instantiationService;
+	}
+
+	test('applies a serialized working set created by the editor parts', async () => {
+		const parts = await createEditorParts(createInstantiationService(), disposables);
+		let onWillApplyCount = 0;
+
+		assert.strictEqual(await parts.applySerializedWorkingSet(parts.serializeWorkingSet(), {
+			preserveFocus: true,
+			onWillApply: () => onWillApplyCount++,
+		}), true);
+		assert.strictEqual(onWillApplyCount, 1);
+	});
+
+	test('keeps existing editors when the pre-apply transaction hook rejects', async () => {
+		const instantiationService = createInstantiationService();
+		disposables.add(registerTestEditor(testEditorId, [new SyncDescriptor(TestFileEditorInput)], testEditorId));
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, disposables);
+		const editor = disposables.add(new TestFileEditorInput(URI.file('/pre-apply-rejection.txt'), testEditorId));
+		await parts.activeGroup.openEditor(editor, { pinned: true });
+		const group = parts.activeGroup;
+		const expectedError = new Error('pre-apply failed');
+
+		await assert.rejects(parts.applySerializedWorkingSet(parts.serializeWorkingSet(), {
+			preserveFocus: true,
+			onWillApply: () => { throw expectedError; },
+		}), error => error === expectedError);
+
+		assert.deepStrictEqual({
+			groupPreserved: parts.groups.includes(group),
+			editorPreserved: group.contains(editor),
+			activeEditorPreserved: group.activeEditor === editor,
+		}, {
+			groupPreserved: true,
+			editorPreserved: true,
+			activeEditorPreserved: true,
+		});
+	});
+
+	test('keeps modal editors outside serialized working set state and apply', async () => {
+		const instantiationService = createInstantiationService();
+		disposables.add(registerTestEditor(testEditorId, [new SyncDescriptor(TestFileEditorInput)], testEditorId));
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, disposables);
+		const mainEditor = disposables.add(new TestFileEditorInput(URI.file('/main-working-set.txt'), testEditorId));
+		await parts.activeGroup.openEditor(mainEditor, { pinned: true });
+		const workingSet = parts.serializeWorkingSet();
+
+		const modalPart = await parts.createModalEditorPart({ fullscreen: true });
+		const modalEditor = disposables.add(new TestFileEditorInput(URI.file('/modal-editor.txt'), testEditorId));
+		await modalPart.activeGroup.openEditor(modalEditor, { pinned: true });
+		modalPart.activeGroup.focus();
+		const serializedWithModal = JSON.parse(parts.serializeWorkingSet()) as { auxiliary: { mru: number[] } };
+
+		const applied = await parts.applySerializedWorkingSet(workingSet, { preserveFocus: true });
+		const restoredMainEditor = parts.mainPart.activeGroup.activeEditor;
+		if (restoredMainEditor && restoredMainEditor !== mainEditor) {
+			disposables.add(restoredMainEditor);
+		}
+
+		assert.deepStrictEqual({
+			mru: serializedWithModal.auxiliary.mru,
+			applied,
+			modalPartPreserved: parts.activeModalEditorPart === modalPart,
+			modalEditorPreserved: modalPart.activeGroup.contains(modalEditor),
+			mainEditorPreserved: parts.mainPart.activeGroup.contains(mainEditor),
+		}, {
+			mru: [0],
+			applied: true,
+			modalPartPreserved: true,
+			modalEditorPreserved: true,
+			mainEditorPreserved: true,
+		});
+
+		await modalPart.close();
+	});
+
+	test('does not reuse a live cached file input across working set disposal', async () => {
+		const instantiationService = createInstantiationService();
+		disposables.add(Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(FILE_EDITOR_INPUT_ID, FileEditorInputSerializer));
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, disposables);
+		const resource = URI.file('/cached-working-set.txt');
+		const input = disposables.add(instantiationService.invokeFunction(accessor => accessor.get(ITextEditorService).createTextEditor({ resource, forceFile: true })) as FileEditorInput);
+		await parts.activeGroup.openEditor(input, { pinned: true });
+		const workingSet = parts.serializeWorkingSet();
+
+		const applied = await parts.applySerializedWorkingSet(workingSet, { preserveFocus: true });
+		const restoredInput = parts.activeGroup.activeEditor;
+		if (restoredInput && restoredInput !== input) {
+			disposables.add(restoredInput);
+		}
+
+		assert.deepStrictEqual({
+			applied,
+			type: restoredInput?.typeId,
+			resource: restoredInput?.resource?.toString(),
+			disposed: restoredInput?.isDisposed(),
+		}, {
+			applied: true,
+			type: FILE_EDITOR_INPUT_ID,
+			resource: resource.toString(),
+			disposed: false,
+		});
+	});
+
+	test('reuses a distinct matching input prepared before working set disposal', async () => {
+		const editorId = 'workbench.test.editorParts.preparedInput';
+		const instantiationService = createInstantiationService();
+		disposables.add(registerTestEditor(editorId, [new SyncDescriptor(TestFileEditorInput)]));
+		const deserializedInputs: TestFileEditorInput[] = [];
+		class MatchingInputSerializer implements IEditorSerializer {
+			canSerialize(): boolean { return true; }
+			serialize(editor: EditorInput): string { return editor.resource!.toString(); }
+			deserialize(_instantiationService: IInstantiationService, value: string): EditorInput {
+				const input = disposables.add(new TestFileEditorInput(URI.parse(value), editorId));
+				deserializedInputs.push(input);
+				return input;
+			}
+		}
+		disposables.add(Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(editorId, MatchingInputSerializer));
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, disposables);
+		const originalInput = disposables.add(new TestFileEditorInput(URI.file('/prepared-input.txt'), editorId));
+		await parts.activeGroup.openEditor(originalInput, { pinned: true });
+
+		assert.strictEqual(await parts.applySerializedWorkingSet(parts.serializeWorkingSet(), { preserveFocus: true }), true);
+		assert.deepStrictEqual({
+			deserializationCount: deserializedInputs.length,
+			restoredPreparedInput: parts.activeGroup.activeEditor === deserializedInputs[0],
+		}, {
+			deserializationCount: 1,
+			restoredPreparedInput: true,
+		});
+	});
+
+	test('restores a retained Terminal editor once in its serialized group', async () => {
+		const instantiationService = createInstantiationService();
+		const resource = URI.parse('vscode-terminal://physical/1');
+		const instance = {
+			instanceId: 1,
+			persistentProcessId: 17,
+			processId: 42,
+			remoteAuthority: 'test-remote',
+			target: TerminalLocation.Editor,
+			resource,
+			shouldPersist: true,
+			title: 'Terminal',
+			titleSource: TitleEventSource.Process,
+			icon: undefined,
+			color: undefined,
+			hasChildProcesses: false,
+			shellIntegrationNonce: '',
+			shellLaunchConfig: { logicalWorkspaceId: 'workspace', logicalTerminalId: 'terminal' },
+			onDidFocus: Event.None,
+			onDidBlur: Event.None,
+			onExit: Event.None,
+			onDisposed: Event.None,
+			onTitleChanged: Event.None,
+			onIconChanged: Event.None,
+			statusList: { onDidChangePrimaryStatus: Event.None } as ITerminalInstance['statusList'],
+			setParentContextKeyService: () => { },
+			detachFromElement: () => { },
+			dispose: () => { },
+		} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+		let adoptedInputs = 0;
+		const terminalService = new class extends mock<ITerminalService>() {
+			override reviveTerminalEditorInput(): TerminalEditorInput {
+				adoptedInputs++;
+				return disposables.add(instantiationService.createInstance(TerminalEditorInput, resource, instance));
+			}
+		};
+		class TestTerminalInputSerializer extends TerminalInputSerializer {
+			constructor() {
+				super(terminalService);
+			}
+		}
+		disposables.add(Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(TerminalEditorInput.ID, TestTerminalInputSerializer));
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, disposables);
+		const terminalGroup = parts.addGroup(parts.activeGroup, GroupDirection.RIGHT);
+		const originalInput = disposables.add(instantiationService.createInstance(TerminalEditorInput, resource, instance));
+		await terminalGroup.openEditor(originalInput, { pinned: true });
+		const terminalGroupId = terminalGroup.id;
+		const workingSet = parts.serializeWorkingSet();
+		type SerializedNode = { type: 'branch'; data: SerializedNode[] } | { type: 'leaf'; data: { editors: { id: string; value: string }[] } };
+		const corruptTerminalPayload = (node: SerializedNode, property: string): boolean => {
+			if (node.type === 'branch') {
+				return node.data.some(child => corruptTerminalPayload(child, property));
+			}
+			const serializedEditor = node.data.editors.find(editor => editor.id === TerminalEditorInput.ID);
+			if (!serializedEditor) {
+				return false;
+			}
+			const payload = JSON.parse(serializedEditor.value) as Record<string, unknown>;
+			delete payload[property];
+			serializedEditor.value = JSON.stringify(payload);
+			return true;
+		};
+		for (const property of ['title', 'titleSource', 'cwd', 'shellIntegrationNonce']) {
+			const malformedWorkingSet = JSON.parse(workingSet) as { main: { serializedGrid: { root: SerializedNode } } };
+			assert.strictEqual(corruptTerminalPayload(malformedWorkingSet.main.serializedGrid.root, property), true);
+			assert.strictEqual(await parts.applySerializedWorkingSet(JSON.stringify(malformedWorkingSet), { preserveFocus: true }), false);
+			assert.strictEqual(parts.groups.find(group => group.id === terminalGroupId)?.contains(originalInput), true);
+			assert.strictEqual(adoptedInputs, 0);
+		}
+		originalInput.detachInstance();
+
+		const applied = await parts.applySerializedWorkingSet(workingSet, { preserveFocus: true });
+		const restoredGroup = parts.groups.find(group => group.id === terminalGroupId);
+
+		assert.deepStrictEqual({
+			applied,
+			adoptedInputs,
+			restoredGroupId: restoredGroup?.id,
+			restoredTerminalCount: restoredGroup?.getEditors(EditorsOrder.SEQUENTIAL).filter(editor => editor instanceof TerminalEditorInput).length,
+		}, {
+			applied: true,
+			adoptedInputs: 1,
+			restoredGroupId: terminalGroupId,
+			restoredTerminalCount: 1,
+		});
+	});
+
+	test('rejects malformed serialized working sets without changing existing editors', async () => {
+		const instantiationService = createInstantiationService();
+		disposables.add(registerTestEditor(testEditorId, [new SyncDescriptor(TestFileEditorInput)], testEditorId));
+		disposables.add(Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(FILE_EDITOR_INPUT_ID, FileEditorInputSerializer));
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, disposables);
+		const editor = disposables.add(new TestFileEditorInput(URI.file('/working-set.txt'), testEditorId));
+		await parts.activeGroup.openEditor(editor, { pinned: true });
+
+		const workingSet = JSON.parse(parts.serializeWorkingSet()) as { readonly main: Record<string, unknown>; readonly auxiliary: Record<string, unknown> };
+		type SerializedGroup = { editors: { id: string; value: string }[]; mru: number[] };
+		type SerializedNode = { type: 'branch'; data: SerializedNode[] } | { type: 'leaf'; data: SerializedGroup };
+		type MutableWorkingSet = { main: { serializedGrid: { root: SerializedNode } }; auxiliary: Record<string, unknown> };
+		const mutateFirstGroup = (node: SerializedNode, mutate: (group: SerializedGroup) => void): boolean => {
+			if (node.type === 'branch') {
+				return node.data.some(child => mutateFirstGroup(child, mutate));
+			}
+			mutate(node.data);
+			return true;
+		};
+		const malformedEditorPayload = JSON.parse(JSON.stringify(workingSet)) as MutableWorkingSet;
+		assert.strictEqual(mutateFirstGroup(malformedEditorPayload.main.serializedGrid.root, group => group.editors[0].value = '{'), true);
+		const incompleteGroupMru = JSON.parse(JSON.stringify(workingSet)) as MutableWorkingSet;
+		assert.strictEqual(mutateFirstGroup(incompleteGroupMru.main.serializedGrid.root, group => group.mru = []), true);
+		const malformedUriComponents = JSON.parse(JSON.stringify(workingSet)) as MutableWorkingSet;
+		assert.strictEqual(mutateFirstGroup(malformedUriComponents.main.serializedGrid.root, group => group.editors[0] = {
+			id: FILE_EDITOR_INPUT_ID,
+			value: JSON.stringify({ resourceJSON: {} }),
+		}), true);
+		const invalidUri = JSON.parse(JSON.stringify(workingSet)) as MutableWorkingSet;
+		assert.strictEqual(mutateFirstGroup(invalidUri.main.serializedGrid.root, group => group.editors[0] = {
+			id: FILE_EDITOR_INPUT_ID,
+			value: JSON.stringify({ resourceJSON: { scheme: '' } }),
+		}), true);
+		const malformedWorkingSets = [
+			{ ...workingSet, main: { ...workingSet.main, serializedGrid: {} } },
+			{ ...workingSet, main: { ...workingSet.main, mostRecentActiveGroups: 'invalid' } },
+			{ ...workingSet, auxiliary: { ...workingSet.auxiliary, mru: [0, 0] } },
+			{ ...workingSet, auxiliary: { auxiliary: [{ state: {} }], mru: [0, 1] } },
+			malformedEditorPayload,
+			incompleteGroupMru,
+			malformedUriComponents,
+			invalidUri,
+		];
+
+		const results = [];
+		let onWillApplyCount = 0;
+		for (const malformedWorkingSet of malformedWorkingSets) {
+			results.push({
+				applied: await parts.applySerializedWorkingSet(JSON.stringify(malformedWorkingSet), {
+					preserveFocus: true,
+					onWillApply: () => onWillApplyCount++,
+				}),
+				groupCount: parts.groups.length,
+				editorCount: parts.activeGroup.count,
+				containsEditor: parts.activeGroup.contains(editor),
+				activeEditorUnchanged: parts.activeGroup.activeEditor === editor,
+				onWillApplyCount,
+			});
+		}
+
+		assert.deepStrictEqual(results, malformedWorkingSets.map(() => ({
+			applied: false,
+			groupCount: 1,
+			editorCount: 1,
+			containsEditor: true,
+			activeEditorUnchanged: true,
+			onWillApplyCount: 0,
+		})));
+	});
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+});

@@ -4,25 +4,29 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { spawn } from 'child_process';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import * as assert from 'assert';
 import { McpStdioStateHandler } from '../../node/mcpStdioStateHandler.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 
 const GRACE_TIME = 100;
+const READY_MARKER = '__mcp_stdio_test_ready__';
 
 suite('McpStdioStateHandler', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function run(code: string) {
-		const child = spawn('node', ['-e', code], {
+		const child = spawn('node', ['-e', `${code}\nprocess.stdout.write(${JSON.stringify(`${READY_MARKER}\n`)});`], {
 			stdio: 'pipe',
 			env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
 		});
+		const ready = new DeferredPromise<void>();
 
 		return {
 			child,
 			handler: store.add(new McpStdioStateHandler(child, GRACE_TIME)),
+			ready: ready.p,
 			processId: new Promise<number>((resolve) => {
 				child.on('spawn', () => resolve(child.pid!));
 			}),
@@ -33,9 +37,20 @@ suite('McpStdioStateHandler', () => {
 				});
 				child.stdout.setEncoding('utf-8').on('data', (data) => {
 					output += data.toString();
+					if (!ready.isSettled && output.includes(READY_MARKER)) {
+						ready.complete();
+					}
 				});
-				child.on('error', reject);
-				child.on('close', () => resolve(output));
+				child.on('error', error => {
+					ready.error(error);
+					reject(error);
+				});
+				child.on('close', () => {
+					if (!ready.isSettled) {
+						ready.error(new Error('MCP test process exited before reporting ready'));
+					}
+					resolve(output.replace(`${READY_MARKER}\n`, ''));
+				});
 			}),
 		};
 	}
@@ -76,7 +91,7 @@ suite('McpStdioStateHandler', () => {
 	}
 
 	test('sigkill after grace', async () => {
-		const { handler, output } = run(`
+		const { handler, output, ready } = run(`
 			setInterval(() => {}, 1000);
 			process.stdin.on('end', () => process.stdout.write('stdin ended\\n'));
 			process.stdin.resume();
@@ -85,6 +100,7 @@ suite('McpStdioStateHandler', () => {
 			});
 		`);
 
+		await ready;
 		const before = Date.now();
 		handler.stop();
 		const result = await output;

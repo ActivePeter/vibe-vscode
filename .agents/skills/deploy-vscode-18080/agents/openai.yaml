@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy Vibe VS Code 18080"
+  short_description: "Rebuild and restart the latest 18080 service"
+  default_prompt: "Use $deploy-vscode-18080 to rebuild and restart the latest Vibe VS Code service."

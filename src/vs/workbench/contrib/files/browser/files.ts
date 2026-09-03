@@ -18,11 +18,31 @@ import { createDecorator, ServicesAccessor } from '../../../../platform/instanti
 import { ResourceFileEdit } from '../../../../editor/browser/services/bulkEditService.js';
 import { ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { isActiveElement } from '../../../../base/browser/dom.js';
+import { WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
+
+/**
+ * Derives the Explorer tree input from the roots currently projected into the view.
+ */
+export function getExplorerTreeInput(roots: readonly ExplorerItem[], workbenchState: WorkbenchState): ExplorerItem | ExplorerItem[] {
+	if (workbenchState === WorkbenchState.FOLDER && roots.length === 1 && !roots[0].error) {
+		return roots[0];
+	}
+
+	return [...roots];
+}
 
 export interface IExplorerService {
 	readonly _serviceBrand: undefined;
 	readonly roots: ExplorerItem[];
+	/** Roots currently projected into the Explorer tree. */
+	readonly visibleRoots: ExplorerItem[];
 	readonly sortOrderConfiguration: ISortOrderConfiguration;
+
+	/**
+	 * Restricts the Explorer to the workspace root matching the resource.
+	 * Passing undefined restores the complete workspace root set.
+	 */
+	setActiveRoot(resource: URI | undefined): Promise<void>;
 
 	getContext(respectMultiSelection: boolean, ignoreNestedChildren?: boolean): ExplorerItem[];
 	hasViewFocus(): boolean;
@@ -31,8 +51,14 @@ export interface IExplorerService {
 	getEditableData(stat: ExplorerItem): IEditableData | undefined;
 	// If undefined is passed checks if any element is currently being edited.
 	isEditable(stat: ExplorerItem | undefined): boolean;
+	/** Finds an item in the complete, window-wide Explorer model. */
 	findClosest(resource: URI): ExplorerItem | null;
+	/** Finds a root in the complete, window-wide Explorer model. */
 	findClosestRoot(resource: URI): ExplorerItem | null;
+	/** Finds an item only within the roots projected into the current Explorer view. */
+	findClosestVisible(resource: URI): ExplorerItem | null;
+	/** Finds a root only within the roots projected into the current Explorer view. */
+	findClosestVisibleRoot(resource: URI): ExplorerItem | null;
 	refresh(): Promise<void>;
 	setToCopy(stats: ExplorerItem[], cut: boolean): Promise<void>;
 	isCut(stat: ExplorerItem): boolean;
@@ -63,6 +89,7 @@ export interface IExplorerView {
 	refresh(recursive: boolean, item?: ExplorerItem, cancelEditing?: boolean): Promise<void>;
 	selectResource(resource: URI | undefined, reveal?: boolean | string, retry?: number): Promise<void>;
 	setTreeInput(): Promise<void>;
+	closeFind(): Promise<void>;
 	itemsCopied(tats: ExplorerItem[], cut: boolean, previousCut: ExplorerItem[] | undefined): void;
 	setEditable(stat: ExplorerItem, isEditing: boolean): Promise<void>;
 	isItemVisible(item: ExplorerItem): boolean;

@@ -43,6 +43,8 @@ export class ExplorerService implements IExplorerService {
 	private view: IExplorerView | undefined;
 	private decorationsProviderRegistered = false;
 	private model: ExplorerModel;
+	private activeRoot: URI | undefined;
+	private activeRootProjectionValid = true;
 	private onFileChangesScheduler: RunOnceScheduler;
 	private fileChangeEvents: FileChangesEvent[] = [];
 	private revealExcludeMatcher: ResourceGlobMatcher;
@@ -88,7 +90,7 @@ export class ExplorerService implements IExplorerService {
 			events.forEach(e => {
 				if (!shouldRefresh) {
 					for (const resource of e.rawAdded) {
-						const parent = this.model.findClosest(dirname(resource));
+						const parent = this.findClosest(dirname(resource));
 						// Parent of the added resource is resolved and the explorer model is not aware of the added resource - we need to refresh
 						if (parent && !parent.getChild(basename(resource))) {
 							shouldRefresh = true;
@@ -150,6 +152,36 @@ export class ExplorerService implements IExplorerService {
 		return this.model.roots;
 	}
 
+	get visibleRoots(): ExplorerItem[] {
+		if (!this.activeRoot) {
+			return this.model.roots;
+		}
+
+		const activeRoot = this.model.roots.find(root => this.uriIdentityService.extUri.isEqual(root.resource, this.activeRoot));
+		return activeRoot ? [activeRoot] : [];
+	}
+
+	async setActiveRoot(resource: URI | undefined): Promise<void> {
+		const sameTarget = (!this.activeRoot && !resource) || (this.activeRoot && resource && this.uriIdentityService.extUri.isEqual(this.activeRoot, resource));
+		if (sameTarget && this.activeRootProjectionValid) {
+			return;
+		}
+
+		if (!sameTarget) {
+			this.activeRoot = resource;
+			this.activeRootProjectionValid = false;
+		}
+		const requestedRoot = resource;
+		try {
+			await this.view?.closeFind();
+		} finally {
+			await this.view?.setTreeInput();
+			if ((!this.activeRoot && !requestedRoot) || (this.activeRoot && requestedRoot && this.uriIdentityService.extUri.isEqual(this.activeRoot, requestedRoot))) {
+				this.activeRootProjectionValid = true;
+			}
+		}
+	}
+
 	get sortOrderConfiguration(): ISortOrderConfiguration {
 		return {
 			sortOrder: this.config.sortOrder,
@@ -181,7 +213,8 @@ export class ExplorerService implements IExplorerService {
 			return [];
 		}
 
-		const items = new Set<ExplorerItem>(this.view.getContext(respectMultiSelection));
+		const visibleRoots = new Set(this.visibleRoots);
+		const items = new Set<ExplorerItem>(this.view.getContext(respectMultiSelection).filter(item => visibleRoots.has(item.root)));
 		items.forEach(item => {
 			try {
 				if (respectMultiSelection && !ignoreNestedChildren && this.view?.isItemCollapsed(item) && item.nestedChildren) {
@@ -247,6 +280,16 @@ export class ExplorerService implements IExplorerService {
 		return parentRoots.length ? parentRoots[0] : null;
 	}
 
+	findClosestVisible(resource: URI): ExplorerItem | null {
+		return this.findClosestVisibleRoot(resource)?.find(resource) ?? null;
+	}
+
+	findClosestVisibleRoot(resource: URI): ExplorerItem | null {
+		const parentRoots = this.visibleRoots.filter(root => this.uriIdentityService.extUri.isEqualOrParent(resource, root.resource))
+			.sort((first, second) => second.resource.path.length - first.resource.path.length);
+		return parentRoots.length ? parentRoots[0] : null;
+	}
+
 	async setEditable(stat: ExplorerItem, data: IEditableData | null): Promise<void> {
 		if (!this.view) {
 			return;
@@ -301,8 +344,12 @@ export class ExplorerService implements IExplorerService {
 
 		// If file or parent matches exclude patterns, do not reveal unless reveal argument is 'force'
 		const ignoreRevealExcludes = reveal === 'force';
+		const root = this.findClosestVisibleRoot(resource);
+		if (!root) {
+			return;
+		}
 
-		const fileStat = this.findClosest(resource);
+		const fileStat = root.find(resource);
 		if (fileStat) {
 			if (!this.shouldAutoRevealItem(fileStat, ignoreRevealExcludes)) {
 				return;
@@ -313,10 +360,6 @@ export class ExplorerService implements IExplorerService {
 
 		// Stat needs to be resolved first and then revealed
 		const options: IResolveFileOptions = { resolveTo: [resource], resolveMetadata: this.config.sortOrder === SortOrder.Modified };
-		const root = this.findClosestRoot(resource);
-		if (!root) {
-			return undefined;
-		}
 
 		try {
 			const stat = await this.fileService.resolve(root.resource, options);

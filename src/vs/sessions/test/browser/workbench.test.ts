@@ -4,6 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { DeferredPromise, timeout } from '../../../base/common/async.js';
+import { errorHandler, setUnexpectedErrorHandler } from '../../../base/common/errors.js';
+import { DisposableStore, IDisposable } from '../../../base/common/lifecycle.js';
 import { SashState } from '../../../base/browser/ui/sash/sash.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import { Part } from '../../../workbench/browser/part.js';
@@ -16,6 +19,9 @@ import { DockedEditorInput } from '../../common/dockedEditorInput.js';
 import { EditorInputCapabilities } from '../../../workbench/common/editor.js';
 import { SESSIONS_LIST_MINIMUM_WIDTH } from '../../browser/parts/sidebarPart.js';
 import { Menus } from '../../browser/menus.js';
+import { ServiceIdentifier, ServicesAccessor } from '../../../platform/instantiation/common/instantiation.js';
+import { ILogicalWorkspaceEditorProjectionService } from '../../../workbench/services/logicalWorkspace/common/logicalWorkspace.js';
+import { ILifecycleService, LifecyclePhase } from '../../../workbench/services/lifecycle/common/lifecycle.js';
 
 interface IViewSize { width: number; height: number }
 
@@ -23,6 +29,15 @@ interface IViewSize { width: number; height: number }
 class TestDockedEditorInput extends DockedEditorInput {
 	override get typeId(): string { return 'test.dockedEditor'; }
 	override get resource(): undefined { return undefined; }
+}
+
+interface IRestoreTestHarness {
+	readonly logicalWorkspaceEditorProjectionService: Pick<ILogicalWorkspaceEditorProjectionService, 'whenReady'>;
+	readonly sessionsService: { restoreVisibleSessions(): Promise<void> };
+	readonly logService: { error(message: string | Error, ...args: unknown[]): void };
+	restoreParts(): void;
+	setRestored(): void;
+	_register<T extends IDisposable>(disposable: T): T;
 }
 
 suite('Sessions - Workbench', () => {
@@ -69,6 +84,100 @@ suite('Sessions - Workbench', () => {
 	const restoreEditorPartOnActivation = Reflect.get(Workbench.prototype, '_restoreEditorPartOnActivation') as (this: ITestWorkbench) => void;
 	const layoutSinglePaneGrid = Reflect.get(SinglePaneWorkbench.prototype, '_layoutGrid') as (this: IContainerResizeTestHarness) => void;
 	const preserveSessionsEditorRatio = Reflect.get(SinglePaneWorkbench.prototype, '_preserveSessionsEditorRatio') as (this: IProportionalResizeTestHarness, previousSessionsWidth: number, previousEditorWidth: number) => void;
+	const initLayout = Workbench.prototype.initLayout as (this: Record<string, unknown>, accessor: ServicesAccessor) => void;
+	const restore = Reflect.get(Workbench.prototype, 'restore') as (this: IRestoreTestHarness, lifecycleService: ILifecycleService) => Promise<void>;
+
+	test('starts the Logical Workspace projection stack during layout initialization', () => {
+		const stopAfterProjection = new Error('projection requested');
+		let projectionRequested = false;
+		const accessor = {
+			get<T>(serviceId: ServiceIdentifier<T>): T {
+				if (projectionRequested) {
+					throw stopAfterProjection;
+				}
+				if (serviceId === ILogicalWorkspaceEditorProjectionService) {
+					projectionRequested = true;
+				}
+				return {} as T;
+			},
+		} satisfies ServicesAccessor;
+
+		assert.throws(() => initLayout.call({}, accessor), /projection requested/);
+		assert.strictEqual(projectionRequested, true);
+	});
+
+	test('waits for the Logical Workspace editor projection before completing restore', async () => {
+		const readiness = new DeferredPromise<void>();
+		const registrations = new DisposableStore();
+		const events: string[] = [];
+		const lifecycleService = { phase: LifecyclePhase.Ready } as ILifecycleService;
+		const expectedError = new Error('projection failed');
+		performance.mark('code/didLoadWorkbenchMain');
+		const harness: IRestoreTestHarness = {
+			logicalWorkspaceEditorProjectionService: { whenReady: readiness.p },
+			sessionsService: { restoreVisibleSessions: async () => { events.push('sessions'); } },
+			logService: { error: (_message, error) => events.push(error === expectedError ? 'projection-error' : 'unexpected-error') },
+			restoreParts: () => events.push('parts'),
+			setRestored: () => events.push('restored'),
+			_register: disposable => registrations.add(disposable),
+		};
+
+		try {
+			const restoration = restore.call(harness, lifecycleService);
+			await timeout(0);
+			const beforeReadiness = { events: [...events], phase: lifecycleService.phase };
+			await readiness.error(expectedError);
+			await restoration;
+
+			assert.deepStrictEqual({
+				beforeReadiness,
+				afterReadiness: { events, phase: lifecycleService.phase },
+			}, {
+				beforeReadiness: { events: ['parts'], phase: LifecyclePhase.Ready },
+				afterReadiness: { events: ['parts', 'projection-error', 'sessions', 'restored'], phase: LifecyclePhase.Restored },
+			});
+		} finally {
+			registrations.dispose();
+			performance.clearMarks('code/didLoadWorkbenchMain');
+			performance.clearMarks('code/didStartWorkbench');
+			performance.clearMeasures('perf: workbench create & restore');
+		}
+	});
+
+	test('continues to the Restored phase when restoring a part fails', async () => {
+		const registrations = new DisposableStore();
+		const events: string[] = [];
+		const lifecycleService = { phase: LifecyclePhase.Ready } as ILifecycleService;
+		const expectedError = new Error('part restore failed');
+		const previousUnexpectedErrorHandler = errorHandler.getUnexpectedErrorHandler();
+		setUnexpectedErrorHandler(error => events.push(error === expectedError ? 'part-error' : 'unexpected-error'));
+		performance.mark('code/didLoadWorkbenchMain');
+		const harness: IRestoreTestHarness = {
+			logicalWorkspaceEditorProjectionService: { whenReady: Promise.resolve() },
+			sessionsService: { restoreVisibleSessions: async () => { events.push('sessions'); } },
+			logService: { error: () => events.push('log-error') },
+			restoreParts: () => {
+				events.push('parts');
+				throw expectedError;
+			},
+			setRestored: () => events.push('restored'),
+			_register: disposable => registrations.add(disposable),
+		};
+
+		try {
+			await restore.call(harness, lifecycleService);
+			assert.deepStrictEqual({ events, phase: lifecycleService.phase }, {
+				events: ['parts', 'part-error', 'sessions', 'restored'],
+				phase: LifecyclePhase.Restored,
+			});
+		} finally {
+			setUnexpectedErrorHandler(previousUnexpectedErrorHandler);
+			registrations.dispose();
+			performance.clearMarks('code/didLoadWorkbenchMain');
+			performance.clearMarks('code/didStartWorkbench');
+			performance.clearMeasures('perf: workbench create & restore');
+		}
+	});
 
 	// --- Harness ------------------------------------------------------------
 

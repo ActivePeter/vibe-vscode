@@ -51,6 +51,7 @@ import { ITelemetryService } from '../../platform/telemetry/common/telemetry.js'
 import { IAuxiliaryWindowService } from '../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { CodeWindow, mainWindow } from '../../base/browser/window.js';
 import { localize } from '../../nls.js';
+import { ILogicalWorkspaceEditorProjectionService } from '../services/logicalWorkspace/common/logicalWorkspace.js';
 
 //#region Layout Implementation
 
@@ -308,6 +309,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 	private logService!: ILogService;
 	private telemetryService!: ITelemetryService;
 	private auxiliaryWindowService!: IAuxiliaryWindowService;
+	private logicalWorkspaceEditorProjectionService!: ILogicalWorkspaceEditorProjectionService;
 
 	private state!: ILayoutState;
 	private stateModel!: LayoutStateModel;
@@ -334,6 +336,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		this.logService = accessor.get(ILogService);
 		this.telemetryService = accessor.get(ITelemetryService);
 		this.auxiliaryWindowService = accessor.get(IAuxiliaryWindowService);
+		this.logicalWorkspaceEditorProjectionService = accessor.get(ILogicalWorkspaceEditorProjectionService);
 
 		// Parts
 		this.editorService = accessor.get(IEditorService);
@@ -1003,6 +1006,11 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 			// first ensure the editor part is ready
 			await this.editorGroupService.whenReady;
+			try {
+				await this.logicalWorkspaceEditorProjectionService.whenReady;
+			} catch (error) {
+				this.logService.error('[Workbench] Logical Workspace editor projection failed during restore', error);
+			}
 			mark('code/restoreEditors/editorGroupsReady');
 
 			// apply editor layout if any

@@ -14,7 +14,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { IKeyMods } from '../../../../platform/quickinput/common/quickInput.js';
 import { IMarkProperties, ITerminalCapabilityImplMap, ITerminalCapabilityStore, ITerminalCommand, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IMergedEnvironmentVariableCollection } from '../../../../platform/terminal/common/environmentVariable.js';
-import { IExtensionTerminalProfile, IReconnectionProperties, IShellIntegration, IShellLaunchConfig, ITerminalBackend, ITerminalDimensions, ITerminalLaunchError, ITerminalProfile, ITerminalTabLayoutInfoById, TerminalExitReason, TerminalIcon, TerminalLocation, TerminalShellType, TerminalType, TitleEventSource, WaitOnExitValue, type IDecorationAddon, type ShellIntegrationInjectionFailureReason } from '../../../../platform/terminal/common/terminal.js';
+import { IExtensionTerminalProfile, IReconnectionProperties, IShellIntegration, IShellLaunchConfig, ITerminalBackend, ITerminalCreationContext, ITerminalDimensions, ITerminalLaunchError, ITerminalProfile, ITerminalTabLayoutInfoById, TerminalExitReason, TerminalIcon, TerminalLocation, TerminalShellType, TerminalType, TitleEventSource, WaitOnExitValue, type IDecorationAddon, type ShellIntegrationInjectionFailureReason } from '../../../../platform/terminal/common/terminal.js';
 import { IColorTheme } from '../../../../platform/theme/common/themeService.js';
 import { IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
@@ -414,7 +414,7 @@ export interface ITerminalGroup {
 	layout(width: number, height: number): void;
 	addDisposable(disposable: IDisposable): void;
 	split(shellLaunchConfig: IShellLaunchConfig): ITerminalInstance;
-	getLayoutInfo(isActive: boolean): ITerminalTabLayoutInfoById;
+	getLayoutInfo(isActive: boolean, instanceFilter?: (instance: ITerminalInstance) => boolean): ITerminalTabLayoutInfoById;
 }
 
 export const enum TerminalConnectionState {
@@ -585,11 +585,15 @@ export interface ITerminalService extends ITerminalInstanceHost {
 	getActiveOrCreateInstance(options?: { acceptsInput?: boolean }): Promise<ITerminalInstance>;
 	revealTerminal(source: ITerminalInstance, preserveFocus?: boolean): Promise<void>;
 	/**
+	 * Restores a background terminal to its foreground host. The returned promise resolves only
+	 * after an editor terminal has finished opening in the editor service.
 	 * @param instance
 	 * @param suppressSetActive Do not set the active instance when there is only one terminal
 	 * @param forceSaveState Used when the window is shutting down and we need to reveal and save hideFromUser terminals
 	 */
 	showBackgroundTerminal(instance: ITerminalInstance, suppressSetActive?: boolean): Promise<void>;
+	/** Reuses an already revived background/editor instance when restoring a Terminal editor tab. */
+	reviveTerminalEditorInput(input: IDeserializedTerminalEditorInput): EditorInput | undefined;
 	/**
 	 * Moves a visible terminal instance to the background. The terminal process
 	 * remains alive but the instance is removed from its group/editor and tracked
@@ -597,8 +601,8 @@ export interface ITerminalService extends ITerminalInstanceHost {
 	 */
 	moveToBackground(instance: ITerminalInstance): void;
 	revealActiveTerminal(preserveFocus?: boolean): Promise<void>;
-	moveToEditor(source: ITerminalInstance, group?: GroupIdentifier | SIDE_GROUP_TYPE | ACTIVE_GROUP_TYPE | AUX_WINDOW_GROUP_TYPE): void;
-	moveIntoNewEditor(source: ITerminalInstance): void;
+	moveToEditor(source: ITerminalInstance, group?: GroupIdentifier | SIDE_GROUP_TYPE | ACTIVE_GROUP_TYPE | AUX_WINDOW_GROUP_TYPE): Promise<void>;
+	moveIntoNewEditor(source: ITerminalInstance): Promise<void>;
 	moveToTerminalView(source: ITerminalInstance | URI): Promise<void>;
 	getPrimaryBackend(): ITerminalBackend | undefined;
 	setNextCommandId(id: number, commandLine: string, commandId: string): Promise<void>;
@@ -710,6 +714,10 @@ export const terminalEditorId = 'terminalEditor';
 
 interface ITerminalEditorInputObject {
 	readonly id: number;
+	readonly logicalWorkspaceId?: string;
+	readonly logicalTerminalId?: string;
+	/** `null` identifies the local backend; `undefined` is the legacy pre-namespace payload. */
+	readonly remoteAuthority?: string | null;
 	readonly pid: number;
 	readonly title: string;
 	readonly titleSource: TitleEventSource;
@@ -758,6 +766,9 @@ export interface ICreateTerminalOptions {
 	 * when the workbench is not yet loaded.
 	 */
 	skipContributedProfileCheck?: boolean;
+
+	/** Immutable identity forwarded by a delegated terminal creation operation. @internal */
+	creationContext?: ITerminalCreationContext;
 }
 
 export interface TerminalEditorLocation {

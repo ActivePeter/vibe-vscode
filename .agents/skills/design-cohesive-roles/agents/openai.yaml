@@ -1,0 +1,4 @@
+interface:
+  display_name: "高内聚、低耦合 Role 设计"
+  short_description: "以唯一 owner、明确契约和 Mermaid 流程图设计高内聚、低耦合的角色边界"
+  default_prompt: "Use $design-cohesive-roles to split these responsibilities into cohesive roles with explicit contracts and a Mermaid interaction diagram."

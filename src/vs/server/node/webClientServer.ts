@@ -26,6 +26,7 @@ import { IProductConfiguration } from '../../base/common/product.js';
 import { isString, Mutable } from '../../base/common/types.js';
 import { CharCode } from '../../base/common/charCode.js';
 import { IExtensionManifest } from '../../platform/extensions/common/extensions.js';
+import { ITranslations, localizeManifest } from '../../platform/extensionManagement/common/extensionNls.js';
 import { ICSSDevelopmentService } from '../../platform/cssDev/node/cssDevService.js';
 
 const textMimeType: { [ext: string]: string | undefined } = {
@@ -113,6 +114,41 @@ const APP_ROOT = dirname(FileAccess.asFileUri('').fsPath);
 const STATIC_PATH = `/static`;
 const CALLBACK_PATH = `/callback`;
 const WEB_EXTENSION_PATH = `/web-extension-resource`;
+const VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH = 'vibe-vscode';
+
+/** Returns package NLS bundles from the most specific safe locale to the default bundle. */
+export function getBuiltinExtensionPackageNLSCandidates(locale: string): readonly string[] {
+	const requestedLocale = locale.split(';', 1)[0].trim().toLowerCase();
+	const normalizedLocale = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(requestedLocale) ? requestedLocale : 'en';
+	const localeCandidates: string[] = [];
+	for (let candidate = normalizedLocale; candidate && candidate !== 'en' && !candidate.startsWith('en-');) {
+		localeCandidates.push(`package.nls.${candidate}.json`);
+		const separator = candidate.lastIndexOf('-');
+		candidate = separator === -1 ? '' : candidate.substring(0, separator);
+	}
+	localeCandidates.push('package.nls.json');
+	return localeCandidates;
+}
+
+/** Returns the public HTTP scheme supplied by a trusted reverse proxy. */
+export function getWebClientResourceScheme(forwardedProto: string | undefined): 'http' | 'https' {
+	const publicScheme = forwardedProto?.split(',', 1)[0].trim().toLowerCase();
+	return publicScheme === Schemas.https ? Schemas.https : Schemas.http;
+}
+
+async function readBuiltinExtensionPackageNLS(extensionPath: string, locale: string): Promise<ITranslations> {
+	for (const candidate of getBuiltinExtensionPackageNLSCandidates(locale)) {
+		try {
+			const resource = FileAccess.asFileUri(`${builtinExtensionsPath}/${extensionPath}/${candidate}`).fsPath;
+			return JSON.parse((await promises.readFile(resource)).toString());
+		} catch (error) {
+			if (error.code !== 'ENOENT') {
+				throw error;
+			}
+		}
+	}
+	return {};
+}
 
 export class WebClientServer {
 
@@ -326,7 +362,7 @@ export class WebClientServer {
 		}
 
 		if (this._logService.getLevel() === LogLevel.Trace) {
-			['x-original-host', 'x-forwarded-host', 'x-forwarded-port', 'host'].forEach(header => {
+			['x-original-host', 'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-proto', 'host'].forEach(header => {
 				const value = getFirstHeader(header);
 				if (value) {
 					this._logService.trace(`[WebClientServer] ${header}: ${value}`);
@@ -355,7 +391,7 @@ export class WebClientServer {
 			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
 				...this._productService.extensionsGallery,
 				resourceUrlTemplate: this._webExtensionResourceUrlTemplate.with({
-					scheme: 'http',
+					scheme: getWebClientResourceScheme(getFirstHeader('x-forwarded-proto')),
 					authority: remoteAuthority,
 					path: `${webExtensionRoute}/${this._webExtensionResourceUrlTemplate.authority}${this._webExtensionResourceUrlTemplate.path}`
 				}).toString(true)
@@ -412,9 +448,15 @@ export class WebClientServer {
 			values['WORKBENCH_DEV_CSS_MODULES'] = JSON.stringify(cssModules);
 		}
 
-		if (useTestResolver) {
-			const bundledExtensions: { extensionPath: string; packageJSON: IExtensionManifest }[] = [];
-			for (const extensionPath of ['vscode-test-resolver', 'github-authentication']) {
+		if (!this._environmentService.isBuilt) {
+			const vibeVscodePackageJSON: IExtensionManifest = JSON.parse((await promises.readFile(FileAccess.asFileUri(`${builtinExtensionsPath}/${VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH}/package.json`).fsPath)).toString());
+			const vibeVscodeDefaultPackageNLS = await readBuiltinExtensionPackageNLS(VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH, 'en');
+			const vibeVscodeLocalizedPackageNLS = await readBuiltinExtensionPackageNLS(VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH, locale);
+			const bundledExtensions: { extensionPath: string; packageJSON: IExtensionManifest; packageNLS?: Record<string, string> }[] = [{
+				extensionPath: VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH,
+				packageJSON: localizeManifest(this._logService, vibeVscodePackageJSON, vibeVscodeLocalizedPackageNLS, vibeVscodeDefaultPackageNLS),
+			}];
+			for (const extensionPath of useTestResolver ? ['vscode-test-resolver', 'github-authentication'] : []) {
 				const packageJSON = JSON.parse((await promises.readFile(FileAccess.asFileUri(`${builtinExtensionsPath}/${extensionPath}/package.json`).fsPath)).toString());
 				bundledExtensions.push({ extensionPath, packageJSON });
 			}

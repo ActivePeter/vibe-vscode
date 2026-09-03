@@ -167,6 +167,9 @@ import { LabelService } from '../../services/label/common/labelService.js';
 import { ILanguageDetectionService } from '../../services/languageDetection/common/languageDetectionWorkerService.js';
 import { IPartVisibilityChangeEvent, IWorkbenchLayoutService, PanelAlignment, Position as PartPosition, Parts, SINGLE_WINDOW_PARTS } from '../../services/layout/browser/layoutService.js';
 import { ILifecycleService, InternalBeforeShutdownEvent, IWillShutdownEventJoiner, ShutdownReason, WillShutdownEvent } from '../../services/lifecycle/common/lifecycle.js';
+import { LogicalWorkspaceService } from '../../services/logicalWorkspace/browser/logicalWorkspaceService.js';
+import { ILogicalWorkspaceStateStore, LogicalWorkspaceStateStore } from '../../services/logicalWorkspace/browser/logicalWorkspaceStateStore.js';
+import { ILogicalWorkspaceService } from '../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { IPaneCompositePartService } from '../../services/panecomposite/browser/panecomposite.js';
 import { IPathService } from '../../services/path/common/pathService.js';
 import { QuickInputService } from '../../services/quickinput/browser/quickInputService.js';
@@ -296,11 +299,14 @@ export function workbenchInstantiationService(
 		}
 	});
 	instantiationService.stub(IConfigurationService, configService);
+	instantiationService.stub(IStorageService, disposables.add(new TestStorageService()));
+	instantiationService.stub(IRemoteAgentService, new TestRemoteAgentService());
+	const logicalWorkspaceStateStore = disposables.add(instantiationService.createInstance(LogicalWorkspaceStateStore));
+	instantiationService.stub(ILogicalWorkspaceStateStore, logicalWorkspaceStateStore);
+	instantiationService.stub(ILogicalWorkspaceService, disposables.add(instantiationService.createInstance(LogicalWorkspaceService)));
 	const textResourceConfigurationService = new TestTextResourceConfigurationService(configService);
 	instantiationService.stub(ITextResourceConfigurationService, textResourceConfigurationService);
 	instantiationService.stub(IUntitledTextEditorService, disposables.add(instantiationService.createInstance(UntitledTextEditorService)));
-	instantiationService.stub(IStorageService, disposables.add(new TestStorageService()));
-	instantiationService.stub(IRemoteAgentService, new TestRemoteAgentService());
 	instantiationService.stub(ILanguageDetectionService, new TestLanguageDetectionService());
 	instantiationService.stub(IPathService, overrides?.pathService ? overrides.pathService(instantiationService) : new TestPathService());
 	const layoutService = new TestLayoutService();
@@ -901,6 +907,8 @@ export class TestEditorGroupsService implements IEditorGroupsService {
 	get count(): number { return this.groups.length; }
 
 	getPart(group: number | IEditorGroup): IEditorPart { return this; }
+	serializeWorkingSet(): string { throw new Error('Method not implemented.'); }
+	applySerializedWorkingSet(workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> { throw new Error('Method not implemented.'); }
 	saveWorkingSet(name: string): IEditorWorkingSet { throw new Error('Method not implemented.'); }
 	getWorkingSets(): IEditorWorkingSet[] { throw new Error('Method not implemented.'); }
 	applyWorkingSet(workingSet: IEditorWorkingSet | 'empty', options?: IEditorWorkingSetOptions): Promise<boolean> { throw new Error('Method not implemented.'); }
@@ -1694,6 +1702,8 @@ export class TestEditorPart extends MainEditorPart implements IEditorGroupsServi
 
 	getPart(group: number | IEditorGroup): IEditorPart { return this; }
 
+	serializeWorkingSet(): string { throw new Error('Method not implemented.'); }
+	applySerializedWorkingSet(workingSet: string, options?: IEditorWorkingSetOptions): Promise<boolean> { throw new Error('Method not implemented.'); }
 	saveWorkingSet(name: string): IEditorWorkingSet { throw new Error('Method not implemented.'); }
 	getWorkingSets(): IEditorWorkingSet[] { throw new Error('Method not implemented.'); }
 	applyWorkingSet(workingSet: IEditorWorkingSet | 'empty', options?: IEditorWorkingSetOptions): Promise<boolean> { throw new Error('Method not implemented.'); }

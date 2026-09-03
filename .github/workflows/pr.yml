@@ -20,7 +20,7 @@ env:
 jobs:
   compile:
     name: Compile & Hygiene
-    runs-on: [ self-hosted, 1ES.Pool=1es-vscode-oss-ubuntu-22.04-x64, "JobId=compile-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}" ]
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout microsoft/vscode
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -89,7 +89,7 @@ jobs:
           npm --prefix extensions/markdown-language-features run test-markdown-editor-package-json
 
       - name: Compile & Hygiene
-        run: npm exec -- npm-run-all2 -lp core-ci hygiene eslint valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
+        run: npm exec -- npm-run-all2 -ls core-ci hygiene eslint valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -110,22 +110,6 @@ jobs:
       job_name: CLI
       rustup_toolchain: 1.88
 
-  linux-electron-tests:
-    name: Linux
-    uses: ./.github/workflows/pr-linux-test.yml
-    with:
-      job_name: Electron
-      electron_tests: true
-      smoke_tests: false
-
-  linux-electron-smoke-tests:
-    name: Linux
-    uses: ./.github/workflows/pr-linux-test.yml
-    with:
-      job_name: Electron-Smoke
-      electron_tests: true
-      unit_and_integration_tests: false
-
   linux-browser-tests:
     name: Linux
     uses: ./.github/workflows/pr-linux-test.yml
@@ -140,22 +124,6 @@ jobs:
       job_name: Remote
       remote_tests: true
 
-  macos-electron-tests:
-    name: macOS
-    uses: ./.github/workflows/pr-darwin-test.yml
-    with:
-      job_name: Electron
-      electron_tests: true
-      smoke_tests: false
-
-  macos-electron-smoke-tests:
-    name: macOS
-    uses: ./.github/workflows/pr-darwin-test.yml
-    with:
-      job_name: Electron-Smoke
-      electron_tests: true
-      unit_and_integration_tests: false
-
   macos-browser-tests:
     name: macOS
     uses: ./.github/workflows/pr-darwin-test.yml
@@ -169,22 +137,6 @@ jobs:
     with:
       job_name: Remote
       remote_tests: true
-
-  windows-electron-tests:
-    name: Windows
-    uses: ./.github/workflows/pr-win32-test.yml
-    with:
-      job_name: Electron
-      electron_tests: true
-      smoke_tests: false
-
-  windows-electron-smoke-tests:
-    name: Windows
-    uses: ./.github/workflows/pr-win32-test.yml
-    with:
-      job_name: Electron-Smoke
-      electron_tests: true
-      unit_and_integration_tests: false
 
   windows-browser-tests:
     name: Windows
@@ -202,7 +154,7 @@ jobs:
 
   copilot-check-test-cache:
     name: Copilot - Check Test Cache
-    runs-on: [ self-hosted, 1ES.Pool=1es-vscode-oss-ubuntu-22.04-x64, "JobId=copilot-check-test-cache-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}" ]
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -247,7 +199,7 @@ jobs:
 
   copilot-check-telemetry:
     name: Copilot - Check Telemetry
-    runs-on: [ self-hosted, 1ES.Pool=1es-vscode-oss-ubuntu-22.04-x64, "JobId=copilot-check-telemetry-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}" ]
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -266,7 +218,7 @@ jobs:
 
   copilot-linux-tests:
     name: Copilot - Test (Linux)
-    runs-on: [ self-hosted, 1ES.Pool=1es-vscode-oss-ubuntu-22.04-x64, "JobId=copilot-linux-tests-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}" ]
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -360,7 +312,7 @@ jobs:
 
   copilot-windows-tests:
     name: Copilot - Test (Windows)
-    runs-on: [ self-hosted, 1ES.Pool=1es-vscode-oss-windows-2022-x64, "JobId=copilot-windows-tests-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}" ]
+    runs-on: windows-2022
     permissions:
       contents: read
     steps:

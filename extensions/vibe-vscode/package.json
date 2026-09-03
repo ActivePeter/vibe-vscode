@@ -1,0 +1,54 @@
+{
+  "name": "project-switcher",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "0.0.1",
+  "publisher": "vibe-vscode",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.134.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "browser": "./dist/browser/extension.js",
+  "l10n": "./l10n",
+  "extensionKind": [
+    "ui"
+  ],
+  "enabledApiProposals": [
+    "vibeVscodeFullscreenPanel"
+  ],
+  "activationEvents": [
+    "onCommand:vibe-vscode.openFullscreenPanel",
+    "onCommand:vibe-vscode.closeFullscreenPanel"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": true,
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "vibe-vscode.openFullscreenPanel",
+        "title": "%command.openFullscreenPanel%",
+        "category": "vibe vscode"
+      },
+      {
+        "command": "vibe-vscode.closeFullscreenPanel",
+        "title": "%command.closeFullscreenPanel%",
+        "category": "vibe vscode"
+      }
+    ]
+  },
+  "scripts": {
+    "compile-web": "npm-run-all2 -lp bundle-web typecheck-web",
+    "bundle-web": "node ./esbuild.browser.mts",
+    "typecheck-web": "node ../../node_modules/@typescript/native/lib/tsc.js --project ./tsconfig.browser.json --noEmit",
+    "watch-web": "npm-run-all2 -lp watch-bundle-web watch-typecheck-web",
+    "watch-bundle-web": "node ./esbuild.browser.mts --watch",
+    "watch-typecheck-web": "node ../../node_modules/@typescript/native/lib/tsc.js --project ./tsconfig.browser.json --noEmit --watch"
+  }
+}

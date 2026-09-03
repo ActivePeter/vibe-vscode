@@ -83,6 +83,56 @@ suite('Modal Editor Group', () => {
 		await modalPart.close();
 	});
 
+	test('fullscreen modal editor part is exclusive', async () => {
+		const instantiationService = workbenchInstantiationService({ contextKeyService: instantiationService => instantiationService.createInstance(MockScopableContextKeyService) }, disposables);
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, disposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+
+		const modalPart = await parts.createModalEditorPart({ fullscreen: true });
+
+		assert.strictEqual(modalPart.fullscreen, true);
+		assert.strictEqual((modalPart.modalElement as HTMLElement).classList.contains('fullscreen'), true);
+		await assert.rejects(() => parts.createModalEditorPart());
+
+		await modalPart.close();
+	});
+
+	test('fullscreen modal editor does not overwrite remembered modal state', async () => {
+		const instantiationService = workbenchInstantiationService({ contextKeyService: instantiationService => instantiationService.createInstance(MockScopableContextKeyService) }, disposables);
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, disposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+
+		await (await parts.createModalEditorPart({ maximized: true })).close();
+		await (await parts.createModalEditorPart({ fullscreen: true })).close();
+		const restoredModalPart = await parts.createModalEditorPart();
+
+		assert.strictEqual(restoredModalPart.maximized, true);
+
+		await restoredModalPart.close();
+	});
+
+	test('fullscreen modal editor opens when regular modal editors are disabled', async () => {
+		const instantiationService = workbenchInstantiationService({ contextKeyService: instantiationService => instantiationService.createInstance(MockScopableContextKeyService) }, disposables);
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const configurationService = new TestConfigurationService();
+		await configurationService.setUserConfiguration('workbench.editor.useModal', 'off');
+		instantiationService.stub(IConfigurationService, configurationService);
+		const parts = await createEditorParts(instantiationService, disposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		const editorService = disposables.add(instantiationService.createInstance(EditorService, undefined));
+		instantiationService.stub(IEditorService, editorService);
+		const input = createTestFileEditorInput(URI.file('foo/bar'), TEST_EDITOR_INPUT_ID);
+
+		const pane = await editorService.openEditor(input, { pinned: true, modal: { fullscreen: true } }, MODAL_GROUP);
+
+		assert.strictEqual(pane?.group.id, parts.activeModalEditorPart?.activeGroup.id);
+		assert.strictEqual(parts.activeModalEditorPart?.fullscreen, true);
+
+		await parts.activeModalEditorPart?.close();
+	});
+
 	test('modal editor part can open editors', async () => {
 		const instantiationService = workbenchInstantiationService({ contextKeyService: instantiationService => instantiationService.createInstance(MockScopableContextKeyService) }, disposables);
 		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));

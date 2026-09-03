@@ -1,0 +1,4 @@
+interface:
+  display_name: "高内聚、低耦合文档写作"
+  short_description: "集中技术文档的概念归属，并用 Mermaid 统一表达流程、分支和生命周期"
+  default_prompt: "Use $write-cohesive-docs to centralize each concept and express process flows with Mermaid without duplicating explanations."

@@ -23,6 +23,7 @@ import { runWithFakedTimers } from '../../../../../../base/test/common/timeTrave
 import { Codicon } from '../../../../../../base/common/codicons.js';
 import { MenuId } from '../../../../../../platform/actions/common/actions.js';
 import { ILifecycleService } from '../../../../../services/lifecycle/common/lifecycle.js';
+import { ILogicalWorkspaceService, LogicalWorkspaceActivationActor } from '../../../../../services/logicalWorkspace/common/logicalWorkspace.js';
 import { TestInstantiationService } from '../../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../../platform/storage/common/storage.js';
 import { AgentSessionProviders, getAgentCanContinueIn, getAgentSessionProvider, getAgentSessionProviderIcon, getAgentSessionProviderName } from '../../../browser/agentSessions/agentSessions.js';
@@ -358,6 +359,29 @@ suite('AgentSessions', () => {
 				await sessionsChangedPromise;
 
 				assert.strictEqual(viewModel.sessions.length, 1);
+			});
+		});
+
+		test('should keep the session catalog global across Logical Workspace switches', async () => {
+			return runWithFakedTimers({}, async () => {
+				const session = makeSimpleSessionItem('global-session');
+				const controller = new StaticChatSessionItemController([session]);
+				mockChatSessionsService.registerChatSessionItemController(chatSessionTestType, controller);
+				viewModel = createViewModel();
+				await viewModel.resolve(chatSessionTestType);
+
+				const logicalWorkspaceService = instantiationService.get(ILogicalWorkspaceService);
+				await logicalWorkspaceService.whenReady;
+				const secondWorkspace = await logicalWorkspaceService.createWorkspace('Second');
+				logicalWorkspaceService.activateWorkspace(secondWorkspace.id, LogicalWorkspaceActivationActor.Picker);
+
+				assert.deepStrictEqual({
+					activeWorkspaceId: logicalWorkspaceService.activeWorkspace.id,
+					sessions: viewModel.sessions.map(session => session.resource.toString()),
+				}, {
+					activeWorkspaceId: secondWorkspace.id,
+					sessions: [session.resource.toString()],
+				});
 			});
 		});
 

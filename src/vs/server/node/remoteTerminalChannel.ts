@@ -192,6 +192,8 @@ export class RemoteTerminalChannel extends Disposable implements IServerChannel<
 
 	private async _createProcess(uriTransformer: IURITransformer, args: ICreateTerminalProcessArguments): Promise<ICreateTerminalProcessResult> {
 		const shellLaunchConfig: IShellLaunchConfig = {
+			logicalWorkspaceId: args.shellLaunchConfig.logicalWorkspaceId,
+			logicalTerminalId: args.shellLaunchConfig.logicalTerminalId,
 			name: args.shellLaunchConfig.name,
 			executable: args.shellLaunchConfig.executable,
 			args: args.shellLaunchConfig.args,

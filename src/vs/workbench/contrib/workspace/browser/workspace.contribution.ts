@@ -49,6 +49,11 @@ import { securityConfigurationNodeBase } from '../../../common/configuration.js'
 import { basename, dirname as uriDirname } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import './logicalWorkspace.contribution.js';
+import './logicalWorkspaceEditorAdapter.js';
+import './logicalWorkspaceTerminalAdapter.js';
+import { LogicalWorkspaceLayoutAdapter } from './logicalWorkspaceLayoutAdapter.js';
+import { WorkspaceProjectStatusbar } from './workspaceProjectStatusbar.js';
 
 const BANNER_RESTRICTED_MODE = 'workbench.banner.restrictedMode';
 const STARTUP_PROMPT_SHOWN_KEY = 'workspace.trust.startupPrompt.shown';
@@ -704,6 +709,8 @@ export class WorkspaceTrustUXHandler extends Disposable implements IWorkbenchCon
 
 registerWorkbenchContribution2(WorkspaceTrustRequestHandler.ID, WorkspaceTrustRequestHandler, WorkbenchPhase.BlockRestore);
 Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(WorkspaceTrustUXHandler, LifecyclePhase.Restored);
+registerWorkbenchContribution2(WorkspaceProjectStatusbar.ID, WorkspaceProjectStatusbar, WorkbenchPhase.BlockRestore);
+registerWorkbenchContribution2(LogicalWorkspaceLayoutAdapter.ID, LogicalWorkspaceLayoutAdapter, WorkbenchPhase.AfterRestored);
 
 
 /**

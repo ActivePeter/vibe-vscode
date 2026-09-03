@@ -642,6 +642,8 @@ export class PtyService extends Disposable implements IPtyService {
 		const [cwd, isOrphan] = await Promise.all([persistentProcess.getCwd(), wasRevived ? true : persistentProcess.isOrphaned()]);
 		const result = {
 			id,
+			logicalWorkspaceId: persistentProcess.shellLaunchConfig.logicalWorkspaceId,
+			logicalTerminalId: persistentProcess.shellLaunchConfig.logicalTerminalId,
 			title: persistentProcess.title,
 			titleSource: persistentProcess.titleSource,
 			pid: persistentProcess.pid,
@@ -832,7 +834,7 @@ class PersistentTerminalProcess extends Disposable {
 	}
 
 	async detach(forcePersist?: boolean): Promise<void> {
-		// Keep the process around if it was indicated to persist and it has had some iteraction or
+		// Keep the process around if it was indicated to persist and it has had some interaction or
 		// was replayed
 		if (this.shouldPersistTerminal && (this._interactionState.value !== InteractionState.None || forcePersist)) {
 			this._disconnectRunner1.schedule();
@@ -852,6 +854,14 @@ class PersistentTerminalProcess extends Disposable {
 	async updateProperty<T extends ProcessPropertyType>(type: T, value: IProcessPropertyMap[T]): Promise<void> {
 		if (type === ProcessPropertyType.FixedDimensions) {
 			return this._setFixedDimensions(value as IProcessPropertyMap[ProcessPropertyType.FixedDimensions]);
+		}
+		if (type === ProcessPropertyType.LogicalWorkspaceId) {
+			this.shellLaunchConfig.logicalWorkspaceId = value as IProcessPropertyMap[ProcessPropertyType.LogicalWorkspaceId];
+			this._onDidChangeProperty.fire({ type: ProcessPropertyType.LogicalWorkspaceId, value: this.shellLaunchConfig.logicalWorkspaceId });
+		}
+		if (type === ProcessPropertyType.LogicalTerminalId) {
+			this.shellLaunchConfig.logicalTerminalId = value as IProcessPropertyMap[ProcessPropertyType.LogicalTerminalId];
+			this._onDidChangeProperty.fire({ type: ProcessPropertyType.LogicalTerminalId, value: this.shellLaunchConfig.logicalTerminalId });
 		}
 	}
 

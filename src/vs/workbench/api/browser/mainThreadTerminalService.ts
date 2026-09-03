@@ -167,20 +167,33 @@ export class MainThreadTerminalService extends Disposable implements MainThreadT
 			const terminal = await this._terminalService.createTerminal({
 				config: shellLaunchConfig,
 				cwd: launchConfig.isRemoteResolverTerminal ? shellLaunchConfig.cwd : undefined,
-				location: await this._deserializeParentTerminal(launchConfig.location)
+				// Keep parent resolution inside TerminalService so it can capture the initiating
+				// Logical Workspace before this potentially pending parent crosses an await.
+				location: this._deserializeParentTerminal(launchConfig.location),
+				creationContext: launchConfig.creationContext,
 			});
 			r(terminal);
 		});
 		this._extHostTerminals.set(extHostTerminalId, terminal);
-		const terminalInstance = await terminal;
+		let terminalInstance: ITerminalInstance;
+		try {
+			terminalInstance = await terminal;
+		} catch (error) {
+			if (this._extHostTerminals.get(extHostTerminalId) === terminal) {
+				this._extHostTerminals.delete(extHostTerminalId);
+			}
+			throw error;
+		}
 		this._register(terminalInstance.onDisposed(() => {
-			this._extHostTerminals.delete(extHostTerminalId);
+			if (this._extHostTerminals.get(extHostTerminalId) === terminal) {
+				this._extHostTerminals.delete(extHostTerminalId);
+			}
 		}));
 	}
 
-	private async _deserializeParentTerminal(location?: TerminalLocation | TerminalEditorLocationOptions | { parentTerminal: ExtHostTerminalIdentifier } | { splitActiveTerminal: boolean; location?: TerminalLocation }): Promise<TerminalLocation | TerminalEditorLocationOptions | { parentTerminal: ITerminalInstance } | { splitActiveTerminal: boolean } | undefined> {
+	private _deserializeParentTerminal(location?: TerminalLocation | TerminalEditorLocationOptions | { parentTerminal: ExtHostTerminalIdentifier } | { splitActiveTerminal: boolean; location?: TerminalLocation }): TerminalLocation | TerminalEditorLocationOptions | { parentTerminal: Promise<ITerminalInstance> } | { splitActiveTerminal: boolean } | undefined {
 		if (typeof location === 'object' && hasKey(location, { parentTerminal: true })) {
-			const parentTerminal = await this._extHostTerminals.get(location.parentTerminal.toString());
+			const parentTerminal = this._extHostTerminals.get(location.parentTerminal.toString());
 			return parentTerminal ? { parentTerminal } : undefined;
 		}
 		return location;
@@ -189,6 +202,11 @@ export class MainThreadTerminalService extends Disposable implements MainThreadT
 	public async $show(id: ExtHostTerminalIdentifier, preserveFocus: boolean): Promise<void> {
 		const terminalInstance = await this._getTerminalInstance(id);
 		if (terminalInstance) {
+			if (terminalInstance.shellLaunchConfig.hideFromUser) {
+				// The RPC completes only after a hidden terminal has a real foreground host. This also
+				// propagates editor-open or panel-group failures back to the extension host.
+				await this._terminalService.showBackgroundTerminal(terminalInstance);
+			}
 			this._terminalService.setActiveInstance(terminalInstance);
 			if (terminalInstance.target === TerminalLocation.Editor) {
 				await this._terminalEditorService.revealActiveEditor(preserveFocus);

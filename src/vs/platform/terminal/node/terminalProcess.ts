@@ -98,6 +98,8 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		failedShellIntegrationActivation: false,
 		usedShellIntegrationInjection: undefined,
 		shellIntegrationInjectionFailureReason: undefined,
+		logicalWorkspaceId: undefined,
+		logicalTerminalId: undefined,
 	};
 	private static _lastKillOrStart = 0;
 	private _exitCode: number | undefined;
@@ -156,6 +158,8 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		this._initialCwd = cwd;
 		this._properties[ProcessPropertyType.InitialCwd] = this._initialCwd;
 		this._properties[ProcessPropertyType.Cwd] = this._initialCwd;
+		this._properties[ProcessPropertyType.LogicalWorkspaceId] = shellLaunchConfig.logicalWorkspaceId;
+		this._properties[ProcessPropertyType.LogicalTerminalId] = shellLaunchConfig.logicalTerminalId;
 		const useConpty = process.platform === 'win32' && getWindowsBuildNumberSync() >= 18309;
 		const useConptyDll = useConpty && this._options.windowsUseConptyDll;
 		this._ptyOptions = {
@@ -523,6 +527,10 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 			}
 			case ProcessPropertyType.Title:
 				return this.currentTitle as IProcessPropertyMap[T];
+			case ProcessPropertyType.LogicalWorkspaceId:
+				return this.shellLaunchConfig.logicalWorkspaceId as IProcessPropertyMap[T];
+			case ProcessPropertyType.LogicalTerminalId:
+				return this.shellLaunchConfig.logicalTerminalId as IProcessPropertyMap[T];
 			default:
 				return this.shellType as IProcessPropertyMap[T];
 		}
@@ -531,6 +539,14 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 	async updateProperty<T extends ProcessPropertyType>(type: T, value: IProcessPropertyMap[T]): Promise<void> {
 		if (type === ProcessPropertyType.FixedDimensions) {
 			this._properties.fixedDimensions = value as IProcessPropertyMap[ProcessPropertyType.FixedDimensions];
+		}
+		if (type === ProcessPropertyType.LogicalWorkspaceId) {
+			this.shellLaunchConfig.logicalWorkspaceId = value as IProcessPropertyMap[ProcessPropertyType.LogicalWorkspaceId];
+			this._properties.logicalWorkspaceId = this.shellLaunchConfig.logicalWorkspaceId;
+		}
+		if (type === ProcessPropertyType.LogicalTerminalId) {
+			this.shellLaunchConfig.logicalTerminalId = value as IProcessPropertyMap[ProcessPropertyType.LogicalTerminalId];
+			this._properties.logicalTerminalId = this.shellLaunchConfig.logicalTerminalId;
 		}
 	}
 

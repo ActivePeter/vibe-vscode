@@ -1,3 +1,46 @@
+# vibe vscode
+
+[English](README.md) | [简体中文](README_CN.md)
+
+> **Long-term vision:** Keep your development environment running on a personal workstation or in the cloud. Wherever you are, open a browser, pick up where you left off, and start vibe coding.
+
+vibe vscode is built on Code - OSS. It evolves the portable development editor of the pre-Agent era into a long-running workbench that can switch instantly between multiple task contexts. The goal is not to replace VS Code's editing, terminal, or extension capabilities, but to add stable context management so projects, terminals, and Agent sessions remain continuous across context switches and network interruptions.
+
+## Features Roadmap
+
+Status: ✅ Available　🚧 In progress　⬜ Planned
+
+- ✅ **Web-first operation**: vibe vscode is designed for the browser first. We recommend hosting the development environment on an always-on machine or in the cloud, with the workbench always a web page away. Projects, terminals, and Agent tasks run on the server, while the browser handles interaction and state projection—no desktop client required.
+  - 🚧 **Non-blocking remote connectivity**: Replace modal interruption with status-bar reconnect state, immediate retry after network recovery, and uninterrupted access to the current work. This is not yet included in the current implementation.
+
+  After installing dependencies, start the development environment in two terminals:
+
+  ```bash
+  # Terminal 1: continuously compile changes
+  npm run watch
+
+  # Terminal 2: start the web workbench at http://localhost:8080
+  ./scripts/code-web.sh .
+  ```
+
+- ✅ **Logical Workspace**: Create and select logical workspaces from the status bar or Command Palette without reloading the page. Switching saves and restores the visibility, size, and active view of the primary sidebar, panel, and secondary sidebar.
+  - **Remote authoritative state**: The workspace catalog, layouts, and editor working sets are stored in remote SQLite. Other pages read the latest snapshot after refresh or reconnect, while each page keeps its active Workspace selection locally.
+  - **Terminal isolation and persistence**: A terminal belongs to the logical workspace in which it was created, with ownership persisted in PTY process metadata. Switching workspaces moves terminals between foreground and background without closing them. A stable logical terminal ID survives local or remote PTYs, persistent-process reconnection, and page restoration.
+  - ⬜ **Chat / Agent session-tab working sets**: The session catalog and Agent Sessions list remain global and are not owned by a logical workspace. A future workspace projection will restore only its open session tabs; the same session may appear in multiple workspaces, and closing a tab will not delete the session. PR #1 removes the premature single-owner filtering and does not claim session-tab restoration as implemented.
+
+  ![Logical Workspace demo](vibe_vscode_doc/pics/vibe_vscode_workspace.gif)
+
+- ✅ **Project Context**: Select or add a project folder inside a single multi-root physical Workspace. Explorer and Source Control follow the same state projection: switching Project focuses the Explorer root and shows only Git repositories inside the current Project, while open editors, terminals, and sessions remain intact. Separate status-bar entries distinguish Workspace from Project.
+- ⬜ **Fullscreen session management panel**: Provide a workbench-wide interface for viewing, creating, switching, and managing Agent sessions in one place.
+- ⬜ **Document-driven development**: Select document content in the editor and create a new Agent session from the context menu, using the selection as context so requirements and design documents can directly drive implementation.
+- ⬜ **Codex Agent-first interaction**: Treat Codex Agent as the primary session experience, with priority given to session creation, interaction, status visibility, and restoration.
+
+## Non-goals
+
+- **Electron desktop product**: vibe vscode product development, regression coverage, and releases target only Remote Web (browser Workbench + Remote Server). The repository retains the upstream Code - OSS Electron source to ease future synchronization, but does not publish, test, maintain, or promise compatibility for the desktop Electron product; Electron-specific regressions are not PR gates.
+
+---
+
 # Visual Studio Code - Open Source ("Code - OSS")
 [![Feature Requests](https://img.shields.io/github/issues/microsoft/vscode/feature-request.svg)](https://github.com/microsoft/vscode/issues?q=is%3Aopen+is%3Aissue+label%3Afeature-request+sort%3Areactions-%2B1-desc)
 [![Bugs](https://img.shields.io/github/issues/microsoft/vscode/bug.svg)](https://github.com/microsoft/vscode/issues?utf8=✓&q=is%3Aissue+is%3Aopen+label%3Abug)

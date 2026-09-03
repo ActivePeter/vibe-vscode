@@ -28,6 +28,8 @@ export abstract class BasePty extends Disposable implements Partial<ITerminalChi
 		failedShellIntegrationActivation: false,
 		usedShellIntegrationInjection: undefined,
 		shellIntegrationInjectionFailureReason: undefined,
+		logicalWorkspaceId: undefined,
+		logicalTerminalId: undefined,
 	};
 	protected readonly _lastDimensions: { cols: number; rows: number } = { cols: -1, rows: -1 };
 	protected _inReplay = false;
@@ -76,6 +78,12 @@ export abstract class BasePty extends Disposable implements Partial<ITerminalChi
 				break;
 			case ProcessPropertyType.InitialCwd:
 				this._properties.initialCwd = value as IProcessPropertyMap[ProcessPropertyType.InitialCwd];
+				break;
+			case ProcessPropertyType.LogicalWorkspaceId:
+				this._properties.logicalWorkspaceId = value as IProcessPropertyMap[ProcessPropertyType.LogicalWorkspaceId];
+				break;
+			case ProcessPropertyType.LogicalTerminalId:
+				this._properties.logicalTerminalId = value as IProcessPropertyMap[ProcessPropertyType.LogicalTerminalId];
 				break;
 			case ProcessPropertyType.ResolvedShellLaunchConfig: {
 				const cast = value as IProcessPropertyMap[ProcessPropertyType.ResolvedShellLaunchConfig];

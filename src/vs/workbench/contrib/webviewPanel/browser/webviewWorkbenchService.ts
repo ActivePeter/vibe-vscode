@@ -6,25 +6,27 @@
 import { CancelablePromise, createCancelablePromise, DeferredPromise } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { memoize } from '../../../../base/common/decorators.js';
-import { isCancellationError } from '../../../../base/common/errors.js';
+import { isCancellationError, onUnexpectedError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Iterable } from '../../../../base/common/iterator.js';
 import { combinedDisposable, Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { EditorActivation } from '../../../../platform/editor/common/editor.js';
+import { localize } from '../../../../nls.js';
+import { EditorActivation, IModalEditorPartOptions } from '../../../../platform/editor/common/editor.js';
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { GroupIdentifier } from '../../../common/editor.js';
 import { DiffEditorInput } from '../../../common/editor/diffEditorInput.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
-import { ACTIVE_GROUP_TYPE, IEditorService, SIDE_GROUP_TYPE } from '../../../services/editor/common/editorService.js';
+import { ACTIVE_GROUP_TYPE, IEditorService, MODAL_GROUP_TYPE, SIDE_GROUP_TYPE } from '../../../services/editor/common/editorService.js';
 import { IOverlayWebview, IWebviewService, WebviewInitInfo } from '../../webview/browser/webview.js';
 import { CONTEXT_ACTIVE_WEBVIEW_PANEL_ID } from './webviewEditor.js';
 import { WebviewIconPath, WebviewInput, WebviewInputInitInfo } from './webviewEditorInput.js';
 
 export interface IWebViewShowOptions {
-	readonly group?: IEditorGroup | GroupIdentifier | ACTIVE_GROUP_TYPE | SIDE_GROUP_TYPE;
+	readonly group?: IEditorGroup | GroupIdentifier | ACTIVE_GROUP_TYPE | SIDE_GROUP_TYPE | MODAL_GROUP_TYPE;
 	readonly preserveFocus?: boolean;
+	readonly modal?: IModalEditorPartOptions;
 }
 
 export const IWebviewWorkbenchService = createDecorator<IWebviewWorkbenchService>('webviewEditorService');
@@ -51,7 +53,7 @@ export interface IWebviewWorkbenchService {
 		title: string,
 		iconPath: WebviewIconPath | undefined,
 		showOptions: IWebViewShowOptions,
-	): WebviewInput;
+	): Promise<WebviewInput>;
 
 	/**
 	 * Open a webview that is being restored from serialization.
@@ -70,8 +72,7 @@ export interface IWebviewWorkbenchService {
 	 */
 	revealWebview(
 		webview: WebviewInput,
-		group: IEditorGroup | GroupIdentifier | ACTIVE_GROUP_TYPE | SIDE_GROUP_TYPE,
-		preserveFocus: boolean
+		showOptions: IWebViewShowOptions,
 	): void;
 
 	/**
@@ -208,14 +209,14 @@ export class WebviewEditorService extends Disposable implements IWebviewWorkbenc
 	private readonly _revivalPool = new RevivalPool();
 
 	constructor(
-		@IEditorGroupsService editorGroupsService: IEditorGroupsService,
+		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IWebviewService private readonly _webviewService: IWebviewService,
 	) {
 		super();
 
-		this._register(editorGroupsService.registerContextKeyProvider({
+		this._register(this._editorGroupsService.registerContextKeyProvider({
 			contextKey: CONTEXT_ACTIVE_WEBVIEW_PANEL_ID,
 			getGroupContextKeyValue: (group) => this.getWebviewId(group.activeEditor),
 		}));
@@ -271,38 +272,56 @@ export class WebviewEditorService extends Disposable implements IWebviewWorkbenc
 		}
 	}
 
-	public openWebview(
+	public async openWebview(
 		webviewInitInfo: WebviewInitInfo,
 		viewType: string,
 		title: string,
 		iconPath: WebviewIconPath | undefined,
 		showOptions: IWebViewShowOptions,
-	): WebviewInput {
+	): Promise<WebviewInput> {
 		const webview = this._webviewService.createWebviewOverlay(webviewInitInfo);
 		const webviewInput = this._instantiationService.createInstance(WebviewInput, { viewType, name: title, providedId: webviewInitInfo.providedViewType, iconPath }, webview);
-		this._editorService.openEditor(webviewInput, {
-			pinned: true,
-			preserveFocus: showOptions.preserveFocus,
-			// preserve pre 1.38 behaviour to not make group active when preserveFocus: true
-			// but make sure to restore the editor to fix https://github.com/microsoft/vscode/issues/79633
-			activation: showOptions.preserveFocus ? EditorActivation.RESTORE : undefined
-		}, showOptions.group);
-		return webviewInput;
+		const previousModalEditorPart = this._editorGroupsService.activeModalEditorPart;
+		try {
+			await this._editorService.openEditor(webviewInput, {
+				pinned: true,
+				preserveFocus: showOptions.preserveFocus,
+				modal: showOptions.modal,
+				// preserve pre 1.38 behaviour to not make group active when preserveFocus: true
+				// but make sure to restore the editor to fix https://github.com/microsoft/vscode/issues/79633
+				activation: showOptions.preserveFocus ? EditorActivation.RESTORE : undefined
+			}, showOptions.group);
+			if (!this._editorService.editors.includes(webviewInput)) {
+				throw new Error(localize('webviewEditorDidNotOpen', "The webview editor could not be opened."));
+			}
+			return webviewInput;
+		} catch (error) {
+			webviewInput.dispose();
+			const createdModalEditorPart = this._editorGroupsService.activeModalEditorPart;
+			if (showOptions.modal && createdModalEditorPart && createdModalEditorPart !== previousModalEditorPart && createdModalEditorPart.activeGroup.isEmpty) {
+				try {
+					await createdModalEditorPart.close();
+				} catch (closeError) {
+					onUnexpectedError(closeError);
+				}
+			}
+			throw error;
+		}
 	}
 
 	public revealWebview(
 		webview: WebviewInput,
-		group: IEditorGroup | GroupIdentifier | ACTIVE_GROUP_TYPE | SIDE_GROUP_TYPE,
-		preserveFocus: boolean
+		showOptions: IWebViewShowOptions,
 	): void {
 		const topLevelEditor = this.findTopLevelEditorForWebview(webview);
 
-		this._editorService.openEditor(topLevelEditor, {
-			preserveFocus,
+		void this._editorService.openEditor(topLevelEditor, {
+			preserveFocus: showOptions.preserveFocus,
+			modal: showOptions.modal,
 			// preserve pre 1.38 behaviour to not make group active when preserveFocus: true
 			// but make sure to restore the editor to fix https://github.com/microsoft/vscode/issues/79633
-			activation: preserveFocus ? EditorActivation.RESTORE : undefined
-		}, group);
+			activation: showOptions.preserveFocus ? EditorActivation.RESTORE : undefined
+		}, showOptions.group).catch(onUnexpectedError);
 	}
 
 	private findTopLevelEditorForWebview(webview: WebviewInput): EditorInput {

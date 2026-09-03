@@ -292,8 +292,9 @@ class AsyncFindController<TInput, T, TFilterData> extends FindController<T, TFil
 	private activeTokenSource: CancellationTokenSource | undefined;
 	private activeFindMetadata: IAsyncFindResult<T> | undefined;
 	private activeSession = false;
+	private sessionEndPromise: Promise<void> | undefined;
 	private asyncWorkInProgress = false;
-	private taskQueue = new ThrottledDelayer(250);
+	private readonly taskQueue = this.disposables.add(new ThrottledDelayer<void>(250));
 
 	constructor(
 		tree: ObjectTree<IAsyncDataTreeNode<TInput, T>, TFilterData>,
@@ -304,10 +305,9 @@ class AsyncFindController<TInput, T, TFilterData> extends FindController<T, TFil
 	) {
 		super(tree as unknown as AbstractTree<T, TFilterData, unknown>, filter, contextViewProvider, options);
 		// Always make sure to end the session before disposing
-		this.disposables.add(toDisposable(async () => {
-			if (this.activeSession) {
-				await this.findProvider.endSession?.();
-			}
+		this.disposables.add(toDisposable(() => {
+			this.activeTokenSource?.cancel();
+			this.deactivateFindSession().catch(onUnexpectedError);
 		}));
 	}
 
@@ -317,7 +317,7 @@ class AsyncFindController<TInput, T, TFilterData> extends FindController<T, TFil
 		this.activeTokenSource?.cancel();
 		this.activeTokenSource = new CancellationTokenSource();
 
-		this.taskQueue.trigger(() => this.applyPatternAsync());
+		this.taskQueue.trigger(() => this.applyPatternAsync()).catch(onUnexpectedError);
 	}
 
 	private async applyPatternAsync(): Promise<void> {
@@ -328,20 +328,15 @@ class AsyncFindController<TInput, T, TFilterData> extends FindController<T, TFil
 		const pattern = this.pattern;
 
 		if (pattern === '') {
-			if (this.activeSession) {
-				this.asyncWorkInProgress = true;
-				await this.deactivateFindSession();
-				this.asyncWorkInProgress = false;
-
-				if (!token.isCancellationRequested) {
-					this.filter.reset();
-					super.applyPattern('');
-				}
-			}
+			await this.completeSessionEnd(token);
 			return;
 		}
 
 		if (!this.activeSession) {
+			await this.sessionEndPromise;
+			if (token.isCancellationRequested) {
+				return;
+			}
 			this.activateFindSession();
 		}
 
@@ -364,6 +359,45 @@ class AsyncFindController<TInput, T, TFilterData> extends FindController<T, TFil
 		}
 	}
 
+	override close(): void {
+		this.closeAndWait().catch(onUnexpectedError);
+	}
+
+	async closeAndWait(): Promise<void> {
+		const wasOpen = this.isOpened();
+		super.close();
+		this.taskQueue.cancel();
+
+		if (!wasOpen) {
+			await this.sessionEndPromise;
+			return;
+		}
+
+		const token = this.activeTokenSource?.token;
+		if (token) {
+			await this.completeSessionEnd(token);
+		}
+	}
+
+	private async completeSessionEnd(token: CancellationToken): Promise<void> {
+		this.asyncWorkInProgress = this.activeSession || this.sessionEndPromise !== undefined;
+		try {
+			await this.deactivateFindSession();
+		} catch (error) {
+			if (!token.isCancellationRequested) {
+				this.asyncWorkInProgress = false;
+			}
+			throw error;
+		}
+
+		if (!token.isCancellationRequested) {
+			this.asyncWorkInProgress = false;
+			this.activeFindMetadata = undefined;
+			this.filter.reset();
+			super.applyPattern('');
+		}
+	}
+
 	private activateFindSession(): void {
 		this.activeSession = true;
 		this.filter.isFindSessionActive = true;
@@ -371,9 +405,23 @@ class AsyncFindController<TInput, T, TFilterData> extends FindController<T, TFil
 	}
 
 	private async deactivateFindSession(): Promise<void> {
+		if (!this.activeSession) {
+			await this.sessionEndPromise;
+			return;
+		}
+
 		this.activeSession = false;
 		this.filter.isFindSessionActive = false;
-		await this.findProvider.endSession?.();
+
+		const sessionEndPromise = this.findProvider.endSession?.() ?? Promise.resolve();
+		this.sessionEndPromise = sessionEndPromise;
+		try {
+			await sessionEndPromise;
+		} finally {
+			if (this.sessionEndPromise === sessionEndPromise) {
+				this.sessionEndPromise = undefined;
+			}
+		}
 	}
 
 	protected override render(): void {
@@ -613,7 +661,7 @@ export class AsyncDataTree<TInput, T, TFilterData = void> implements IDisposable
 		let findFilter: AsyncFindFilter<T> | undefined;
 		if (options.findProvider && (options.findWidgetEnabled ?? true) && options.keyboardNavigationLabelProvider && options.contextViewProvider) {
 			asyncFindEnabled = true;
-			findFilter = new AsyncFindFilter<T>(options.findProvider, options.keyboardNavigationLabelProvider, options.filter as ITreeFilter<T, FuzzyScore>);
+			findFilter = this.disposables.add(new AsyncFindFilter<T>(options.findProvider, options.keyboardNavigationLabelProvider, options.filter as ITreeFilter<T, FuzzyScore>));
 		}
 
 		this.tree = this.createTree(user, container, delegate, renderers, { ...options, findWidgetEnabled: !asyncFindEnabled, filter: findFilter as ITreeFilter<T, TFilterData> ?? options.filter });
@@ -973,9 +1021,12 @@ export class AsyncDataTree<TInput, T, TFilterData = void> implements IDisposable
 		}
 	}
 
-	closeFind(): void {
+	/**
+	 * Closes the find widget and resolves after an asynchronous find provider's session has ended.
+	 */
+	async closeFind(): Promise<void> {
 		if (this.findController) {
-			this.findController.close();
+			await this.findController.closeAndWait();
 		} else {
 			this.tree.closeFind();
 		}

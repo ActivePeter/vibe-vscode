@@ -6,7 +6,7 @@
 
 ## 状态与持久化边界
 
-只有 Workspace catalog、Shell layout 和 serialized editor working set 进入 Logical Workspace 专用 SQLite。相邻状态分别保留自己的 authority 与持久化介质：
+只有 Workspace catalog 和界面布局的两个状态切片——Shell layout、serialized editor working set——进入 Logical Workspace 专用 SQLite。相邻状态分别保留自己的 authority 与持久化介质：
 
 ```mermaid
 flowchart TB
@@ -15,8 +15,12 @@ flowchart TB
     subgraph RemoteShared["Remote Logical Workspace state service"]
         Record[("workspace.&lt;physicalWorkspaceId&gt;")]
         Catalog[Workspace catalog] --> Record
-        Layout[Shell layout] --> Record
-        Editors[Serialized editor working set] --> Record
+        subgraph InterfaceLayout["界面布局"]
+            Layout[Shell layout]
+            Editors[Serialized editor working set]
+        end
+        Layout --> Record
+        Editors --> Record
     end
 
     Physical --> Record
@@ -62,33 +66,37 @@ Workspace catalog 表示一个 Physical Workspace 内存在哪些 Logical Worksp
 - VS Code 原本没有 Logical Workspace catalog；Vibe 新增 catalog、revision 和 mutation 协议。
 - Local / non-Remote 路径复用 VS Code workspace-scoped storage；Remote 路径复用 SQLite backend，但增加 durable-confirm-before-activate 约束。
 
-### Shell layout（Remote shared）
+### 界面布局（Remote shared）
+
+界面布局由两个相互独立的状态切片组成：Shell layout 管理 Editor Area 外部的 Workbench 外壳，serialized editor working set 管理 Editor Area 内部的分组与 Tabs。两者共同恢复完整界面，但继续由 VS Code 的不同组件负责。
+
+#### Shell layout
 
 Shell layout 表示切入 Logical Workspace 时 Workbench 外壳应呈现的布局，保存 Primary Side Bar、Panel、Auxiliary Bar 的显隐、宽高和 active composite。Active composite 即使是 Terminal，也不映射具体 Terminal、Panel split 或 active Terminal。
 
-#### Authority 与持久化
+##### Authority 与持久化
 
 - Remote snapshot 是目标状态 authority，当前页面的 Workbench Layout 是可重建 projection。
 - Remote record 与 local fallback payload 都使用 `workspaces[].shellLayout`。
 - 当前页面可以 optimistic 投影；其他页面刷新或重连后可见，同一字段按 Server 到达顺序 Last Write Wins。
 
-#### 复用与改动
+##### 复用与改动
 
 - 复用 VS Code 的 `IWorkbenchLayoutService`、`IPaneCompositePartService` 及现有布局状态。
 - Vibe 新增按 Logical Workspace 捕获、持久化和恢复 Shell layout 的 adapter，不新增第二套布局实现。
 
-### Serialized editor working set（Remote shared）
+#### Serialized editor working set
 
 Serialized editor working set 表示切入 Logical Workspace 时 editor area 应恢复的状态，保存 main/auxiliary editor group grid、可恢复 editor inputs、MRU、active selection 和 group layout。
 
-#### Authority 与持久化
+##### Authority 与持久化
 
 - Remote snapshot 是目标状态 authority，当前 Editor Groups 是可重建 projection。
 - Remote record 与 local fallback payload 都使用 `workspaces[].editorWorkingSet`。
 - 当前页面可以 optimistic 投影；其他页面刷新或重连后可见，同一字段按 Server 到达顺序 Last Write Wins。
 - Working set 只保存可恢复 identity 与布局，不成为文件内容、Terminal process 或 Agent Session catalog 的 authority。
 
-#### 复用与改动
+##### 复用与改动
 
 - 复用 VS Code named working set 的序列化与 apply 实现；Vibe 只补充 portable serialize/apply 入口和按 Logical Workspace 保存的字段。
 - VS Code 用户命名的 working sets 仍位于 `editor.workingSets`，Vibe 不改写或借用该 key。

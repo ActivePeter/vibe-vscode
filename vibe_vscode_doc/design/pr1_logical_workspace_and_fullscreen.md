@@ -250,7 +250,7 @@ sequenceDiagram
 
 `onDidChangeState` 携带 previous/current immutable snapshot。`onWill/onDidChangeActiveWorkspace` 只表达 activation，不替代 Terminal、editor working-set 或全局 Session catalog 变更事件。
 
-## 7. Workbench projection
+## 7. 界面布局
 
 ### 7.1 统一协调器
 
@@ -267,7 +267,7 @@ sequenceDiagram
 
 Layout Adapter 保存三个 shell part 的 `visible`、`width`、`height` 与 `activeCompositeId`。恢复时先恢复 composite 和尺寸，再提交最终可见性；目标为隐藏的 part 也必须恢复自己的尺寸，避免以后显示时继承另一个 Workspace 的布局。Terminal 作为 active composite 只表示打开 Terminal view，不映射具体 Terminal。
 
-### 7.3 Editor working set
+### 7.3 Serialized editor working set
 
 `LogicalWorkspaceEditorAdapter` 通过 Editor Groups Service 序列化和恢复 editor working set，并监听 Webview state 更新补充 capture。它只处理 editor input 的通用恢复 identity，不读取 Agent Session catalog，也不建立 Session owner。
 

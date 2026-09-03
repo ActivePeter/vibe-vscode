@@ -14,11 +14,17 @@ Logical Workspace 保存的是可覆盖的 Workbench 视图状态，不是资源
 
 表示一个 Physical Workspace 内有哪些 Logical Workspace，以及每一项的稳定 ID 和名称。它决定某个 Logical Workspace 是否存在、能否被激活，不表示当前页面选中了哪一项。Remote state service 只有在 SQLite 写入成功后才确认新 identity；其他页面需要刷新、重连或重新打开后才能读到更新。
 
-### Layout 与 editor working set（工作台视图快照）
+### 界面布局（工作台视图快照）
 
-`layout` 保存 Sidebar、Panel、Auxiliary Bar 的显隐、尺寸和 active composite；`editor working set` 保存 editor group 布局、可恢复的 editor inputs、MRU 和 active selection。两者都是可以重新投影的界面快照，不是文件内容、Terminal process 或 Agent Session 本体。
+界面布局由 Shell layout 与 serialized editor working set 两个状态切片组成。两者都是可以重新投影的界面快照，不是文件内容、Terminal process 或 Agent Session 本体。当前页面可以先应用自己的修改，再等待 Server 结果；其他页面只在下次读取时看到 Server 已确认的值，同一字段按 Server 到达顺序 Last Write Wins（LWW）。
 
-当前页面可以先应用自己的修改，再等待 Server 结果，这就是 optimistic。其他页面不会实时跟随，只在下次读取时看到 Server 已确认的值；多个页面修改同一字段时，最后到达 Server 的写入生效，即 Last Write Wins（LWW）。
+#### Shell layout
+
+保存 Sidebar、Panel、Auxiliary Bar 的显隐、尺寸和 active composite，负责 Editor Area 外部的 Workbench 外壳。
+
+#### Serialized editor working set
+
+保存 editor group 布局、可恢复的 editor inputs、MRU 和 active selection，负责 Editor Area 内部的分组与 Tabs。
 
 ### `activeWorkspaceId`（当前页面选择）
 

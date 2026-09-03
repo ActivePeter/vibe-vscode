@@ -1,4 +1,7 @@
 {
+	"vibe vscode": "vibe vscode",
+	"vibe vscode fullscreen panel": "vibe vscode fullscreen panel",
+	"The privileged fullscreen host is active. vibe vscode interfaces can now be mounted in this surface.": "The privileged fullscreen host is active. vibe vscode interfaces can now be mounted in this surface.",
 	"Sim Development Orchestration": "Sim Development Orchestration",
 	"Unable to open Sim fullscreen: {0}": "Unable to open Sim fullscreen: {0}",
 	"Sim Changes": "Sim Changes",

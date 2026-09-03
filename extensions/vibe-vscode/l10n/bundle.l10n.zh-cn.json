@@ -1,4 +1,7 @@
 {
+	"vibe vscode": "vibe vscode",
+	"vibe vscode fullscreen panel": "vibe vscode 全屏面板",
+	"The privileged fullscreen host is active. vibe vscode interfaces can now be mounted in this surface.": "受信任的全屏宿主已激活。现在可以在此界面中挂载 vibe vscode 功能。",
 	"Sim Development Orchestration": "Sim 开发编排",
 	"Unable to open Sim fullscreen: {0}": "无法全屏打开 Sim：{0}",
 	"Sim Changes": "Sim 变更",

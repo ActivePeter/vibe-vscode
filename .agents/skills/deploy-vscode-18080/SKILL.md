@@ -20,11 +20,21 @@ Before running the deployment, tell the user which mode is starting. Run the bun
 ./scripts/deploy-18080.sh --mode snapshot --update-snapshot
 ```
 
+When the user explicitly requests an isolated alternate development port, keep the same deployment
+entry point and set the port for that invocation:
+
+```bash
+VIBE_VSCODE_PUBLIC_PORT=18082 ./scripts/deploy-18080.sh
+```
+
+The default remains 18080. An alternate port derives its own tmux session, XDG state, socket,
+runtime release root, log, and deployment lock, so it cannot stop or promote the 18080 service.
+
 Automatic service recovery always reuses its selected release; it never rebuilds. Do not add Supervisor.
 
 The script resolves the source root from its own repository location. Mutable state and TLS files
 default to XDG state/config directories. An operator can override those locations through the
-existing `VIBE_VSCODE_SERVICE_STATE_ROOT`, `VIBE_VSCODE_SERVICE_LOG`,
+existing `VIBE_VSCODE_PUBLIC_PORT`, `VIBE_VSCODE_SERVICE_STATE_ROOT`, `VIBE_VSCODE_SERVICE_LOG`,
 `VIBE_VSCODE_TLS_CERT_PATH`, and `VIBE_VSCODE_TLS_KEY_PATH` environment inputs without editing
 tracked files.
 

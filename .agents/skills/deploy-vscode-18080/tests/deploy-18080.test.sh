@@ -18,8 +18,25 @@ assert_equal() {
 }
 
 bash -n "$DEPLOY_SCRIPT"
+unset VIBE_VSCODE_PUBLIC_PORT
 source "$DEPLOY_SCRIPT"
 assert_equal "$(cd -- "$TEST_ROOT/../../../.." && pwd -P)" "$SOURCE_ROOT"
+assert_equal 18080 "$SERVICE_PORT"
+assert_equal vibe_vscode_latest "$SERVICE_SESSION"
+assert_equal vibe-vscode-18080 "${SERVICE_SOCKET_ROOT##*/}"
+assert_equal vibe-vscode-18080 "${SERVICE_RUNTIME_ROOT##*/}"
+alternate_configuration="$(
+	VIBE_VSCODE_PUBLIC_PORT=18082 bash -c '
+		set -euo pipefail
+		source "$1"
+		validate_service_port
+		printf "%s|%s|%s|%s\n" "$SERVICE_PORT" "$SERVICE_SESSION" "${SERVICE_SOCKET_ROOT##*/}" "${SERVICE_RUNTIME_ROOT##*/}"
+	' bash "$DEPLOY_SCRIPT"
+)"
+assert_equal '18082|vibe_vscode_18082|vibe-vscode-18082|vibe-vscode-18082' "$alternate_configuration"
+if VIBE_VSCODE_PUBLIC_PORT=65536 bash -c 'source "$1"; validate_service_port' bash "$DEPLOY_SCRIPT" >/dev/null 2>&1; then
+	fail_test 'deployment accepted an out-of-range alternate port'
+fi
 host_mount_prefix='/mnt/'"ceph"
 if grep -Fq "$host_mount_prefix" "$DEPLOY_SCRIPT"; then
 	fail_test 'deployment script contains a machine-specific mount path'
@@ -30,6 +47,15 @@ snapshot_definition="$(declare -f prepare_snapshot_restart)"
 eval "${snapshot_definition/prepare_snapshot_restart/prepare_real_snapshot_restart}"
 active_definition="$(declare -f prepare_active_runtime)"
 eval "${active_definition/prepare_active_runtime/prepare_real_active_runtime}"
+
+start_command="$(
+	validate_candidate_runtime_root() { :; }
+	tmux() { printf '%s\n' "$*"; }
+	start_service /test/runtime /test/workspace.code-workspace
+)"
+for propagated_input in VIBE_VSCODE_PUBLIC_PORT VIBE_VSCODE_SOCKET_ROOT VIBE_VSCODE_SERVICE_STATE_ROOT VIBE_VSCODE_SERVICE_LOG VIBE_VSCODE_TLS_CERT_PATH VIBE_VSCODE_TLS_KEY_PATH; do
+	[[ "$start_command" == *"$propagated_input="* ]] || fail_test "service start omitted $propagated_input"
+done
 
 assert_equal restart "$(resolve_deploy_action snapshot false)"
 assert_equal update "$(resolve_deploy_action snapshot true)"

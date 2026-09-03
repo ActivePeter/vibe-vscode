@@ -4,16 +4,21 @@ set -euo pipefail
 
 readonly SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SOURCE_ROOT="$(cd -- "$SCRIPT_DIRECTORY/../../../.." && pwd -P)"
-readonly SERVICE_SESSION=vibe_vscode_latest
-readonly SERVICE_PORT=18080
+readonly SERVICE_PORT="${VIBE_VSCODE_PUBLIC_PORT:-18080}"
+if [[ "$SERVICE_PORT" == 18080 ]]; then
+	SERVICE_SESSION=vibe_vscode_latest
+else
+	SERVICE_SESSION="vibe_vscode_${SERVICE_PORT}"
+fi
+readonly SERVICE_SESSION
 readonly SERVICE_URL="https://127.0.0.1:${SERVICE_PORT}/"
-readonly SERVICE_SOCKET_ROOT="${VIBE_VSCODE_SOCKET_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/vibe-vscode-18080}"
+readonly SERVICE_SOCKET_ROOT="${VIBE_VSCODE_SOCKET_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/vibe-vscode-${SERVICE_PORT}}"
 readonly SERVICE_BACKEND_SOCKET="$SERVICE_SOCKET_ROOT/backend.sock"
 readonly SERVICE_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/vibe-vscode"
 readonly SERVICE_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/vibe-vscode"
 readonly SERVICE_STATE_ROOT="${VIBE_VSCODE_SERVICE_STATE_ROOT:-$SERVICE_STATE_HOME/services/${SERVICE_PORT}}"
 readonly SERVICE_LOG="${VIBE_VSCODE_SERVICE_LOG:-$SERVICE_STATE_HOME/logs/${SERVICE_PORT}.log}"
-readonly SERVICE_RUNTIME_ROOT="$SOURCE_ROOT/.build/vibe-vscode-18080"
+readonly SERVICE_RUNTIME_ROOT="$SOURCE_ROOT/.build/vibe-vscode-${SERVICE_PORT}"
 readonly SERVICE_RELEASES_ROOT="$SERVICE_RUNTIME_ROOT/releases"
 readonly SERVICE_CURRENT_LINK="$SERVICE_RUNTIME_ROOT/last-known-good"
 readonly SERVICE_PREVIOUS_LINK="$SERVICE_RUNTIME_ROOT/previous"
@@ -38,7 +43,7 @@ STAGING_RUNTIME_ROOT=
 DEPLOY_LOCK_FD=
 
 fail() {
-	printf 'deploy-vscode-18080: %s\n' "$1" >&2
+	printf 'deploy-vscode-%s: %s\n' "$SERVICE_PORT" "$1" >&2
 	exit 1
 }
 
@@ -57,7 +62,15 @@ Usage: deploy-18080.sh [--mode latest|snapshot] [--update-snapshot]
   --mode latest       Build and promote the current source before restart (default).
   --mode snapshot     Restart the selected immutable release without rebuilding.
   --update-snapshot   Build and promote a new release in snapshot mode.
+
+Set VIBE_VSCODE_PUBLIC_PORT to an explicitly requested alternate development
+port. Its session, state, socket, release, log, and lock remain isolated.
 EOF
+}
+
+validate_service_port() {
+	[[ "$SERVICE_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || fail 'VIBE_VSCODE_PUBLIC_PORT must be a valid TCP port'
+	(( 10#$SERVICE_PORT <= 65535 )) || fail 'VIBE_VSCODE_PUBLIC_PORT must be a valid TCP port'
 }
 
 resolve_deploy_action() {
@@ -87,7 +100,7 @@ acquire_deployment_lock() {
 	mkdir -p -- "$(dirname -- "$lock_path")"
 	exec {DEPLOY_LOCK_FD}>"$lock_path"
 	if ! flock --nonblock "$DEPLOY_LOCK_FD"; then
-		printf 'deploy-vscode-18080: another deployment holds %s\n' "$lock_path" >&2
+		printf 'deploy-vscode-%s: another deployment holds %s\n' "$SERVICE_PORT" "$lock_path" >&2
 		return 75
 	fi
 }
@@ -548,7 +561,7 @@ start_service() {
 	else
 		validate_candidate_runtime_root "$runtime_root" || return 1
 	fi
-	printf -v tmux_command 'exec env VIBE_VSCODE_SOCKET_ROOT=%q %q %q %q %q' "$SERVICE_SOCKET_ROOT" "$SCRIPT_PATH" "$internal_mode" "$runtime_root" "$workspace_path"
+	printf -v tmux_command 'exec env VIBE_VSCODE_PUBLIC_PORT=%q VIBE_VSCODE_SOCKET_ROOT=%q VIBE_VSCODE_SERVICE_STATE_ROOT=%q VIBE_VSCODE_SERVICE_LOG=%q VIBE_VSCODE_TLS_CERT_PATH=%q VIBE_VSCODE_TLS_KEY_PATH=%q %q %q %q %q' "$SERVICE_PORT" "$SERVICE_SOCKET_ROOT" "$SERVICE_STATE_ROOT" "$SERVICE_LOG" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$SCRIPT_PATH" "$internal_mode" "$runtime_root" "$workspace_path"
 	tmux new-session -d -s "$SERVICE_SESSION" -c "$runtime_root" "$tmux_command"
 }
 
@@ -776,6 +789,7 @@ main() {
 	local deploy_mode="$DEFAULT_DEPLOY_MODE"
 	local update_snapshot=false
 	local workspace_path
+	validate_service_port
 
 	if [[ "${1:-}" == '--internal-run' ]]; then
 		[[ "$#" -eq 3 ]] || fail 'invalid internal service arguments'

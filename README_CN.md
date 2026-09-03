@@ -35,6 +35,10 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
 - ⬜ **文档驱动开发**：支持在编辑器中选中文档内容，通过右键菜单以选区作为上下文创建新的 Agent 会话，让需求和设计文档直接驱动开发。
 - ⬜ **Codex Agent 优先交互**：以 Codex Agent 作为首要会话形态，优先完善会话创建、交互、状态呈现与恢复体验。
 
+## 非目标
+
+- **Electron 桌面产品**：vibe vscode 的产品迭代、回归验证和发布只面向 Remote Web（浏览器 Workbench + Remote Server）。仓库保留上游 Code - OSS 的 Electron 源码以便后续同步，但不发布、不测试、不维护也不承诺桌面 Electron 兼容性；Electron 专属回归不作为 PR 门禁。
+
 ## 上游项目
 
 vibe vscode 基于 Code - OSS。有关上游仓库、参与贡献和许可证的完整信息，请参阅[英文 README 的 Code - OSS 部分](README.md#visual-studio-code---open-source-code---oss)。

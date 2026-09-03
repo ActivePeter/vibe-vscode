@@ -35,6 +35,10 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
 - ⬜ **Document-driven development**: Select document content in the editor and create a new Agent session from the context menu, using the selection as context so requirements and design documents can directly drive implementation.
 - ⬜ **Codex Agent-first interaction**: Treat Codex Agent as the primary session experience, with priority given to session creation, interaction, status visibility, and restoration.
 
+## Non-goals
+
+- **Electron desktop product**: vibe vscode product development, regression coverage, and releases target only Remote Web (browser Workbench + Remote Server). The repository retains the upstream Code - OSS Electron source to ease future synchronization, but does not publish, test, maintain, or promise compatibility for the desktop Electron product; Electron-specific regressions are not PR gates.
+
 ---
 
 # Visual Studio Code - Open Source ("Code - OSS")

@@ -1,6 +1,9 @@
 {
 	"displayName": "vibe vscode",
-	"description": "Opens the privileged vibe vscode fullscreen panel.",
-	"command.openFullscreenPanel": "Open Fullscreen Panel",
-	"command.closeFullscreenPanel": "Close Fullscreen Panel"
+	"description": "Hosts Vibe subplugins in editor tabs with optional fullscreen presentation.",
+	"viewContainer.sim": "Sim",
+	"view.sim": "Development Orchestration",
+	"command.openSim": "Open Sim Development Orchestration",
+	"command.openSimFullscreen": "Open Sim Development Orchestration Fullscreen",
+	"configuration.sim.baseUrl": "Optional Sim root URL. Leave empty to use the current Vibe VS Code HTTPS gateway."
 }

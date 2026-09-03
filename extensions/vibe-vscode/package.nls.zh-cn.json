@@ -1,6 +1,9 @@
 {
 	"displayName": "vibe vscode",
-	"description": "打开受信任的 vibe vscode 全屏面板。",
-	"command.openFullscreenPanel": "打开全屏面板",
-	"command.closeFullscreenPanel": "关闭全屏面板"
+	"description": "在普通编辑器标签页中承载 Vibe 子插件，并可按需切换全屏。",
+	"viewContainer.sim": "Sim",
+	"view.sim": "开发编排",
+	"command.openSim": "打开 Sim 开发编排",
+	"command.openSimFullscreen": "全屏打开 Sim 开发编排",
+	"configuration.sim.baseUrl": "可选的 Sim 根地址。留空时复用当前 Vibe VS Code HTTPS 网关。"
 }

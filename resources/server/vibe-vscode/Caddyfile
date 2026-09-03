@@ -7,7 +7,47 @@
 	bind 0.0.0.0
 	tls {$VIBE_VSCODE_TLS_CERT_PATH} {$VIBE_VSCODE_TLS_KEY_PATH}
 
-	reverse_proxy {$VIBE_VSCODE_BACKEND_ADDRESS} {
-		header_up X-Forwarded-Proto https
+	@simStatus path /sim/__vibe_status
+	handle @simStatus {
+		rewrite * /api/status
+		reverse_proxy {$VIBE_SIM_BACKEND_ADDRESS:127.0.0.1:3300} {
+			header_up X-Vibe-Vscode-Embed 1
+			header_up X-Forwarded-Proto https
+			header_down Access-Control-Allow-Origin *
+			header_down -Access-Control-Allow-Credentials
+			header_down Cache-Control "no-store"
+		}
+	}
+
+	@simRealtime path /socket.io /socket.io/*
+	handle @simRealtime {
+		reverse_proxy {$VIBE_SIM_REALTIME_BACKEND_ADDRESS:127.0.0.1:3002} {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	@simApp path \
+ /sim /sim/* \
+ /_next/* /api /api/* \
+ /workspace /workspace/* /plan-graph-demo /plan-graph-demo/* \
+ /login /signup /invite/* /account/* /organization/* /selfhost/* \
+ /oauth-* /oauth/* /desktop/* /cli/* /upgrade /playground \
+ /chat/* /resume/* /w/* /f/* /ingest/* \
+ /manifest.webmanifest /icon.svg /favicon/* /logo/* /landing/* /footer/* /social/* /enterprise/* /twitter/*
+	handle @simApp {
+		uri strip_prefix /sim
+		reverse_proxy {$VIBE_SIM_BACKEND_ADDRESS:127.0.0.1:3300} {
+			header_up X-Vibe-Vscode-Embed 1
+			header_up X-Forwarded-Proto https
+			header_down -X-Frame-Options
+			header_down Cross-Origin-Embedder-Policy unsafe-none
+			header_down Cross-Origin-Opener-Policy unsafe-none
+		}
+	}
+
+	handle {
+		reverse_proxy {$VIBE_VSCODE_BACKEND_ADDRESS} {
+			header_up X-Forwarded-Proto https
+		}
 	}
 }

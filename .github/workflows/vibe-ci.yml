@@ -116,6 +116,9 @@ jobs:
       - name: Compile client and Vibe extension
         run: npm exec -- npm-run-all2 -lp compile-client compile-vibe-vscode
 
+      - name: Test Vibe extension protocol
+        run: npm --prefix extensions/vibe-vscode run test-web
+
       - name: Repository hygiene
         id: hygiene
         continue-on-error: true

@@ -26,12 +26,10 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
 - ✅ **Logical Workspace（逻辑工作区）**：可从状态栏或命令面板创建、选择逻辑工作区，无需重新加载页面。切换时会保存并恢复主侧栏、底部面板和辅助侧栏的显隐、尺寸及活动视图。
   - **远程权威状态**：Workspace catalog、布局和编辑器工作集保存在 Remote SQLite；其他页面刷新或重连后读取最新快照，每个页面只在本地保存自己的当前 Workspace 选择。
   - **终端隔离与持久化**：终端归属于创建它的逻辑工作区，归属随 PTY 进程 metadata 持久化。切换工作区时，终端只在前台与后台之间迁移，不会被关闭；稳定的逻辑终端 ID 会贯穿本地/远程 PTY、持久化进程重连和页面恢复。
-  - ⬜ **Chat / Agent Session Tab 工作集**：Session catalog 与 Agent Sessions 列表保持全局，不归属于任何逻辑工作区。未来每个 Workspace 只恢复自己打开的 Session Tabs；相同 Session 可以同时出现在多个 Workspace，关闭 Tab 不会删除 Session。PR #1 已撤掉提前接入的单一 owner 与列表过滤，尚不把 Session Tab 恢复标为已实现。
-
   ![Logical Workspace 演示](vibe_vscode_doc/pics/vibe_vscode_workspace.gif)
 
 - ✅ **Project Context（项目上下文）**：支持在同一个多根物理 Workspace 中选择或添加项目目录。Explorer 与 Source Control 通过同一状态投影同步更新：切换 Project 会聚焦 Explorer 根目录，Git 仅展示当前 Project 内的仓库，同时保留已打开的编辑器、终端与会话；状态栏分别显示当前 Workspace 和 Project。
-- ⬜ **全屏会话管理面板**：提供覆盖整个工作台的会话管理界面，用于集中查看、创建、切换和管理 Agent 会话。
+- 🚧 **Sim Agent 工作台**：将 Sim 接入 Activity Bar、Editor 和全屏界面。最终由 Sim Mothership 统一管理 Agent Session identity、消息和运行状态；Vibe VS Code 不维护第二份 Session catalog。当前阶段交付宿主、文件/选区上下文和编辑器/终端桥接；Workspace 与 Project 上下文由 [#12](https://github.com/ActivePeter/vibe-vscode/issues/12) 后续接入，Session 产品入口再单独切换。详见 [Sim 集成与 Agent Session 唯一权威](vibe_vscode_doc/design/sim_agent_session_authority.md)。
 - ⬜ **文档驱动开发**：支持在编辑器中选中文档内容，通过右键菜单以选区作为上下文创建新的 Agent 会话，让需求和设计文档直接驱动开发。
 - ⬜ **Codex Agent 优先交互**：以 Codex Agent 作为首要会话形态，优先完善会话创建、交互、状态呈现与恢复体验。
 

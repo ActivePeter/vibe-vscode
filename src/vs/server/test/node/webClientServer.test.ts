@@ -76,6 +76,8 @@ suite('WebClientServer', () => {
 				first: simplifiedChinese.messages.firstTitle,
 				reuse: simplifiedChinese.messages.reuseTitle,
 				repair: simplifiedChinese.messages.repairTitle,
+				slow: simplifiedChinese.messages.slowLoading,
+				metrics: simplifiedChinese.messages.processedBytesWithTotal,
 				ready: simplifiedChinese.messages.ready,
 			},
 			traditionalChinese: {
@@ -87,6 +89,8 @@ suite('WebClientServer', () => {
 				staticRoot: english.staticRoot,
 				first: english.messages.firstTitle,
 				reuse: english.messages.reuseTitle,
+				slow: english.messages.slowLoading,
+				metrics: english.messages.processedBytes,
 			},
 		}, {
 			simplifiedChinese: {
@@ -94,6 +98,8 @@ suite('WebClientServer', () => {
 				first: '首次加载并缓存资源',
 				reuse: '正在复用本地缓存',
 				repair: '缓存不完整，正在补全',
+				slow: '加载时间较长，仍在继续；网络较慢时可能需要更久',
+				metrics: '已处理 {0} / {1} · 进度 {2}%',
 				ready: '工作台已就绪',
 			},
 			traditionalChinese: {
@@ -105,6 +111,8 @@ suite('WebClientServer', () => {
 				staticRoot: '/static',
 				first: 'Loading and caching resources for the first time',
 				reuse: 'Reusing the local cache',
+				slow: 'Loading is taking longer than usual and is still continuing. A slow network may need more time',
+				metrics: 'Processed {0} · Progress {1}%',
 			},
 		});
 	});

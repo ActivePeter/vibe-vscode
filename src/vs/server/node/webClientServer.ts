@@ -142,9 +142,13 @@ interface IWebClientStartupMessages {
 	readonly startingWorkbench: string;
 	readonly restoringWorkbench: string;
 	readonly ready: string;
+	readonly slowLoading: string;
 	readonly loadError: string;
 	readonly reload: string;
 	readonly progressLabel: string;
+	readonly processedBytes: string;
+	readonly processedBytesWithTotal: string;
+	readonly byteUnits: readonly string[];
 }
 
 export interface IWebClientStartupConfiguration {
@@ -211,9 +215,13 @@ export function getWebClientStartupConfiguration(locale: string, cacheVersion: s
 			startingWorkbench: '核心資源已就緒，正在啟動工作區',
 			restoringWorkbench: '工作區已啟動，正在還原介面',
 			ready: '工作區已就緒',
+			slowLoading: '載入時間較長，仍在繼續；網路較慢時可能需要更久',
 			loadError: '核心資源載入失敗，請重新載入頁面',
 			reload: '重新載入',
 			progressLabel: '工作區載入進度',
+			processedBytes: '已處理 {0} · 進度 {1}%',
+			processedBytesWithTotal: '已處理 {0} / {1} · 進度 {2}%',
+			byteUnits: ['B', 'KB', 'MB', 'GB'],
 		};
 	} else if (normalizedLocale === 'zh' || normalizedLocale.startsWith('zh-')) {
 		messages = {
@@ -229,9 +237,13 @@ export function getWebClientStartupConfiguration(locale: string, cacheVersion: s
 			startingWorkbench: '核心资源已就绪，正在启动工作台',
 			restoringWorkbench: '工作台已启动，正在恢复界面',
 			ready: '工作台已就绪',
+			slowLoading: '加载时间较长，仍在继续；网络较慢时可能需要更久',
 			loadError: '核心资源加载失败，请重新加载页面',
 			reload: '重新加载',
 			progressLabel: '工作台加载进度',
+			processedBytes: '已处理 {0} · 进度 {1}%',
+			processedBytesWithTotal: '已处理 {0} / {1} · 进度 {2}%',
+			byteUnits: ['B', 'KB', 'MB', 'GB'],
 		};
 	} else {
 		messages = {
@@ -247,9 +259,13 @@ export function getWebClientStartupConfiguration(locale: string, cacheVersion: s
 			startingWorkbench: 'Core resources are ready. Starting the workbench',
 			restoringWorkbench: 'The workbench has started. Restoring the interface',
 			ready: 'The workbench is ready',
+			slowLoading: 'Loading is taking longer than usual and is still continuing. A slow network may need more time',
 			loadError: 'Core resources failed to load. Reload the page to try again',
 			reload: 'Reload',
 			progressLabel: 'Workbench loading progress',
+			processedBytes: 'Processed {0} · Progress {1}%',
+			processedBytesWithTotal: 'Processed {0} / {1} · Progress {2}%',
+			byteUnits: ['B', 'KB', 'MB', 'GB'],
 		};
 	}
 

@@ -92,6 +92,15 @@
 				animation: vscode-workbench-startup-sheen 1.4s linear infinite;
 			}
 
+			.vscode-workbench-startup-metrics {
+				min-height: 18px;
+				margin: var(--vscode-spacing-size80, 8px) 0 0;
+				color: var(--vscode-descriptionForeground, GrayText);
+				font-size: var(--vscode-fontSize-label1, 12px);
+				font-variant-numeric: tabular-nums;
+				line-height: 1.5;
+			}
+
 			.vscode-workbench-startup-action {
 				margin-top: var(--vscode-spacing-size200, 20px);
 				padding: var(--vscode-spacing-size60, 6px) var(--vscode-spacing-size120, 12px);
@@ -153,6 +162,7 @@
 				<div id="vscode-workbench-startup-progress" class="vscode-workbench-startup-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="18">
 					<div class="vscode-workbench-startup-progress-value"></div>
 				</div>
+				<p id="vscode-workbench-startup-metrics" class="vscode-workbench-startup-metrics"></p>
 				<button id="vscode-workbench-startup-action" class="vscode-workbench-startup-action" type="button" hidden></button>
 			</div>
 		</div>
@@ -176,9 +186,10 @@
 			const titleElement = document.getElementById('vscode-workbench-startup-title');
 			const detailElement = document.getElementById('vscode-workbench-startup-detail');
 			const progressElement = document.getElementById('vscode-workbench-startup-progress');
+			const metricsElement = document.getElementById('vscode-workbench-startup-metrics');
 			const actionElement = document.getElementById('vscode-workbench-startup-action');
 			const mainScript = document.getElementById('vscode-workbench-main');
-			if (!modeElement || !titleElement || !detailElement || !progressElement || !actionElement || !mainScript) {
+			if (!modeElement || !titleElement || !detailElement || !progressElement || !metricsElement || !actionElement || !mainScript) {
 				overlay.remove();
 				return;
 			}
@@ -187,9 +198,28 @@
 			const storageKey = configuration.cacheVersion ? `vscode.server.workbenchCacheReady:${configuration.cacheVersion}` : undefined;
 			let storageAvailable = false;
 			let cacheMode = 'unknown';
+			let knownTotalBytes = 0;
 			if (storageKey) {
 				try {
-					cacheMode = window.localStorage.getItem(storageKey) === '1' ? 'reuse' : 'first';
+					const storedValue = window.localStorage.getItem(storageKey);
+					if (storedValue === '1') {
+						cacheMode = 'reuse';
+					} else if (storedValue) {
+						try {
+							const storedRecord = JSON.parse(storedValue);
+							if (storedRecord?.ready === true) {
+								cacheMode = 'reuse';
+								if (Number.isFinite(storedRecord.totalBytes) && storedRecord.totalBytes > 0) {
+									knownTotalBytes = storedRecord.totalBytes;
+								}
+							}
+						} catch (error) {
+							// An invalid advisory cache marker is equivalent to a first load.
+						}
+					}
+					if (cacheMode === 'unknown') {
+						cacheMode = 'first';
+					}
 					storageAvailable = true;
 				} catch (error) {
 					// Browser storage can be unavailable without preventing the workbench from loading.
@@ -214,31 +244,96 @@
 				}
 			};
 
+			const staticRoot = new URL(configuration.staticRoot, window.location.origin).href.replace(/\/?$/, '/');
+			const observedResources = new Set();
+			let processedBytes = 0;
+			let downloadedResource = false;
+			let resourceObserver;
+			let metricsFrame = 0;
 			let progress = 0;
+			let slowLoading = false;
+
+			const formatMessage = (template, ...values) => template.replace(/\{(\d+)\}/g, (_, index) => values[Number(index)] ?? '');
+			const formatBytes = bytes => {
+				let value = bytes;
+				let unitIndex = 0;
+				while (value >= 1024 && unitIndex < messages.byteUnits.length - 1) {
+					value /= 1024;
+					unitIndex++;
+				}
+				const maximumFractionDigits = unitIndex === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
+				return `${new Intl.NumberFormat(undefined, { maximumFractionDigits }).format(value)} ${messages.byteUnits[unitIndex]}`;
+			};
+
+			const updateAccessibleProgress = () => {
+				progressElement.setAttribute('aria-valuetext', `${detailElement.textContent}. ${metricsElement.textContent}`);
+			};
+
+			const updateMetrics = () => {
+				if (knownTotalBytes > 0) {
+					metricsElement.textContent = formatMessage(messages.processedBytesWithTotal, formatBytes(processedBytes), formatBytes(knownTotalBytes), progress);
+				} else {
+					metricsElement.textContent = formatMessage(messages.processedBytes, formatBytes(processedBytes), progress);
+				}
+				updateAccessibleProgress();
+			};
+
 			const updateProgress = (value, detail) => {
+				if (slowLoading) {
+					slowLoading = false;
+					overlay.removeAttribute('data-state');
+					actionElement.hidden = true;
+				}
 				progress = Math.max(progress, value);
 				overlay.style.setProperty('--vscode-workbench-startup-progress', `${progress}%`);
 				progressElement.setAttribute('aria-valuenow', String(progress));
-				progressElement.setAttribute('aria-valuetext', detail);
 				detailElement.textContent = detail;
+				updateMetrics();
 			};
+
+			const recordResources = entries => {
+				let changed = false;
+				for (const entry of entries) {
+					if (entry.entryType !== 'resource' || !entry.name.startsWith(staticRoot)) {
+						continue;
+					}
+					const resourceKey = `${entry.name}\n${entry.startTime}`;
+					if (observedResources.has(resourceKey)) {
+						continue;
+					}
+					observedResources.add(resourceKey);
+					downloadedResource ||= entry.transferSize > 0;
+					processedBytes += entry.encodedBodySize || entry.transferSize || 0;
+					changed = true;
+				}
+				if (changed && !metricsFrame) {
+					metricsFrame = window.requestAnimationFrame(() => {
+						metricsFrame = 0;
+						updateMetrics();
+					});
+				}
+			};
+
+			window.performance?.setResourceTimingBufferSize?.(10000);
+			recordResources(window.performance?.getEntriesByType?.('resource') ?? []);
+			if (window.PerformanceObserver) {
+				resourceObserver = new PerformanceObserver(entries => recordResources(entries.getEntries()));
+				try {
+					resourceObserver.observe({ type: 'resource', buffered: true });
+				} catch (error) {
+					resourceObserver.observe({ entryTypes: ['resource'] });
+				}
+			}
 
 			updateCacheMode(cacheMode);
 			progressElement.setAttribute('aria-label', messages.progressLabel);
 			updateProgress(18, messages.loadingResources);
 
 			const reconcileCacheMode = () => {
-				if (!configuration.cacheVersion || !window.performance?.getEntriesByType) {
+				if (!configuration.cacheVersion || !observedResources.size) {
 					return;
 				}
 
-				const staticRoot = new URL(configuration.staticRoot, window.location.origin).href.replace(/\/?$/, '/');
-				const staticResources = window.performance.getEntriesByType('resource').filter(entry => entry.name.startsWith(staticRoot));
-				if (!staticResources.length) {
-					return;
-				}
-
-				const downloadedResource = staticResources.some(entry => entry.transferSize > 0);
 				if (cacheMode === 'reuse' && downloadedResource) {
 					updateCacheMode('repair');
 				} else if (cacheMode === 'first' && !downloadedResource) {
@@ -260,7 +355,6 @@
 			}
 
 			let ready = false;
-			let timedOut = false;
 			let readinessObserver;
 			const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 			const persistReadyVersion = () => {
@@ -268,7 +362,8 @@
 					return;
 				}
 				try {
-					window.localStorage.setItem(storageKey, '1');
+					knownTotalBytes = Math.max(knownTotalBytes, processedBytes);
+					window.localStorage.setItem(storageKey, JSON.stringify({ ready: true, totalBytes: knownTotalBytes || undefined }));
 				} catch (error) {
 					// Cache status is advisory; startup success must not depend on persistence.
 				}
@@ -286,11 +381,18 @@
 					return;
 				}
 				ready = true;
-				window.clearTimeout(startupTimeout);
+				window.clearTimeout(slowLoadingTimeout);
 				readinessObserver?.disconnect();
+				recordResources(window.performance?.getEntriesByType?.('resource') ?? []);
+				resourceObserver?.disconnect();
+				if (metricsFrame) {
+					window.cancelAnimationFrame(metricsFrame);
+					metricsFrame = 0;
+				}
 				reconcileCacheMode();
 				persistReadyVersion();
 				updateProgress(100, messages.ready);
+				actionElement.hidden = true;
 				overlay.setAttribute('aria-busy', 'false');
 				overlay.setAttribute('data-state', 'ready');
 				if (prefersReducedMotion) {
@@ -304,11 +406,26 @@
 				if (ready) {
 					return;
 				}
-				timedOut = true;
+				window.clearTimeout(slowLoadingTimeout);
+				resourceObserver?.disconnect();
+				slowLoading = false;
 				overlay.setAttribute('data-state', 'error');
+				overlay.setAttribute('aria-busy', 'false');
 				progressElement.removeAttribute('aria-valuenow');
-				progressElement.setAttribute('aria-valuetext', messages.loadError);
 				detailElement.textContent = messages.loadError;
+				updateAccessibleProgress();
+				actionElement.textContent = messages.reload;
+				actionElement.hidden = false;
+			};
+
+			const showSlowLoading = () => {
+				if (ready) {
+					return;
+				}
+				slowLoading = true;
+				overlay.setAttribute('data-state', 'slow');
+				detailElement.textContent = messages.slowLoading;
+				updateAccessibleProgress();
 				actionElement.textContent = messages.reload;
 				actionElement.hidden = false;
 			};
@@ -325,21 +442,11 @@
 					return;
 				}
 				mutationObserver.disconnect();
-				if (timedOut) {
-					removeOverlay();
-				} else {
-					updateProgress(84, messages.restoringWorkbench);
-				}
+				updateProgress(84, messages.restoringWorkbench);
 			});
 			mutationObserver.observe(document.body, { childList: true });
 
-			const startupTimeout = window.setTimeout(() => {
-				if (document.querySelector('.monaco-workbench')) {
-					removeOverlay();
-				} else {
-					showLoadError();
-				}
-			}, 60000);
+			const slowLoadingTimeout = window.setTimeout(showSlowLoading, 60000);
 
 			const didStartWorkbench = () => window.performance?.getEntriesByName('code/didStartWorkbench', 'mark').length > 0;
 			if (didStartWorkbench()) {

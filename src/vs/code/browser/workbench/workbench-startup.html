@@ -1,0 +1,360 @@
+<!-- Copyright (C) Microsoft Corporation. All rights reserved. -->
+<!-- WORKBENCH_STARTUP_STYLE -->
+		<!-- Startup progress is intentionally self-contained so it can render before workbench CSS. -->
+		<style>
+			html, body {
+				width: 100%;
+				height: 100%;
+				margin: 0;
+				overflow: hidden;
+			}
+
+			#vscode-workbench-startup {
+				position: fixed;
+				inset: 0;
+				z-index: 10000;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				box-sizing: border-box;
+				padding: var(--vscode-spacing-size240, 24px);
+				color-scheme: light dark;
+				color: var(--vscode-foreground, CanvasText);
+				background: var(--vscode-editor-background, Canvas);
+				font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+				transition: opacity 160ms ease-out;
+			}
+
+			#vscode-workbench-startup[data-state="ready"] {
+				opacity: 0;
+				pointer-events: none;
+			}
+
+			.vscode-workbench-startup-content {
+				width: min(420px, 100%);
+			}
+
+			.vscode-workbench-startup-mode {
+				display: inline-flex;
+				align-items: center;
+				min-height: 20px;
+				box-sizing: border-box;
+				margin: 0;
+				padding: var(--vscode-spacing-size20, 2px) var(--vscode-spacing-size80, 8px);
+				border-radius: var(--vscode-cornerRadius-circle, 9999px);
+				color: var(--vscode-textLink-foreground, LinkText);
+				background: color-mix(in srgb, currentColor 12%, Canvas);
+				font-size: var(--vscode-fontSize-label2, 11px);
+				font-weight: var(--vscode-fontWeight-semiBold, 600);
+			}
+
+			.vscode-workbench-startup-title {
+				margin: var(--vscode-spacing-size120, 12px) 0 0;
+				font-size: var(--vscode-fontSize-heading2, 18px);
+				font-weight: var(--vscode-fontWeight-semiBold, 600);
+				line-height: 1.4;
+			}
+
+			.vscode-workbench-startup-detail {
+				min-height: 20px;
+				margin: var(--vscode-spacing-size80, 8px) 0 0;
+				color: var(--vscode-descriptionForeground, GrayText);
+				font-size: var(--vscode-fontSize-body1, 13px);
+				font-weight: var(--vscode-fontWeight-regular, 400);
+				line-height: 1.5;
+			}
+
+			.vscode-workbench-startup-progress {
+				height: var(--vscode-spacing-size40, 4px);
+				margin-top: var(--vscode-spacing-size240, 24px);
+				overflow: hidden;
+				border-radius: var(--vscode-cornerRadius-circle, 9999px);
+				background: ButtonFace;
+				background: color-mix(in srgb, CanvasText 16%, Canvas);
+			}
+
+			.vscode-workbench-startup-progress-value {
+				position: relative;
+				width: var(--vscode-workbench-startup-progress, 18%);
+				height: 100%;
+				overflow: hidden;
+				border-radius: inherit;
+				background: var(--vscode-progressBar-background, Highlight);
+				transition: width 180ms ease-out;
+			}
+
+			.vscode-workbench-startup-progress-value::after {
+				position: absolute;
+				inset: 0 auto 0 0;
+				width: 40%;
+				background: color-mix(in srgb, HighlightText 36%, transparent);
+				content: "";
+				animation: vscode-workbench-startup-sheen 1.4s linear infinite;
+			}
+
+			.vscode-workbench-startup-action {
+				margin-top: var(--vscode-spacing-size200, 20px);
+				padding: var(--vscode-spacing-size60, 6px) var(--vscode-spacing-size120, 12px);
+				border: var(--vscode-strokeThickness, 1px) solid var(--vscode-button-border, ButtonBorder);
+				border-radius: var(--vscode-cornerRadius-small, 4px);
+				color: var(--vscode-button-foreground, ButtonText);
+				background: var(--vscode-button-background, ButtonFace);
+				font: inherit;
+				cursor: pointer;
+			}
+
+			.vscode-workbench-startup-action:hover {
+				background: var(--vscode-button-hoverBackground, Highlight);
+			}
+
+			.vscode-workbench-startup-action:focus-visible {
+				outline: 2px solid var(--vscode-focusBorder, Highlight);
+				outline-offset: 2px;
+			}
+
+			.vscode-workbench-startup-action[hidden] {
+				display: none;
+			}
+
+			@keyframes vscode-workbench-startup-sheen {
+				from { transform: translateX(-100%); }
+				to { transform: translateX(350%); }
+			}
+
+			@media (prefers-reduced-motion: reduce) {
+				#vscode-workbench-startup,
+				.vscode-workbench-startup-progress-value {
+					transition: none;
+				}
+
+				.vscode-workbench-startup-progress-value::after {
+					animation: none;
+				}
+			}
+
+			@media (forced-colors: active) {
+				.vscode-workbench-startup-progress {
+					box-sizing: border-box;
+					border: var(--vscode-strokeThickness, 1px) solid CanvasText;
+					background: Canvas;
+				}
+
+				.vscode-workbench-startup-progress-value {
+					background: Highlight;
+				}
+			}
+		</style>
+<!-- WORKBENCH_STARTUP_BODY -->
+		<div id="vscode-workbench-startup" data-settings="{{WORKBENCH_STARTUP_CONFIGURATION}}" aria-busy="true">
+			<div class="vscode-workbench-startup-content">
+				<p id="vscode-workbench-startup-mode" class="vscode-workbench-startup-mode"></p>
+				<h1 id="vscode-workbench-startup-title" class="vscode-workbench-startup-title"></h1>
+				<p id="vscode-workbench-startup-detail" class="vscode-workbench-startup-detail" aria-live="polite"></p>
+				<div id="vscode-workbench-startup-progress" class="vscode-workbench-startup-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="18">
+					<div class="vscode-workbench-startup-progress-value"></div>
+				</div>
+				<button id="vscode-workbench-startup-action" class="vscode-workbench-startup-action" type="button" hidden></button>
+			</div>
+		</div>
+<!-- WORKBENCH_STARTUP_SCRIPT -->
+	<script>
+		(() => {
+			const overlay = document.getElementById('vscode-workbench-startup');
+			if (!overlay) {
+				return;
+			}
+
+			let configuration;
+			try {
+				configuration = JSON.parse(overlay.getAttribute('data-settings'));
+			} catch (error) {
+				overlay.remove();
+				return;
+			}
+
+			const modeElement = document.getElementById('vscode-workbench-startup-mode');
+			const titleElement = document.getElementById('vscode-workbench-startup-title');
+			const detailElement = document.getElementById('vscode-workbench-startup-detail');
+			const progressElement = document.getElementById('vscode-workbench-startup-progress');
+			const actionElement = document.getElementById('vscode-workbench-startup-action');
+			const mainScript = document.getElementById('vscode-workbench-main');
+			if (!modeElement || !titleElement || !detailElement || !progressElement || !actionElement || !mainScript) {
+				overlay.remove();
+				return;
+			}
+
+			const messages = configuration.messages;
+			const storageKey = configuration.cacheVersion ? `vscode.server.workbenchCacheReady:${configuration.cacheVersion}` : undefined;
+			let storageAvailable = false;
+			let cacheMode = 'unknown';
+			if (storageKey) {
+				try {
+					cacheMode = window.localStorage.getItem(storageKey) === '1' ? 'reuse' : 'first';
+					storageAvailable = true;
+				} catch (error) {
+					// Browser storage can be unavailable without preventing the workbench from loading.
+				}
+			}
+
+			const updateCacheMode = mode => {
+				cacheMode = mode;
+				overlay.setAttribute('data-cache-mode', mode);
+				if (mode === 'first') {
+					modeElement.textContent = messages.firstMode;
+					titleElement.textContent = messages.firstTitle;
+				} else if (mode === 'reuse') {
+					modeElement.textContent = messages.reuseMode;
+					titleElement.textContent = messages.reuseTitle;
+				} else if (mode === 'repair') {
+					modeElement.textContent = messages.repairMode;
+					titleElement.textContent = messages.repairTitle;
+				} else {
+					modeElement.textContent = messages.unknownMode;
+					titleElement.textContent = messages.unknownTitle;
+				}
+			};
+
+			let progress = 0;
+			const updateProgress = (value, detail) => {
+				progress = Math.max(progress, value);
+				overlay.style.setProperty('--vscode-workbench-startup-progress', `${progress}%`);
+				progressElement.setAttribute('aria-valuenow', String(progress));
+				progressElement.setAttribute('aria-valuetext', detail);
+				detailElement.textContent = detail;
+			};
+
+			updateCacheMode(cacheMode);
+			progressElement.setAttribute('aria-label', messages.progressLabel);
+			updateProgress(18, messages.loadingResources);
+
+			const reconcileCacheMode = () => {
+				if (!configuration.cacheVersion || !window.performance?.getEntriesByType) {
+					return;
+				}
+
+				const staticRoot = new URL(configuration.staticRoot, window.location.origin).href.replace(/\/?$/, '/');
+				const staticResources = window.performance.getEntriesByType('resource').filter(entry => entry.name.startsWith(staticRoot));
+				if (!staticResources.length) {
+					return;
+				}
+
+				const downloadedResource = staticResources.some(entry => entry.transferSize > 0);
+				if (cacheMode === 'reuse' && downloadedResource) {
+					updateCacheMode('repair');
+				} else if (cacheMode === 'first' && !downloadedResource) {
+					updateCacheMode('reuse');
+				}
+			};
+
+			const stylesheet = document.getElementById('vscode-workbench-styles');
+			if (stylesheet) {
+				const stylesheetLoaded = () => {
+					reconcileCacheMode();
+					updateProgress(36, messages.loadingResources);
+				};
+				if (stylesheet.sheet) {
+					stylesheetLoaded();
+				} else {
+					stylesheet.addEventListener('load', stylesheetLoaded, { once: true });
+				}
+			}
+
+			let ready = false;
+			let timedOut = false;
+			let readinessObserver;
+			const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+			const persistReadyVersion = () => {
+				if (!storageKey || !storageAvailable) {
+					return;
+				}
+				try {
+					window.localStorage.setItem(storageKey, '1');
+				} catch (error) {
+					// Cache status is advisory; startup success must not depend on persistence.
+				}
+			};
+
+			const removeOverlay = () => {
+				if (!overlay.isConnected) {
+					return;
+				}
+				overlay.remove();
+			};
+
+			const completeStartup = () => {
+				if (ready) {
+					return;
+				}
+				ready = true;
+				window.clearTimeout(startupTimeout);
+				readinessObserver?.disconnect();
+				reconcileCacheMode();
+				persistReadyVersion();
+				updateProgress(100, messages.ready);
+				overlay.setAttribute('aria-busy', 'false');
+				overlay.setAttribute('data-state', 'ready');
+				if (prefersReducedMotion) {
+					removeOverlay();
+				} else {
+					window.setTimeout(removeOverlay, 220);
+				}
+			};
+
+			const showLoadError = () => {
+				if (ready) {
+					return;
+				}
+				timedOut = true;
+				overlay.setAttribute('data-state', 'error');
+				progressElement.removeAttribute('aria-valuenow');
+				progressElement.setAttribute('aria-valuetext', messages.loadError);
+				detailElement.textContent = messages.loadError;
+				actionElement.textContent = messages.reload;
+				actionElement.hidden = false;
+			};
+
+			actionElement.addEventListener('click', () => window.location.reload());
+			mainScript.addEventListener('load', () => {
+				reconcileCacheMode();
+				updateProgress(62, messages.startingWorkbench);
+			}, { once: true });
+			mainScript.addEventListener('error', showLoadError, { once: true });
+
+			const mutationObserver = new MutationObserver(() => {
+				if (!document.querySelector('.monaco-workbench')) {
+					return;
+				}
+				mutationObserver.disconnect();
+				if (timedOut) {
+					removeOverlay();
+				} else {
+					updateProgress(84, messages.restoringWorkbench);
+				}
+			});
+			mutationObserver.observe(document.body, { childList: true });
+
+			const startupTimeout = window.setTimeout(() => {
+				if (document.querySelector('.monaco-workbench')) {
+					removeOverlay();
+				} else {
+					showLoadError();
+				}
+			}, 60000);
+
+			const didStartWorkbench = () => window.performance?.getEntriesByName('code/didStartWorkbench', 'mark').length > 0;
+			if (didStartWorkbench()) {
+				completeStartup();
+			} else if (window.PerformanceObserver) {
+				readinessObserver = new PerformanceObserver(entries => {
+					if (entries.getEntries().some(entry => entry.name === 'code/didStartWorkbench')) {
+						completeStartup();
+					}
+				});
+				try {
+					readinessObserver.observe({ type: 'mark', buffered: true });
+				} catch (error) {
+					readinessObserver.observe({ entryTypes: ['mark'] });
+				}
+			}
+		})();
+	</script>

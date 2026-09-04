@@ -336,6 +336,7 @@ const serverWebResourcePatterns = [
 	// Web HTML
 	'vs/code/browser/workbench/workbench.html',
 	'vs/code/browser/workbench/workbench-dev.html',
+	'vs/code/browser/workbench/workbench-startup.html',
 	'vs/code/browser/workbench/callback.html',
 	'vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html',
 	'vs/workbench/contrib/webview/browser/pre/*.html',
@@ -364,6 +365,7 @@ const webResourcePatterns = [
 	// Web HTML
 	'vs/code/browser/workbench/workbench.html',
 	'vs/code/browser/workbench/workbench-dev.html',
+	'vs/code/browser/workbench/workbench-startup.html',
 	'vs/code/browser/workbench/callback.html',
 	'vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html',
 	'vs/workbench/contrib/webview/browser/pre/*.html',

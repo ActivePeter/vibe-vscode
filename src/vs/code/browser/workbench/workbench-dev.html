@@ -16,6 +16,8 @@
 		<!-- Disable pinch zooming -->
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
 
+{{WORKBENCH_STARTUP_STYLE}}
+
 		<!-- Workbench Configuration -->
 		<meta id="vscode-workbench-web-configuration" data-settings="{{WORKBENCH_WEB_CONFIGURATION}}">
 
@@ -33,6 +35,7 @@
 	</head>
 
 	<body aria-label="">
+{{WORKBENCH_STARTUP_BODY}}
 	</body>
 
 	<!-- Startup (do not modify order of script tags!) -->
@@ -63,5 +66,6 @@
 	<script>
 		performance.mark('code/willLoadWorkbenchMain');
 	</script>
-	<script type="module" src="{{WORKBENCH_WEB_BASE_URL}}/out/vs/code/browser/workbench/workbench.js"></script>
+	<script id="vscode-workbench-main" type="module" src="{{WORKBENCH_WEB_BASE_URL}}/out/vs/code/browser/workbench/workbench.js"></script>
+{{WORKBENCH_STARTUP_SCRIPT}}
 </html>

@@ -129,6 +129,133 @@ export function getWebClientStaticAssetCacheControl(isBuilt: boolean, cacheVersi
 	return isBuilt || !!cacheVersion ? CacheControl.NO_EXPIRY : CacheControl.ETAG;
 }
 
+interface IWebClientStartupMessages {
+	readonly firstMode: string;
+	readonly firstTitle: string;
+	readonly reuseMode: string;
+	readonly reuseTitle: string;
+	readonly repairMode: string;
+	readonly repairTitle: string;
+	readonly unknownMode: string;
+	readonly unknownTitle: string;
+	readonly loadingResources: string;
+	readonly startingWorkbench: string;
+	readonly restoringWorkbench: string;
+	readonly ready: string;
+	readonly loadError: string;
+	readonly reload: string;
+	readonly progressLabel: string;
+}
+
+export interface IWebClientStartupConfiguration {
+	readonly cacheVersion: string | undefined;
+	readonly staticRoot: string;
+	readonly messages: IWebClientStartupMessages;
+}
+
+export interface IWebClientStartupTemplate {
+	readonly style: string;
+	readonly body: string;
+	readonly script: string;
+}
+
+const WORKBENCH_STARTUP_STYLE_MARKER = '<!-- WORKBENCH_STARTUP_STYLE -->';
+const WORKBENCH_STARTUP_BODY_MARKER = '<!-- WORKBENCH_STARTUP_BODY -->';
+const WORKBENCH_STARTUP_SCRIPT_MARKER = '<!-- WORKBENCH_STARTUP_SCRIPT -->';
+
+/**
+ * Splits the shared startup fragment into the three locations required by the workbench document.
+ */
+export function parseWebClientStartupTemplate(content: string): IWebClientStartupTemplate {
+	const styleMarkerIndex = content.indexOf(WORKBENCH_STARTUP_STYLE_MARKER);
+	const bodyMarkerIndex = content.indexOf(WORKBENCH_STARTUP_BODY_MARKER);
+	const scriptMarkerIndex = content.indexOf(WORKBENCH_STARTUP_SCRIPT_MARKER);
+	if (styleMarkerIndex === -1 || bodyMarkerIndex <= styleMarkerIndex || scriptMarkerIndex <= bodyMarkerIndex) {
+		throw new Error('Invalid workbench startup template.');
+	}
+
+	const getSection = (start: number, marker: string, end: number): string => {
+		let section = content.substring(start + marker.length, end);
+		if (section.startsWith('\r\n')) {
+			section = section.substring(2);
+		} else if (section.startsWith('\n')) {
+			section = section.substring(1);
+		}
+		return section.trimEnd();
+	};
+
+	return {
+		style: getSection(styleMarkerIndex, WORKBENCH_STARTUP_STYLE_MARKER, bodyMarkerIndex),
+		body: getSection(bodyMarkerIndex, WORKBENCH_STARTUP_BODY_MARKER, scriptMarkerIndex),
+		script: getSection(scriptMarkerIndex, WORKBENCH_STARTUP_SCRIPT_MARKER, content.length),
+	};
+}
+
+/**
+ * Returns the small localized configuration needed before the workbench NLS bundles are available.
+ */
+export function getWebClientStartupConfiguration(locale: string, cacheVersion: string | undefined, staticRoot: string): IWebClientStartupConfiguration {
+	const normalizedLocale = locale.split(';', 1)[0].trim().toLowerCase();
+	let messages: IWebClientStartupMessages;
+	if (/^zh-(?:hant|hk|mo|tw)(?:-|$)/.test(normalizedLocale)) {
+		messages = {
+			firstMode: '首次載入',
+			firstTitle: '首次載入並快取資源',
+			reuseMode: '重用快取',
+			reuseTitle: '正在重用本機快取',
+			repairMode: '補全快取',
+			repairTitle: '快取不完整，正在補全',
+			unknownMode: '載入資源',
+			unknownTitle: '正在準備工作區',
+			loadingResources: '正在載入核心資源',
+			startingWorkbench: '核心資源已就緒，正在啟動工作區',
+			restoringWorkbench: '工作區已啟動，正在還原介面',
+			ready: '工作區已就緒',
+			loadError: '核心資源載入失敗，請重新載入頁面',
+			reload: '重新載入',
+			progressLabel: '工作區載入進度',
+		};
+	} else if (normalizedLocale === 'zh' || normalizedLocale.startsWith('zh-')) {
+		messages = {
+			firstMode: '首次加载',
+			firstTitle: '首次加载并缓存资源',
+			reuseMode: '复用缓存',
+			reuseTitle: '正在复用本地缓存',
+			repairMode: '补全缓存',
+			repairTitle: '缓存不完整，正在补全',
+			unknownMode: '加载资源',
+			unknownTitle: '正在准备工作台',
+			loadingResources: '正在加载核心资源',
+			startingWorkbench: '核心资源已就绪，正在启动工作台',
+			restoringWorkbench: '工作台已启动，正在恢复界面',
+			ready: '工作台已就绪',
+			loadError: '核心资源加载失败，请重新加载页面',
+			reload: '重新加载',
+			progressLabel: '工作台加载进度',
+		};
+	} else {
+		messages = {
+			firstMode: 'First load',
+			firstTitle: 'Loading and caching resources for the first time',
+			reuseMode: 'Cached',
+			reuseTitle: 'Reusing the local cache',
+			repairMode: 'Refreshing cache',
+			repairTitle: 'Completing the local cache',
+			unknownMode: 'Loading',
+			unknownTitle: 'Preparing the workbench',
+			loadingResources: 'Loading core resources',
+			startingWorkbench: 'Core resources are ready. Starting the workbench',
+			restoringWorkbench: 'The workbench has started. Restoring the interface',
+			ready: 'The workbench is ready',
+			loadError: 'Core resources failed to load. Reload the page to try again',
+			reload: 'Reload',
+			progressLabel: 'Workbench loading progress',
+		};
+	}
+
+	return { cacheVersion, staticRoot, messages };
+}
+
 /** Returns package NLS bundles from the most specific safe locale to the default bundle. */
 export function getBuiltinExtensionPackageNLSCandidates(locale: string): readonly string[] {
 	const requestedLocale = locale.split(';', 1)[0].trim().toLowerCase();
@@ -368,7 +495,12 @@ export class WebClientServer {
 		}
 
 		function asJSON(value: unknown): string {
-			return JSON.stringify(value).replace(/"/g, '&quot;');
+			return JSON.stringify(value)
+				.replace(/&/g, '&amp;')
+				.replace(/</g, '&lt;')
+				.replace(/>/g, '&gt;')
+				.replace(/"/g, '&quot;')
+				.replace(/'/g, '&#39;');
 		}
 
 		let _wrapWebWorkerExtHostInIframe: undefined | false = undefined;
@@ -395,6 +527,7 @@ export class WebClientServer {
 		const resolveWorkspaceURI = (defaultLocation?: string) => defaultLocation && URI.file(resolve(defaultLocation)).with({ scheme: Schemas.vscodeRemote, authority: remoteAuthority });
 
 		const filePath = FileAccess.asFileUri(`vs/code/browser/workbench/workbench${this._environmentService.isBuilt ? '' : '-dev'}.html`).fsPath;
+		const startupFilePath = FileAccess.asFileUri('vs/code/browser/workbench/workbench-startup.html').fsPath;
 		const authSessionInfo = !this._environmentService.isBuilt && this._environmentService.args['github-auth'] ? {
 			id: generateUuid(),
 			providerId: 'github',
@@ -446,10 +579,16 @@ export class WebClientServer {
 		} else {
 			WORKBENCH_NLS_URL = ''; // fallback will apply
 		}
+		const startupConfiguration = getWebClientStartupConfiguration(
+			locale,
+			this._environmentService.args['web-client-cache-version'] ? staticRoute : undefined,
+			staticRoute
+		);
 
 		const values: { [key: string]: string } = {
 			WORKBENCH_WEB_CONFIGURATION: asJSON(workbenchWebConfiguration),
 			WORKBENCH_AUTH_SESSION: authSessionInfo ? asJSON(authSessionInfo) : '',
+			WORKBENCH_STARTUP_CONFIGURATION: asJSON(startupConfiguration),
 			WORKBENCH_WEB_BASE_URL: staticRoute,
 			WORKBENCH_NLS_URL,
 			WORKBENCH_NLS_FALLBACK_URL: `${staticRoute}/out/nls.messages.js`
@@ -480,10 +619,18 @@ export class WebClientServer {
 			values['WORKBENCH_BUILTIN_EXTENSIONS'] = asJSON(bundledExtensions);
 		}
 
-		let data;
+		let data: string;
 		try {
-			const workbenchTemplate = (await promises.readFile(filePath)).toString();
-			data = workbenchTemplate.replace(/\{\{([^}]+)\}\}/g, (_, key) => values[key] ?? 'undefined');
+			const [workbenchTemplate, startupTemplate] = await Promise.all([
+				promises.readFile(filePath, 'utf8'),
+				promises.readFile(startupFilePath, 'utf8')
+			]);
+			const renderTemplate = (template: string) => template.replace(/\{\{([^}]+)\}\}/g, (_, key) => values[key] ?? 'undefined');
+			const startup = parseWebClientStartupTemplate(startupTemplate);
+			values['WORKBENCH_STARTUP_STYLE'] = renderTemplate(startup.style);
+			values['WORKBENCH_STARTUP_BODY'] = renderTemplate(startup.body);
+			values['WORKBENCH_STARTUP_SCRIPT'] = renderTemplate(startup.script);
+			data = renderTemplate(workbenchTemplate);
 		} catch (e) {
 			res.writeHead(404, { 'Content-Type': 'text/plain' });
 			return void res.end('Not found');

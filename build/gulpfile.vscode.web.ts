@@ -62,6 +62,7 @@ function runEsbuildBundle(outDir: string, minify: boolean, nls: boolean, sourceM
 }
 
 export const vscodeWebResourceIncludes = [
+	'out-build/vs/code/browser/workbench/workbench-startup.html',
 
 	// NLS
 	'out-build/nls.messages.js',

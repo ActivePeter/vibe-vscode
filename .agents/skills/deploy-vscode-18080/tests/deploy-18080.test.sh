@@ -95,6 +95,7 @@ trap cleanup EXIT
 if grep -Eq -- 'run_legacy_server|--tls-(key|cert)-path' "$DEPLOY_SCRIPT"; then
 	fail_test 'deployment script still contains a direct-TLS server path'
 fi
+grep -Fq -- '--web-client-cache-version "$(basename -- "$runtime_root")"' "$DEPLOY_SCRIPT" || fail_test 'deployment does not version immutable web client assets from the selected release'
 
 set +e
 (

@@ -496,6 +496,7 @@ run_gateway_stack() {
 		--without-connection-token \
 		--server-data-dir "$SERVICE_STATE_ROOT/server" \
 		--default-workspace "$workspace_path" \
+		--web-client-cache-version "$(basename -- "$runtime_root")" \
 		--disable-telemetry \
 		--disable-experiments \
 		--accept-server-license-terms &

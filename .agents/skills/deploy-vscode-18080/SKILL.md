@@ -33,6 +33,7 @@ The script must remain the single automation entry for this skill. It:
 - keeps the active service on a self-contained, versioned last-known-good runtime while compiling the canonical checkout;
 - holds one stable fail-fast `flock` across build, staging, stop, activation, health checks, rollback, and cleanup;
 - stages and validates a complete runtime snapshot before stopping the active service;
+- versions web client static URLs from the selected immutable release and serves those assets with a long-lived browser cache;
 - downloads a pinned standalone Caddy release with fixed checksums, then copies Caddy, Node, runtime dependency trees, and server helpers into that snapshot, reusing unchanged files only from the previous versioned release rather than linking to mutable source;
 - switches to the candidate only after the build succeeds, and automatically restores the last-known-good runtime when startup or health checks fail;
 - resolves and builds the source checkout relative to this skill, without invoking another project's control code;

@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { getBuiltinExtensionPackageNLSCandidates, getWebClientResourceScheme } from '../../node/webClientServer.js';
+import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientResourceScheme, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRoute } from '../../node/webClientServer.js';
 
 suite('WebClientServer', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -40,6 +40,27 @@ suite('WebClientServer', () => {
 			forwardedHttps: 'https',
 			forwardedChain: 'https',
 			invalid: 'http',
+		});
+	});
+
+	test('versions immutable static assets without changing local development caching', () => {
+		const versionedRoute = getWebClientStaticAssetRoute('20260904T030000Z-123-456');
+		assert.deepStrictEqual({
+			unversionedRoute: getWebClientStaticAssetRoute(undefined),
+			versionedRouteIsHashed: /^\/static\/[0-9a-f]{64}$/.test(versionedRoute),
+			sameVersionIsStable: getWebClientStaticAssetRoute('20260904T030000Z-123-456') === versionedRoute,
+			newVersionChangesRoute: getWebClientStaticAssetRoute('20260904T040000Z-789-012') !== versionedRoute,
+			localDevelopmentCache: getWebClientStaticAssetCacheControl(false, undefined),
+			versionedDevelopmentCache: getWebClientStaticAssetCacheControl(false, 'release'),
+			builtCache: getWebClientStaticAssetCacheControl(true, undefined),
+		}, {
+			unversionedRoute: '/static',
+			versionedRouteIsHashed: true,
+			sameVersionIsStable: true,
+			newVersionChangesRoute: true,
+			localDevelopmentCache: CacheControl.ETAG,
+			versionedDevelopmentCache: CacheControl.NO_EXPIRY,
+			builtCache: CacheControl.NO_EXPIRY,
 		});
 	});
 });

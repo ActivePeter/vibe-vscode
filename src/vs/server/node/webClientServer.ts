@@ -66,7 +66,7 @@ export async function serveFile(filePath: string, cacheControl: CacheControl, lo
 
 			responseHeaders['Etag'] = etag;
 		} else if (cacheControl === CacheControl.NO_EXPIRY) {
-			responseHeaders['Cache-Control'] = 'public, max-age=31536000';
+			responseHeaders['Cache-Control'] = 'public, max-age=31536000, immutable';
 		} else if (cacheControl === CacheControl.NO_CACHING) {
 			responseHeaders['Cache-Control'] = 'no-store';
 		}
@@ -116,6 +116,19 @@ const CALLBACK_PATH = `/callback`;
 const WEB_EXTENSION_PATH = `/web-extension-resource`;
 const VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH = 'vibe-vscode';
 
+export function getWebClientStaticAssetRoute(cacheVersion: string | undefined): string {
+	if (!cacheVersion) {
+		return STATIC_PATH;
+	}
+
+	const cacheKey = crypto.createHash('sha256').update(cacheVersion).digest('hex');
+	return `${STATIC_PATH}/${cacheKey}`;
+}
+
+export function getWebClientStaticAssetCacheControl(isBuilt: boolean, cacheVersion: string | undefined): CacheControl {
+	return isBuilt || !!cacheVersion ? CacheControl.NO_EXPIRY : CacheControl.ETAG;
+}
+
 /** Returns package NLS bundles from the most specific safe locale to the default bundle. */
 export function getBuiltinExtensionPackageNLSCandidates(locale: string): readonly string[] {
 	const requestedLocale = locale.split(';', 1)[0].trim().toLowerCase();
@@ -153,6 +166,8 @@ async function readBuiltinExtensionPackageNLS(extensionPath: string, locale: str
 export class WebClientServer {
 
 	private readonly _webExtensionResourceUrlTemplate: URI | undefined;
+	private readonly _staticAssetRoute: string;
+	private readonly _staticAssetCacheControl: CacheControl;
 
 	constructor(
 		private readonly _connectionToken: ServerConnectionToken,
@@ -165,6 +180,9 @@ export class WebClientServer {
 		@ICSSDevelopmentService private readonly _cssDevService: ICSSDevelopmentService
 	) {
 		this._webExtensionResourceUrlTemplate = this._productService.extensionsGallery?.resourceUrlTemplate ? URI.parse(this._productService.extensionsGallery.resourceUrlTemplate) : undefined;
+		const cacheVersion = this._environmentService.args['web-client-cache-version'];
+		this._staticAssetRoute = getWebClientStaticAssetRoute(cacheVersion);
+		this._staticAssetCacheControl = getWebClientStaticAssetCacheControl(this._environmentService.isBuilt, cacheVersion);
 	}
 
 	/**
@@ -176,8 +194,8 @@ export class WebClientServer {
 	 */
 	async handle(req: http.IncomingMessage, res: http.ServerResponse, parsedUrl: URL, pathname: string): Promise<void> {
 		try {
-			if (pathname.startsWith(STATIC_PATH) && pathname.charCodeAt(STATIC_PATH.length) === CharCode.Slash) {
-				return this._handleStatic(req, res, pathname.substring(STATIC_PATH.length));
+			if (pathname.startsWith(this._staticAssetRoute) && pathname.charCodeAt(this._staticAssetRoute.length) === CharCode.Slash) {
+				return this._handleStatic(req, res, pathname.substring(this._staticAssetRoute.length));
 			}
 			if (pathname === '/') {
 				return this._handleRoot(req, res, parsedUrl);
@@ -206,7 +224,6 @@ export class WebClientServer {
 	private async _handleStatic(req: http.IncomingMessage, res: http.ServerResponse, resourcePath: string): Promise<void> {
 		const headers: Record<string, string> = Object.create(null);
 
-		// Strip the this._staticRoute from the path
 		const normalizedPathname = decodeURIComponent(resourcePath); // support paths that are uri-encoded (e.g. spaces => %20)
 
 		const filePath = join(APP_ROOT, normalizedPathname); // join also normalizes the path
@@ -214,7 +231,7 @@ export class WebClientServer {
 			return serveError(req, res, 400, `Bad request.`);
 		}
 
-		return serveFile(filePath, this._environmentService.isBuilt ? CacheControl.NO_EXPIRY : CacheControl.ETAG, this._logService, req, res, headers);
+		return serveFile(filePath, this._staticAssetCacheControl, this._logService, req, res, headers);
 	}
 
 	private _getResourceURLTemplateAuthority(uri: URI): string | undefined {
@@ -371,7 +388,7 @@ export class WebClientServer {
 			this._logService.trace(`[WebClientServer] Request URL: ${req.url}, basePath: ${basePath}, remoteAuthority: ${remoteAuthority}`);
 		}
 
-		const staticRoute = posix.join(basePath, this._productPath, STATIC_PATH);
+		const staticRoute = posix.join(basePath, this._productPath, this._staticAssetRoute);
 		const callbackRoute = posix.join(basePath, this._productPath, CALLBACK_PATH);
 		const webExtensionRoute = posix.join(basePath, this._productPath, WEB_EXTENSION_PATH);
 
@@ -489,6 +506,7 @@ export class WebClientServer {
 		].join(' ');
 
 		const headers: http.OutgoingHttpHeaders = {
+			'Cache-Control': 'no-store',
 			'Content-Type': 'text/html',
 			'Content-Security-Policy': cspDirectives
 		};

@@ -4,16 +4,17 @@ set -euo pipefail
 
 readonly SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SOURCE_ROOT="$(cd -- "$SCRIPT_DIRECTORY/../../../.." && pwd -P)"
-readonly SERVICE_SESSION=vibe_vscode_latest
-readonly SERVICE_PORT=18080
+readonly SERVICE_DEPLOY_NAME="${VIBE_VSCODE_DEPLOY_NAME:-deploy-vscode-18080}"
+readonly SERVICE_SESSION="${VIBE_VSCODE_SERVICE_SESSION:-vibe_vscode_latest}"
+readonly SERVICE_PORT="${VIBE_VSCODE_SERVICE_PORT:-18080}"
 readonly SERVICE_URL="https://127.0.0.1:${SERVICE_PORT}/"
-readonly SERVICE_SOCKET_ROOT="${VIBE_VSCODE_SOCKET_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/vibe-vscode-18080}"
-readonly SERVICE_BACKEND_SOCKET="$SERVICE_SOCKET_ROOT/backend.sock"
+readonly SERVICE_SOCKET_ROOT="${VIBE_VSCODE_SOCKET_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/vibe-vscode-${SERVICE_PORT}}"
+readonly SERVICE_BACKEND_SOCKET="${VIBE_VSCODE_BACKEND_SOCKET:-$SERVICE_SOCKET_ROOT/backend.sock}"
 readonly SERVICE_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/vibe-vscode"
 readonly SERVICE_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/vibe-vscode"
 readonly SERVICE_STATE_ROOT="${VIBE_VSCODE_SERVICE_STATE_ROOT:-$SERVICE_STATE_HOME/services/${SERVICE_PORT}}"
 readonly SERVICE_LOG="${VIBE_VSCODE_SERVICE_LOG:-$SERVICE_STATE_HOME/logs/${SERVICE_PORT}.log}"
-readonly SERVICE_RUNTIME_ROOT="$SOURCE_ROOT/.build/vibe-vscode-18080"
+readonly SERVICE_RUNTIME_ROOT="${VIBE_VSCODE_SERVICE_RUNTIME_ROOT:-$SOURCE_ROOT/.build/vibe-vscode-18080}"
 readonly SERVICE_RELEASES_ROOT="$SERVICE_RUNTIME_ROOT/releases"
 readonly SERVICE_CURRENT_LINK="$SERVICE_RUNTIME_ROOT/last-known-good"
 readonly SERVICE_PREVIOUS_LINK="$SERVICE_RUNTIME_ROOT/previous"
@@ -26,7 +27,7 @@ readonly CADDY_BINARY="$CADDY_CACHE_ROOT/caddy"
 readonly CADDY_CONFIG_RELATIVE_PATH=resources/server/vibe-vscode/Caddyfile
 readonly DEPLOY_TIMEOUT_SECONDS="${VIBE_VSCODE_DEPLOY_TIMEOUT_SECONDS:-900}"
 readonly DEFAULT_DEPLOY_MODE="${VIBE_VSCODE_DEPLOY_MODE:-latest}"
-readonly SCRIPT_PATH="$SCRIPT_DIRECTORY/$(basename -- "${BASH_SOURCE[0]}")"
+readonly SCRIPT_PATH="${VIBE_VSCODE_DEPLOY_ENTRYPOINT:-$SCRIPT_DIRECTORY/$(basename -- "${BASH_SOURCE[0]}")}"
 readonly NODE_VERSION="$(tr -d '[:space:]' < "$SOURCE_ROOT/.nvmrc")"
 readonly NODE_ROOT="$HOME/.nvm/versions/node/v$NODE_VERSION"
 readonly NODE_BIN="$NODE_ROOT/bin/node"
@@ -38,7 +39,7 @@ STAGING_RUNTIME_ROOT=
 DEPLOY_LOCK_FD=
 
 fail() {
-	printf 'deploy-vscode-18080: %s\n' "$1" >&2
+	printf '%s: %s\n' "$SERVICE_DEPLOY_NAME" "$1" >&2
 	exit 1
 }
 
@@ -51,8 +52,8 @@ require_command() {
 }
 
 print_usage() {
-	cat <<'EOF'
-Usage: deploy-18080.sh [--mode latest|snapshot] [--update-snapshot]
+	cat <<EOF
+Usage: $(basename -- "$SCRIPT_PATH") [--mode latest|snapshot] [--update-snapshot]
 
   --mode latest       Build and promote the current source before restart (default).
   --mode snapshot     Restart the selected immutable release without rebuilding.
@@ -87,7 +88,7 @@ acquire_deployment_lock() {
 	mkdir -p -- "$(dirname -- "$lock_path")"
 	exec {DEPLOY_LOCK_FD}>"$lock_path"
 	if ! flock --nonblock "$DEPLOY_LOCK_FD"; then
-		printf 'deploy-vscode-18080: another deployment holds %s\n' "$lock_path" >&2
+		printf '%s: another deployment holds %s\n' "$SERVICE_DEPLOY_NAME" "$lock_path" >&2
 		return 75
 	fi
 }
@@ -549,7 +550,9 @@ start_service() {
 	else
 		validate_candidate_runtime_root "$runtime_root" || return 1
 	fi
-	printf -v tmux_command 'exec env VIBE_VSCODE_SOCKET_ROOT=%q %q %q %q %q' "$SERVICE_SOCKET_ROOT" "$SCRIPT_PATH" "$internal_mode" "$runtime_root" "$workspace_path"
+	printf -v tmux_command 'exec env VIBE_VSCODE_DEPLOY_NAME=%q VIBE_VSCODE_SERVICE_SESSION=%q VIBE_VSCODE_SERVICE_PORT=%q VIBE_VSCODE_SOCKET_ROOT=%q VIBE_VSCODE_BACKEND_SOCKET=%q VIBE_VSCODE_SERVICE_STATE_ROOT=%q VIBE_VSCODE_SERVICE_LOG=%q VIBE_VSCODE_SERVICE_RUNTIME_ROOT=%q VIBE_VSCODE_TLS_CERT_PATH=%q VIBE_VSCODE_TLS_KEY_PATH=%q VIBE_VSCODE_DEPLOY_ENTRYPOINT=%q %q %q %q %q' \
+		"$SERVICE_DEPLOY_NAME" "$SERVICE_SESSION" "$SERVICE_PORT" "$SERVICE_SOCKET_ROOT" "$SERVICE_BACKEND_SOCKET" "$SERVICE_STATE_ROOT" "$SERVICE_LOG" "$SERVICE_RUNTIME_ROOT" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$SCRIPT_PATH" \
+		"$SCRIPT_PATH" "$internal_mode" "$runtime_root" "$workspace_path"
 	tmux new-session -d -s "$SERVICE_SESSION" -c "$runtime_root" "$tmux_command"
 }
 

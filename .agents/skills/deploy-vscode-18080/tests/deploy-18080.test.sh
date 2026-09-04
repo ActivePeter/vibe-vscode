@@ -18,6 +18,24 @@ assert_equal() {
 }
 
 bash -n "$DEPLOY_SCRIPT"
+custom_configuration="$(
+	VIBE_VSCODE_DEPLOY_NAME=deploy-vscode-18084 \
+	VIBE_VSCODE_SERVICE_SESSION=vibe_vscode_18084 \
+	VIBE_VSCODE_SERVICE_PORT=18084 \
+	VIBE_VSCODE_SOCKET_ROOT=/test/socket-18084 \
+	VIBE_VSCODE_BACKEND_SOCKET=/test/socket-18084/backend-custom.sock \
+	VIBE_VSCODE_SERVICE_STATE_ROOT=/test/state-18084 \
+	VIBE_VSCODE_SERVICE_LOG=/test/log-18084.log \
+	VIBE_VSCODE_SERVICE_RUNTIME_ROOT=/test/runtime-18084 \
+	VIBE_VSCODE_DEPLOY_ENTRYPOINT="$DEPLOY_SCRIPT" \
+		bash -c '
+			source "$1"
+			printf "%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
+				"$SERVICE_DEPLOY_NAME" "$SERVICE_SESSION" "$SERVICE_PORT" "$SERVICE_SOCKET_ROOT" \
+				"$SERVICE_BACKEND_SOCKET" "$SERVICE_STATE_ROOT" "$SERVICE_LOG" "$SERVICE_RUNTIME_ROOT" "$SCRIPT_PATH"
+		' bash "$DEPLOY_SCRIPT"
+)"
+assert_equal "deploy-vscode-18084|vibe_vscode_18084|18084|/test/socket-18084|/test/socket-18084/backend-custom.sock|/test/state-18084|/test/log-18084.log|/test/runtime-18084|$DEPLOY_SCRIPT" "$custom_configuration"
 source "$DEPLOY_SCRIPT"
 assert_equal "$(cd -- "$TEST_ROOT/../../../.." && pwd -P)" "$SOURCE_ROOT"
 host_mount_prefix='/mnt/'"ceph"

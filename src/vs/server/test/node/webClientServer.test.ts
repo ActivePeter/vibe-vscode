@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientResourceScheme, getWebClientStartupConfiguration, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRoute, parseWebClientStartupTemplate } from '../../node/webClientServer.js';
+import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientCacheRecoveryToken, getWebClientResourceScheme, getWebClientStartupConfiguration, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRecoveryRoute, getWebClientStaticAssetResourcePath, getWebClientStaticAssetRoute, parseWebClientStartupTemplate } from '../../node/webClientServer.js';
 
 suite('WebClientServer', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -64,11 +64,46 @@ suite('WebClientServer', () => {
 		});
 	});
 
+	test('isolates cache recovery in a fresh static module graph', () => {
+		const recoveryToken = '0123456789abcdef0123456789abcdef';
+		const cacheVersion = 'release';
+		const staticRoute = getWebClientStaticAssetRoute(cacheVersion);
+		const cacheKey = staticRoute.substring(staticRoute.lastIndexOf('/') + 1);
+		const recoveryQueryValue = `${cacheKey}.${recoveryToken}`;
+		const recoveryRoute = getWebClientStaticAssetRecoveryRoute(staticRoute, recoveryToken);
+		const duplicateTokenUrl = new URL(`https://example.test/?vscode-cache-recovery=${recoveryQueryValue}&vscode-cache-recovery=${recoveryQueryValue}`);
+
+		assert.deepStrictEqual({
+			recoveryRoute,
+			validToken: getWebClientCacheRecoveryToken(new URL(`https://example.test/?vscode-cache-recovery=${recoveryQueryValue}`), cacheVersion),
+			staleVersionToken: getWebClientCacheRecoveryToken(new URL(`https://example.test/?vscode-cache-recovery=${'0'.repeat(64)}.${recoveryToken}`), cacheVersion),
+			invalidToken: getWebClientCacheRecoveryToken(new URL('https://example.test/?vscode-cache-recovery=../out'), cacheVersion),
+			duplicateToken: getWebClientCacheRecoveryToken(duplicateTokenUrl, cacheVersion),
+			disabledToken: getWebClientCacheRecoveryToken(new URL(`https://example.test/?vscode-cache-recovery=${recoveryQueryValue}`), undefined),
+			recoveryResource: getWebClientStaticAssetResourcePath(`/recovery-${recoveryToken}/out/vs/code/browser/workbench/workbench.js`, true),
+			canonicalResource: getWebClientStaticAssetResourcePath('/out/vs/code/browser/workbench/workbench.js', true),
+			disabledRecoveryResource: getWebClientStaticAssetResourcePath(`/recovery-${recoveryToken}/out/file.js`, false),
+		}, {
+			recoveryRoute: `${staticRoute}/recovery-${recoveryToken}`,
+			validToken: recoveryToken,
+			staleVersionToken: undefined,
+			invalidToken: undefined,
+			duplicateToken: undefined,
+			disabledToken: undefined,
+			recoveryResource: '/out/vs/code/browser/workbench/workbench.js',
+			canonicalResource: '/out/vs/code/browser/workbench/workbench.js',
+			disabledRecoveryResource: `/recovery-${recoveryToken}/out/file.js`,
+		});
+	});
+
 	test('localizes the pre-workbench cache status without changing its version identity', () => {
 		const staticRoot = getWebClientStaticAssetRoute('release-1');
 		const simplifiedChinese = getWebClientStartupConfiguration('zh-CN;q=0.9', staticRoot, staticRoot);
 		const traditionalChinese = getWebClientStartupConfiguration('zh-Hant-HK', staticRoot, staticRoot);
 		const english = getWebClientStartupConfiguration('fr-FR', undefined, '/static');
+		const recoveryToken = '0123456789abcdef0123456789abcdef';
+		const recoveryRoot = getWebClientStaticAssetRecoveryRoute(staticRoot, recoveryToken);
+		const recovery = getWebClientStartupConfiguration('en', staticRoot, recoveryRoot, recoveryToken);
 
 		assert.deepStrictEqual({
 			simplifiedChinese: {
@@ -87,10 +122,18 @@ suite('WebClientServer', () => {
 			english: {
 				cacheVersion: english.cacheVersion,
 				staticRoot: english.staticRoot,
+				cacheRecoveryQuery: english.cacheRecoveryQuery,
 				first: english.messages.firstTitle,
 				reuse: english.messages.reuseTitle,
 				slow: english.messages.slowLoading,
 				metrics: english.messages.processedBytes,
+			},
+			recovery: {
+				cacheVersion: recovery.cacheVersion,
+				staticRoot: recovery.staticRoot,
+				recoveryToken: recovery.recoveryToken,
+				recovering: recovery.messages.recovering,
+				retry: recovery.messages.retry,
 			},
 		}, {
 			simplifiedChinese: {
@@ -109,10 +152,18 @@ suite('WebClientServer', () => {
 			english: {
 				cacheVersion: undefined,
 				staticRoot: '/static',
+				cacheRecoveryQuery: 'vscode-cache-recovery',
 				first: 'Loading and caching resources for the first time',
 				reuse: 'Reusing the local cache',
 				slow: 'Loading is taking longer than usual and is still continuing. A slow network may need more time',
 				metrics: 'Processed {0} · Progress {1}%',
+			},
+			recovery: {
+				cacheVersion: staticRoot,
+				staticRoot: recoveryRoot,
+				recoveryToken,
+				recovering: 'A cached resource failed to load. Retrying with a fresh copy',
+				retry: 'Retry with a fresh cache',
 			},
 		});
 	});

@@ -115,6 +115,10 @@ const STATIC_PATH = `/static`;
 const CALLBACK_PATH = `/callback`;
 const WEB_EXTENSION_PATH = `/web-extension-resource`;
 const VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH = 'vibe-vscode';
+const WEB_CLIENT_CACHE_RECOVERY_QUERY = 'vscode-cache-recovery';
+const WEB_CLIENT_CACHE_RECOVERY_PATH_PREFIX = 'recovery-';
+const WEB_CLIENT_CACHE_RECOVERY_QUERY_PATTERN = /^([0-9a-f]{64})\.([0-9a-f]{32})$/;
+const WEB_CLIENT_CACHE_RECOVERY_RESOURCE_PATTERN = /^\/recovery-[0-9a-f]{32}(\/.*)$/;
 
 export function getWebClientStaticAssetRoute(cacheVersion: string | undefined): string {
 	if (!cacheVersion) {
@@ -123,6 +127,39 @@ export function getWebClientStaticAssetRoute(cacheVersion: string | undefined): 
 
 	const cacheKey = crypto.createHash('sha256').update(cacheVersion).digest('hex');
 	return `${STATIC_PATH}/${cacheKey}`;
+}
+
+/**
+ * Returns a distinct static route so the browser reloads the complete ESM graph
+ * instead of reusing a failed immutable-cache entry.
+ */
+export function getWebClientStaticAssetRecoveryRoute(staticAssetRoute: string, recoveryToken: string): string {
+	return `${staticAssetRoute}/${WEB_CLIENT_CACHE_RECOVERY_PATH_PREFIX}${recoveryToken}`;
+}
+
+/** Returns a validated recovery token from the workbench URL. */
+export function getWebClientCacheRecoveryToken(parsedUrl: URL, cacheVersion: string | undefined): string | undefined {
+	if (!cacheVersion) {
+		return undefined;
+	}
+
+	const recoveryTokens = parsedUrl.searchParams.getAll(WEB_CLIENT_CACHE_RECOVERY_QUERY);
+	if (recoveryTokens.length !== 1) {
+		return undefined;
+	}
+
+	const recoveryMatch = WEB_CLIENT_CACHE_RECOVERY_QUERY_PATTERN.exec(recoveryTokens[0]);
+	const cacheKey = crypto.createHash('sha256').update(cacheVersion).digest('hex');
+	return recoveryMatch?.[1] === cacheKey ? recoveryMatch[2] : undefined;
+}
+
+/** Maps a cache-recovery URL back to the same immutable release file. */
+export function getWebClientStaticAssetResourcePath(resourcePath: string, recoveryEnabled: boolean): string {
+	if (!recoveryEnabled) {
+		return resourcePath;
+	}
+
+	return WEB_CLIENT_CACHE_RECOVERY_RESOURCE_PATTERN.exec(resourcePath)?.[1] ?? resourcePath;
 }
 
 export function getWebClientStaticAssetCacheControl(isBuilt: boolean, cacheVersion: string | undefined): CacheControl {
@@ -143,8 +180,10 @@ interface IWebClientStartupMessages {
 	readonly restoringWorkbench: string;
 	readonly ready: string;
 	readonly slowLoading: string;
+	readonly recovering: string;
 	readonly loadError: string;
 	readonly reload: string;
+	readonly retry: string;
 	readonly progressLabel: string;
 	readonly processedBytes: string;
 	readonly processedBytesWithTotal: string;
@@ -154,6 +193,8 @@ interface IWebClientStartupMessages {
 export interface IWebClientStartupConfiguration {
 	readonly cacheVersion: string | undefined;
 	readonly staticRoot: string;
+	readonly cacheRecoveryQuery: string;
+	readonly recoveryToken: string | undefined;
 	readonly messages: IWebClientStartupMessages;
 }
 
@@ -198,7 +239,7 @@ export function parseWebClientStartupTemplate(content: string): IWebClientStartu
 /**
  * Returns the small localized configuration needed before the workbench NLS bundles are available.
  */
-export function getWebClientStartupConfiguration(locale: string, cacheVersion: string | undefined, staticRoot: string): IWebClientStartupConfiguration {
+export function getWebClientStartupConfiguration(locale: string, cacheVersion: string | undefined, staticRoot: string, recoveryToken?: string): IWebClientStartupConfiguration {
 	const normalizedLocale = locale.split(';', 1)[0].trim().toLowerCase();
 	let messages: IWebClientStartupMessages;
 	if (/^zh-(?:hant|hk|mo|tw)(?:-|$)/.test(normalizedLocale)) {
@@ -216,8 +257,10 @@ export function getWebClientStartupConfiguration(locale: string, cacheVersion: s
 			restoringWorkbench: '工作區已啟動，正在還原介面',
 			ready: '工作區已就緒',
 			slowLoading: '載入時間較長，仍在繼續；網路較慢時可能需要更久',
-			loadError: '核心資源載入失敗，請重新載入頁面',
+			recovering: '偵測到快取資源載入失敗，正在改用全新的資源副本',
+			loadError: '全新的核心資源仍載入失敗，請檢查網路後重試',
 			reload: '重新載入',
+			retry: '使用新快取重試',
 			progressLabel: '工作區載入進度',
 			processedBytes: '已處理 {0} · 進度 {1}%',
 			processedBytesWithTotal: '已處理 {0} / {1} · 進度 {2}%',
@@ -238,8 +281,10 @@ export function getWebClientStartupConfiguration(locale: string, cacheVersion: s
 			restoringWorkbench: '工作台已启动，正在恢复界面',
 			ready: '工作台已就绪',
 			slowLoading: '加载时间较长，仍在继续；网络较慢时可能需要更久',
-			loadError: '核心资源加载失败，请重新加载页面',
+			recovering: '检测到缓存资源加载失败，正在改用全新的资源副本',
+			loadError: '全新的核心资源仍然加载失败，请检查网络后重试',
 			reload: '重新加载',
+			retry: '使用新缓存重试',
 			progressLabel: '工作台加载进度',
 			processedBytes: '已处理 {0} · 进度 {1}%',
 			processedBytesWithTotal: '已处理 {0} / {1} · 进度 {2}%',
@@ -260,8 +305,10 @@ export function getWebClientStartupConfiguration(locale: string, cacheVersion: s
 			restoringWorkbench: 'The workbench has started. Restoring the interface',
 			ready: 'The workbench is ready',
 			slowLoading: 'Loading is taking longer than usual and is still continuing. A slow network may need more time',
-			loadError: 'Core resources failed to load. Reload the page to try again',
+			recovering: 'A cached resource failed to load. Retrying with a fresh copy',
+			loadError: 'Fresh core resources still failed to load. Check the connection and try again',
 			reload: 'Reload',
+			retry: 'Retry with a fresh cache',
 			progressLabel: 'Workbench loading progress',
 			processedBytes: 'Processed {0} · Progress {1}%',
 			processedBytesWithTotal: 'Processed {0} / {1} · Progress {2}%',
@@ -269,7 +316,7 @@ export function getWebClientStartupConfiguration(locale: string, cacheVersion: s
 		};
 	}
 
-	return { cacheVersion, staticRoot, messages };
+	return { cacheVersion, staticRoot, cacheRecoveryQuery: WEB_CLIENT_CACHE_RECOVERY_QUERY, recoveryToken, messages };
 }
 
 /** Returns package NLS bundles from the most specific safe locale to the default bundle. */
@@ -309,6 +356,7 @@ async function readBuiltinExtensionPackageNLS(extensionPath: string, locale: str
 export class WebClientServer {
 
 	private readonly _webExtensionResourceUrlTemplate: URI | undefined;
+	private readonly _cacheVersion: string | undefined;
 	private readonly _staticAssetRoute: string;
 	private readonly _staticAssetCacheControl: CacheControl;
 
@@ -323,9 +371,9 @@ export class WebClientServer {
 		@ICSSDevelopmentService private readonly _cssDevService: ICSSDevelopmentService
 	) {
 		this._webExtensionResourceUrlTemplate = this._productService.extensionsGallery?.resourceUrlTemplate ? URI.parse(this._productService.extensionsGallery.resourceUrlTemplate) : undefined;
-		const cacheVersion = this._environmentService.args['web-client-cache-version'];
-		this._staticAssetRoute = getWebClientStaticAssetRoute(cacheVersion);
-		this._staticAssetCacheControl = getWebClientStaticAssetCacheControl(this._environmentService.isBuilt, cacheVersion);
+		this._cacheVersion = this._environmentService.args['web-client-cache-version'];
+		this._staticAssetRoute = getWebClientStaticAssetRoute(this._cacheVersion);
+		this._staticAssetCacheControl = getWebClientStaticAssetCacheControl(this._environmentService.isBuilt, this._cacheVersion);
 	}
 
 	/**
@@ -367,7 +415,7 @@ export class WebClientServer {
 	private async _handleStatic(req: http.IncomingMessage, res: http.ServerResponse, resourcePath: string): Promise<void> {
 		const headers: Record<string, string> = Object.create(null);
 
-		const normalizedPathname = decodeURIComponent(resourcePath); // support paths that are uri-encoded (e.g. spaces => %20)
+		const normalizedPathname = decodeURIComponent(getWebClientStaticAssetResourcePath(resourcePath, !!this._cacheVersion)); // support paths that are uri-encoded (e.g. spaces => %20)
 
 		const filePath = join(APP_ROOT, normalizedPathname); // join also normalizes the path
 		if (!isEqualOrParent(filePath, APP_ROOT, !isLinux)) {
@@ -536,7 +584,9 @@ export class WebClientServer {
 			this._logService.trace(`[WebClientServer] Request URL: ${req.url}, basePath: ${basePath}, remoteAuthority: ${remoteAuthority}`);
 		}
 
-		const staticRoute = posix.join(basePath, this._productPath, this._staticAssetRoute);
+		const canonicalStaticRoute = posix.join(basePath, this._productPath, this._staticAssetRoute);
+		const recoveryToken = getWebClientCacheRecoveryToken(parsedUrl, this._cacheVersion);
+		const staticRoute = recoveryToken ? getWebClientStaticAssetRecoveryRoute(canonicalStaticRoute, recoveryToken) : canonicalStaticRoute;
 		const callbackRoute = posix.join(basePath, this._productPath, CALLBACK_PATH);
 		const webExtensionRoute = posix.join(basePath, this._productPath, WEB_EXTENSION_PATH);
 
@@ -597,8 +647,9 @@ export class WebClientServer {
 		}
 		const startupConfiguration = getWebClientStartupConfiguration(
 			locale,
-			this._environmentService.args['web-client-cache-version'] ? staticRoute : undefined,
-			staticRoute
+			this._cacheVersion ? canonicalStaticRoute : undefined,
+			staticRoute,
+			recoveryToken
 		);
 
 		const values: { [key: string]: string } = {

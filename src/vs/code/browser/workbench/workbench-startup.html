@@ -196,9 +196,27 @@
 
 			const messages = configuration.messages;
 			const storageKey = configuration.cacheVersion ? `vscode.server.workbenchCacheReady:${configuration.cacheVersion}` : undefined;
+			const getCacheRecoveryUrl = recoveryToken => {
+				const recoveryUrl = new URL(window.location.href);
+				const cacheKey = configuration.cacheVersion.substring(configuration.cacheVersion.lastIndexOf('/') + 1);
+				recoveryUrl.searchParams.set(configuration.cacheRecoveryQuery, `${cacheKey}.${recoveryToken}`);
+				return recoveryUrl.href;
+			};
+			const createCacheRecoveryToken = () => {
+				const randomBytes = new Uint8Array(16);
+				if (window.crypto?.getRandomValues) {
+					window.crypto.getRandomValues(randomBytes);
+				} else {
+					for (let index = 0; index < randomBytes.length; index++) {
+						randomBytes[index] = Math.floor(Math.random() * 256);
+					}
+				}
+				return Array.from(randomBytes, value => value.toString(16).padStart(2, '0')).join('');
+			};
 			let storageAvailable = false;
 			let cacheMode = 'unknown';
 			let knownTotalBytes = 0;
+			let storedRecoveryToken;
 			if (storageKey) {
 				try {
 					const storedValue = window.localStorage.getItem(storageKey);
@@ -207,11 +225,16 @@
 					} else if (storedValue) {
 						try {
 							const storedRecord = JSON.parse(storedValue);
+							if (Number.isFinite(storedRecord?.totalBytes) && storedRecord.totalBytes > 0) {
+								knownTotalBytes = storedRecord.totalBytes;
+							}
 							if (storedRecord?.ready === true) {
 								cacheMode = 'reuse';
-								if (Number.isFinite(storedRecord.totalBytes) && storedRecord.totalBytes > 0) {
-									knownTotalBytes = storedRecord.totalBytes;
+								if (typeof storedRecord.recoveryToken === 'string' && /^[0-9a-f]{32}$/.test(storedRecord.recoveryToken)) {
+									storedRecoveryToken = storedRecord.recoveryToken;
 								}
+							} else if (storedRecord?.ready === false) {
+								cacheMode = 'repair';
 							}
 						} catch (error) {
 							// An invalid advisory cache marker is equivalent to a first load.
@@ -224,6 +247,13 @@
 				} catch (error) {
 					// Browser storage can be unavailable without preventing the workbench from loading.
 				}
+			}
+			if (storedRecoveryToken && !configuration.recoveryToken) {
+				window.location.replace(getCacheRecoveryUrl(storedRecoveryToken));
+				return;
+			}
+			if (configuration.recoveryToken && storedRecoveryToken !== configuration.recoveryToken) {
+				cacheMode = 'repair';
 			}
 
 			const updateCacheMode = mode => {
@@ -356,6 +386,8 @@
 
 			let ready = false;
 			let readinessObserver;
+			let recovering = false;
+			let actionHandler = () => window.location.reload();
 			const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 			const persistReadyVersion = () => {
 				if (!storageKey || !storageAvailable) {
@@ -363,9 +395,27 @@
 				}
 				try {
 					knownTotalBytes = Math.max(knownTotalBytes, processedBytes);
-					window.localStorage.setItem(storageKey, JSON.stringify({ ready: true, totalBytes: knownTotalBytes || undefined }));
+					window.localStorage.setItem(storageKey, JSON.stringify({
+						ready: true,
+						totalBytes: knownTotalBytes || undefined,
+						recoveryToken: configuration.recoveryToken
+					}));
 				} catch (error) {
 					// Cache status is advisory; startup success must not depend on persistence.
+				}
+			};
+			const invalidateReadyVersion = () => {
+				if (!storageKey || !storageAvailable) {
+					return;
+				}
+				try {
+					if (knownTotalBytes > 0) {
+						window.localStorage.setItem(storageKey, JSON.stringify({ ready: false, totalBytes: knownTotalBytes }));
+					} else {
+						window.localStorage.removeItem(storageKey);
+					}
+				} catch (error) {
+					// Recovery still works through its distinct resource URLs without persistence.
 				}
 			};
 
@@ -402,8 +452,32 @@
 				}
 			};
 
+			const beginCacheRecovery = () => {
+				if (ready || recovering || !configuration.cacheVersion) {
+					return;
+				}
+				recovering = true;
+				window.clearTimeout(slowLoadingTimeout);
+				readinessObserver?.disconnect();
+				resourceObserver?.disconnect();
+				invalidateReadyVersion();
+				updateCacheMode('repair');
+				slowLoading = false;
+				overlay.setAttribute('data-state', 'recovering');
+				overlay.setAttribute('aria-busy', 'true');
+				detailElement.textContent = messages.recovering;
+				updateAccessibleProgress();
+				actionElement.hidden = true;
+				window.location.replace(getCacheRecoveryUrl(createCacheRecoveryToken()));
+			};
+
 			const showLoadError = () => {
 				if (ready) {
+					return;
+				}
+				invalidateReadyVersion();
+				if (configuration.cacheVersion && !configuration.recoveryToken) {
+					beginCacheRecovery();
 					return;
 				}
 				window.clearTimeout(slowLoadingTimeout);
@@ -414,7 +488,8 @@
 				progressElement.removeAttribute('aria-valuenow');
 				detailElement.textContent = messages.loadError;
 				updateAccessibleProgress();
-				actionElement.textContent = messages.reload;
+				actionHandler = configuration.cacheVersion ? beginCacheRecovery : () => window.location.reload();
+				actionElement.textContent = configuration.cacheVersion ? messages.retry : messages.reload;
 				actionElement.hidden = false;
 			};
 
@@ -426,11 +501,12 @@
 				overlay.setAttribute('data-state', 'slow');
 				detailElement.textContent = messages.slowLoading;
 				updateAccessibleProgress();
+				actionHandler = () => window.location.reload();
 				actionElement.textContent = messages.reload;
 				actionElement.hidden = false;
 			};
 
-			actionElement.addEventListener('click', () => window.location.reload());
+			actionElement.addEventListener('click', () => actionHandler());
 			mainScript.addEventListener('load', () => {
 				reconcileCacheMode();
 				updateProgress(62, messages.startingWorkbench);

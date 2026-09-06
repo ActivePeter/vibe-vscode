@@ -58,14 +58,14 @@ function contributingTextEndpoints(range: Range): { first: Text; last: Text } | 
 				return NodeFilter.FILTER_ACCEPT;
 			}
 			const element = node as Element;
-			if (element.checkVisibility()) {
-				return NodeFilter.FILTER_SKIP;
-			}
-			// A `display: contents` element has no box of its own — so it reads
-			// as invisible — but its descendants do render and are selectable.
-			// Only read the computed style on this rare branch.
-			const display = dom.getWindow(element).getComputedStyle(element).display;
-			return display === 'contents' ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_REJECT;
+			// Prune by CSS hiding rules, not a visibility probe of the current
+			// layout boxes: WebKit can report newly inserted visible nodes as
+			// invisible before layout. A `display: contents` wrapper also has
+			// no box, but its descendants remain selectable.
+			const style = dom.getWindow(element).getComputedStyle(element);
+			return style.display === 'none' || (style.display !== 'contents' && style.contentVisibility === 'hidden')
+				? NodeFilter.FILTER_REJECT
+				: NodeFilter.FILTER_SKIP;
 		},
 	});
 	let first: Text | undefined;

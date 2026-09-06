@@ -309,6 +309,35 @@ suite('resolveResponseSelection', () => {
 		assert.strictEqual(resolveResponseSelection(widget)?.text, 'hello world');
 	});
 
+	for (const property of ['display', 'contentVisibility'] as const) {
+		test(`tracks ${property} changes before and after layout when resolving endpoints`, () => {
+			const { store, doc, widgetDomNode } = setup();
+			const markdown = doc.createElement('div');
+			markdown.classList.add('chat-markdown-part');
+			const text = doc.createTextNode('hello world');
+			markdown.appendChild(text);
+			const metadata = doc.createElement('div');
+			metadata.textContent = 'hidden metadata';
+			const footer = doc.createElement('div');
+			widgetDomNode.append(markdown, metadata, footer);
+			stubSelection(store, text, footer, 'hello world\n', 0);
+			const response = makeResponse('turn-1');
+			const widget = upcastPartial<IChatWidget>({ domNode: widgetDomNode, getElementFromNode: () => response });
+
+			metadata.style[property] = property === 'display' ? 'none' : 'hidden';
+			const hidden = resolveResponseSelection(widget)?.text;
+			metadata.style[property] = property === 'display' ? 'block' : 'visible';
+			const visible = resolveResponseSelection(widget)?.text;
+			metadata.style[property] = property === 'display' ? 'none' : 'hidden';
+			const hiddenAgain = resolveResponseSelection(widget)?.text;
+			widgetDomNode.getBoundingClientRect();
+			const afterLayout = resolveResponseSelection(widget)?.text;
+			assert.deepStrictEqual({ hidden, visible, hiddenAgain, afterLayout }, {
+				hidden: 'hello world', visible: undefined, hiddenAgain: 'hello world', afterLayout: 'hello world',
+			});
+		});
+	}
+
 	test('rejects a selection outside the markdown scope', () => {
 		const { store, doc, widgetDomNode } = setup();
 		const other = doc.createElement('div');

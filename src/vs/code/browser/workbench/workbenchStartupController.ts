@@ -4,9 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable, DisposableStore, type IDisposable } from '../../../base/common/lifecycle.js';
-import type { IPreparedWorkbenchCache, IWebClientCacheProgress } from './workbenchCache.js';
+import type * as workbenchCache from './workbenchCache.js';
 
-type StartupMode = 'unknown' | 'checking' | 'first' | 'reuse' | 'repair' | 'unavailable';
+type StartupMode = 'unknown' | 'checking' | 'first' | 'reuse' | 'repair' | 'unavailable' | 'unsupported';
 type StartupPhase = 'loading' | 'starting' | 'restoring' | 'slow' | 'error' | 'ready';
 
 export interface IWorkbenchStartupState {
@@ -14,17 +14,17 @@ export interface IWorkbenchStartupState {
 	readonly phase: StartupPhase;
 	readonly progress: number;
 	readonly cacheEnabled: boolean;
-	readonly cache: IWebClientCacheProgress | undefined;
+	readonly cache: workbenchCache.IWebClientCacheProgress | undefined;
 	readonly bytesPerSecond: number;
+	readonly unsupportedReason?: workbenchCache.WorkbenchCacheUnsupportedReason;
 }
 
 export interface IWorkbenchStartupHost {
 	now(): number;
 	delay(callback: () => void, milliseconds: number): IDisposable;
 	interval(callback: () => void, milliseconds: number): IDisposable;
-	loadCache(): Promise<Pick<typeof import('./workbenchCache.js'), 'isWorkbenchCacheSupported' | 'prepareWorkbenchCache'>>;
-	startCached(prepared: IPreparedWorkbenchCache): Promise<void>;
-	startNative(): Promise<void>;
+	loadCache(): Promise<typeof workbenchCache>;
+	startCached(prepared: workbenchCache.IPreparedWorkbenchCache): Promise<void>;
 	render(state: IWorkbenchStartupState): void;
 	logError(error: unknown): void;
 }
@@ -57,7 +57,7 @@ export class WorkbenchStartupController extends Disposable {
 	private readonly timers = this._register(new DisposableStore());
 	private readonly metrics: WorkbenchStartupMetrics;
 	private state: Omit<IWorkbenchStartupState, 'bytesPerSecond'>;
-	private prepared: IPreparedWorkbenchCache | undefined;
+	private prepared: workbenchCache.IPreparedWorkbenchCache | undefined;
 	private started = false;
 
 	constructor(private readonly resourceCache: string | undefined, private readonly host: IWorkbenchStartupHost) {
@@ -94,18 +94,13 @@ export class WorkbenchStartupController extends Disposable {
 			return; // The document's native module is already scheduled; never start it a second time.
 		}
 		this.timers.add(this.host.interval(() => this.render(), 500));
+		let loader: typeof workbenchCache | undefined;
 		try {
-			const loader = await this.host.loadCache();
+			loader = await this.host.loadCache();
 			if (!this.active) {
 				return;
 			}
-			if (!loader.isWorkbenchCacheSupported()) {
-				this.state = { ...this.state, cacheEnabled: false, mode: 'unavailable' };
-				this.update('loading', 18);
-				await this.host.startNative();
-				this.resourcesLoaded();
-				return;
-			}
+			loader.assertWorkbenchCacheSupported();
 			const prepared = await loader.prepareWorkbenchCache(this.resourceCache, value => {
 				if (!this.active) {
 					return;
@@ -126,7 +121,8 @@ export class WorkbenchStartupController extends Disposable {
 		} catch (error) {
 			if (!this._store.isDisposed) {
 				this.host.logError(error);
-				this.fail();
+				// The separately bundled loader owns its error constructor as well as its requirements.
+				this.fail(loader && error instanceof loader.WorkbenchCacheUnsupportedError ? error.reason : undefined);
 			}
 		}
 	}
@@ -141,9 +137,9 @@ export class WorkbenchStartupController extends Disposable {
 		this.update('restoring', 84);
 	}
 
-	fail(): void {
+	fail(unsupportedReason?: workbenchCache.WorkbenchCacheUnsupportedReason): void {
 		if (this.active) {
-			this.state = { ...this.state, phase: 'error' };
+			this.state = { ...this.state, phase: 'error', mode: unsupportedReason ? 'unsupported' : this.state.mode, unsupportedReason };
 			this.timers.clear();
 			this.render();
 		}

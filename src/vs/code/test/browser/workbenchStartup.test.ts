@@ -10,7 +10,7 @@ import { toDisposable } from '../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import type { IWebClientStartupMessages } from '../../../platform/remote/common/webClientStartup.js';
-import type { IPreparedWorkbenchCache, IWebClientCacheProgress } from '../../browser/workbench/workbenchCache.js';
+import { assertWorkbenchCacheSupported, WorkbenchCacheUnsupportedError, type IPreparedWorkbenchCache, type IWebClientCacheProgress } from '../../browser/workbench/workbenchCache.js';
 import { IWorkbenchStartupHost, IWorkbenchStartupState, WorkbenchStartupController, WorkbenchStartupMetrics } from '../../browser/workbench/workbenchStartupController.js';
 import { WorkbenchStartupView } from '../../browser/workbench/workbenchStartupView.js';
 
@@ -23,16 +23,17 @@ suite('Workbench startup', () => {
 
 	function fixture(resourceCache: string | undefined = manifest) {
 		const states: IWorkbenchStartupState[] = [];
-		const calls = { loader: 0, prepare: 0, native: 0, cached: 0, commit: 0, errors: 0 };
+		const calls = { loader: 0, prepare: 0, cached: 0, commit: 0, errors: 0 };
 		const timeouts = new Set<() => void>();
 		const intervals = new Set<() => void>();
 		const preparing = new DeferredPromise<void>();
 		const executing = new DeferredPromise<void>();
 		let report: (value: IWebClientCacheProgress) => void = () => { };
 		const prepared: IPreparedWorkbenchCache = { script: new Blob(['']), style: new Blob(['']), commit: async () => { calls.commit++; } };
-		const hooks: { supported: boolean; load?: Promise<Awaited<ReturnType<IWorkbenchStartupHost['loadCache']>>>; prepare?: Promise<IPreparedWorkbenchCache>; execute?: Promise<void> } = { supported: true };
+		const hooks: { capabilities: NonNullable<Parameters<typeof assertWorkbenchCacheSupported>[0]>; load?: Promise<Awaited<ReturnType<IWorkbenchStartupHost['loadCache']>>>; prepare?: Promise<IPreparedWorkbenchCache>; execute?: Promise<void> } = { capabilities: { secureContext: true, decompression: true, digest: true } };
 		const loader = {
-			isWorkbenchCacheSupported: () => hooks.supported,
+			WorkbenchCacheUnsupportedError,
+			assertWorkbenchCacheSupported: () => assertWorkbenchCacheSupported(hooks.capabilities),
 			prepareWorkbenchCache: async (_url: string, onProgress: (value: IWebClientCacheProgress) => void) => {
 				calls.prepare++;
 				report = onProgress;
@@ -46,7 +47,6 @@ suite('Workbench startup', () => {
 			interval: callback => { intervals.add(callback); return toDisposable(() => intervals.delete(callback)); },
 			loadCache: async () => { calls.loader++; return hooks.load ?? loader; },
 			startCached: async () => { calls.cached++; void executing.complete(); await hooks.execute; },
-			startNative: async () => { calls.native++; },
 			render: value => states.push(value),
 			logError: () => { calls.errors++; },
 		};
@@ -61,8 +61,8 @@ suite('Workbench startup', () => {
 		value.controller.resourcesLoaded();
 		value.controller.fail();
 		assert.deepStrictEqual({ calls: value.calls, state: value.states.at(-1), timers: value.timeouts.size }, {
-			calls: { loader: 0, prepare: 0, native: 0, cached: 0, commit: 0, errors: 0 },
-			state: { mode: 'unknown', phase: 'error', progress: 62, cacheEnabled: false, cache: undefined, bytesPerSecond: 0 }, timers: 0,
+			calls: { loader: 0, prepare: 0, cached: 0, commit: 0, errors: 0 },
+			state: { mode: 'unknown', phase: 'error', progress: 62, cacheEnabled: false, cache: undefined, bytesPerSecond: 0, unsupportedReason: undefined }, timers: 0,
 		});
 	});
 
@@ -79,7 +79,7 @@ suite('Workbench startup', () => {
 		await pending;
 		await value.controller.start();
 		assert.deepStrictEqual({ calls: value.calls, phase: value.states.at(-1)?.phase, timers: value.timeouts.size + value.intervals.size }, {
-			calls: { loader: 1, prepare: 1, native: 0, cached: 1, commit: 1, errors: 0 }, phase: 'ready', timers: 0,
+			calls: { loader: 1, prepare: 1, cached: 1, commit: 1, errors: 0 }, phase: 'ready', timers: 0,
 		});
 	});
 
@@ -104,20 +104,27 @@ suite('Workbench startup', () => {
 		assert.deepStrictEqual(value.states.map(state => state.mode), ['checking', 'first', 'reuse', 'repair', 'unavailable']);
 		await preparation.complete(value.prepared);
 		await pending;
-		assert.deepStrictEqual({ native: value.calls.native, cached: value.calls.cached, cacheEnabled: value.states.at(-1)?.cacheEnabled }, { native: 0, cached: 1, cacheEnabled: true });
+		assert.deepStrictEqual({ cached: value.calls.cached, cacheEnabled: value.states.at(-1)?.cacheEnabled }, { cached: 1, cacheEnabled: true });
 	});
 
-	test('an unsupported cache API starts exactly one native module without recovery redirects', async () => {
-		const value = fixture();
-		value.hooks.supported = false;
-		await value.controller.start();
-		await value.controller.start();
-		value.controller.fail();
-		assert.deepStrictEqual({ calls: value.calls, state: value.states.at(-1) }, {
-			calls: { loader: 1, prepare: 0, native: 1, cached: 0, commit: 0, errors: 0 },
-			state: { mode: 'unavailable', phase: 'error', progress: 62, cacheEnabled: false, cache: undefined, bytesPerSecond: 0 },
+	for (const [capabilities, unsupportedReason] of [
+		[{ secureContext: false, decompression: true, digest: false }, 'insecureContext'],
+		[{ secureContext: true, decompression: false, digest: true }, 'unsupportedBrowser'],
+		[{ secureContext: true, decompression: true, digest: false }, 'unsupportedBrowser'],
+	] as const) {
+		test(`unsupported chunk requirements stop startup: ${JSON.stringify(capabilities)}`, async () => {
+			const value = fixture();
+			value.hooks.capabilities = capabilities;
+			await value.controller.start();
+			await value.controller.start();
+			value.controller.resourcesLoaded();
+			assert.deepStrictEqual({ calls: value.calls, state: value.states.at(-1), timers: value.timeouts.size + value.intervals.size }, {
+				calls: { loader: 1, prepare: 0, cached: 0, commit: 0, errors: 1 },
+				state: { mode: 'unsupported', phase: 'error', progress: 0, cacheEnabled: true, cache: undefined, bytesPerSecond: 0, unsupportedReason },
+				timers: 0,
+			});
 		});
-	});
+	}
 
 	test('a preparation failure stops timers and ignores late progress without committing', async () => {
 		const value = fixture();
@@ -132,7 +139,7 @@ suite('Workbench startup', () => {
 		assert.deepStrictEqual({ phase: value.states.at(-1)?.phase, cached: value.calls.cached, commits: value.calls.commit, errors: value.calls.errors, timers: value.timeouts.size + value.intervals.size }, { phase: 'error', cached: 0, commits: 0, errors: 1, timers: 0 });
 	});
 
-	test('disposal while the loader is pending cannot start native or cached work', async () => {
+	test('disposal while the loader is pending cannot start the workbench', async () => {
 		const value = fixture();
 		const loader = new DeferredPromise<typeof value.loader>();
 		value.hooks.load = loader.p;
@@ -140,7 +147,7 @@ suite('Workbench startup', () => {
 		value.controller.dispose();
 		await loader.complete(value.loader);
 		await pending;
-		assert.deepStrictEqual({ calls: value.calls, renders: value.states.length, timers: value.timeouts.size + value.intervals.size }, { calls: { loader: 1, prepare: 0, native: 0, cached: 0, commit: 0, errors: 0 }, renders: 1, timers: 0 });
+		assert.deepStrictEqual({ calls: value.calls, renders: value.states.length, timers: value.timeouts.size + value.intervals.size }, { calls: { loader: 1, prepare: 0, cached: 0, commit: 0, errors: 0 }, renders: 1, timers: 0 });
 	});
 
 	test('disposal during preparation rejects late projection and readiness', async () => {
@@ -222,6 +229,56 @@ suite('Workbench startup', () => {
 		assert.deepStrictEqual({ state: overlay.getAttribute('data-state'), busy: overlay.getAttribute('aria-busy') }, { state: 'error', busy: 'false' });
 	});
 
+	test('the enabled startup document shows the loader requirement error without inserting a native script', async () => {
+		const messages: IWebClientStartupMessages = JSON.parse(await __readFileInTests(FileAccess.asFileUri('vs/platform/remote/common/workbench-startup.nls.en.json').fsPath));
+		const frame = mainWindow.document.createElement('iframe');
+		store.add(toDisposable(() => frame.remove()));
+		// This separate module owns its error constructor, just like the bundled loader.
+		const loader = URL.createObjectURL(new Blob([`
+			export class WorkbenchCacheUnsupportedError extends Error {
+				constructor() { super('Unsupported browser fixture'); this.reason = 'unsupportedBrowser'; }
+			}
+			export function assertWorkbenchCacheSupported() { throw new WorkbenchCacheUnsupportedError(); }
+			export async function prepareWorkbenchCache() { document.body.dataset.prepared = 'true'; }
+		`], { type: 'text/javascript' }));
+		store.add(toDisposable(() => URL.revokeObjectURL(loader)));
+		const resourceCache = new URL('startup-cache/manifest.json', import.meta.url).href;
+		const imports = { [new URL('loader.js', resourceCache).href]: loader };
+		const configuration = JSON.stringify({ resourceCache, messages }).replace(/"/g, '&quot;');
+		const elements = ['mode', 'title', 'detail', 'progress', 'metrics', 'network', 'cache', 'action'].map(name => `<p id="vscode-workbench-startup-${name}"></p>`).join('');
+		const startup = new URL('../../browser/workbench/workbenchStartup.js', import.meta.url).href;
+		const documentUrl = URL.createObjectURL(new Blob([`<div id="vscode-workbench-startup" data-settings="${configuration}">${elements}</div>
+			<script type="importmap">${JSON.stringify({ imports })}</script>
+			<script type="module" src="${startup}"></script>
+			<script id="vscode-workbench-main" type="application/json" src="data:text/javascript,document.body.dataset.nativeStarted='true'"></script>`], { type: 'text/html' }));
+		store.add(toDisposable(() => URL.revokeObjectURL(documentUrl)));
+		frame.src = documentUrl;
+		await new Promise<void>(resolve => {
+			frame.onload = () => {
+				const overlay = frame.contentDocument!.getElementById('vscode-workbench-startup')!;
+				const observer = new mainWindow.MutationObserver(check);
+				store.add(toDisposable(() => observer.disconnect()));
+				function check() {
+					if (overlay.getAttribute('data-state') === 'error') {
+						observer.disconnect();
+						resolve();
+					}
+				}
+				observer.observe(overlay, { attributes: true });
+				check();
+			};
+			mainWindow.document.body.appendChild(frame);
+		});
+		const document = frame.contentDocument!;
+		assert.deepStrictEqual({
+			scripts: document.querySelectorAll('script[type="module"]').length,
+			nativeStarted: document.body.dataset.nativeStarted,
+			prepared: document.body.dataset.prepared,
+			detail: document.getElementById('vscode-workbench-startup-detail')!.textContent,
+			actionHidden: document.getElementById('vscode-workbench-startup-action')!.hidden,
+		}, { scripts: 1, nativeStarted: undefined, prepared: undefined, detail: messages.unsupportedBrowserError, actionHidden: true });
+	});
+
 	test('view renders accessible chunk errors, native reloads and readiness without retaining click listeners', async () => {
 		const messages: IWebClientStartupMessages = JSON.parse(await __readFileInTests(FileAccess.asFileUri('vs/platform/remote/common/workbench-startup.nls.en.json').fsPath));
 		const overlay = mainWindow.document.createElement('div');
@@ -240,12 +297,17 @@ suite('Workbench startup', () => {
 		action.click();
 		view.render({ ...state, cacheEnabled: false, cache: undefined });
 		const nativeError = { label: action.textContent, metricsHidden: overlay.querySelector<HTMLElement>('#vscode-workbench-startup-metrics')!.hidden, detail: bar.getAttribute('aria-valuetext') };
+		const unsupportedErrors = (['insecureContext', 'unsupportedBrowser'] as const).map(unsupportedReason => {
+			view.render({ ...state, mode: 'unsupported', cache: undefined, unsupportedReason });
+			return { title: overlay.querySelector('#vscode-workbench-startup-title')!.textContent, detail: bar.getAttribute('aria-valuetext'), actionHidden: action.hidden };
+		});
 		view.render({ ...state, phase: 'ready', progress: 100 });
 		view.dispose();
 		action.click();
-		assert.deepStrictEqual({ chunkError, nativeError, reloads, ready: overlay.getAttribute('data-state'), busy: overlay.getAttribute('aria-busy'), hidden: action.hidden }, {
+		assert.deepStrictEqual({ chunkError, nativeError, unsupportedErrors, reloads, ready: overlay.getAttribute('data-state'), busy: overlay.getAttribute('aria-busy'), hidden: action.hidden }, {
 			chunkError: { label: messages.resumeDownload, value: null, detail: true },
 			nativeError: { label: messages.reload, metricsHidden: true, detail: messages.loadError },
+			unsupportedErrors: [messages.insecureContextError, messages.unsupportedBrowserError].map(detail => ({ title: messages.unsupportedTitle, detail, actionHidden: true })),
 			reloads: 1, ready: 'ready', busy: 'false', hidden: true,
 		});
 	});

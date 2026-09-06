@@ -140,6 +140,28 @@ suite('resolveResponseSelection', () => {
 		assert.strictEqual(resolveResponseSelection(widget), undefined);
 	});
 
+	for (const boundary of ['element', 'text']) {
+		test(`ignores unselected nested footer text at the ${boundary} boundary`, () => {
+			const { store, doc, widgetDomNode } = setup();
+			const markdown = doc.createElement('div');
+			markdown.classList.add('chat-markdown-part');
+			const textNode = doc.createTextNode('hello world');
+			markdown.appendChild(textNode);
+			const footer = doc.createElement('div');
+			const label = doc.createElement('span');
+			const footerText = doc.createTextNode('response toolbar');
+			label.appendChild(footerText);
+			footer.appendChild(label);
+			widgetDomNode.append(markdown, footer);
+
+			const response = makeResponse('turn-1');
+			stubSelection(store, textNode, boundary === 'element' ? label : footerText, 'hello world\n', 0);
+			const widget = upcastPartial<IChatWidget>({ domNode: widgetDomNode, getElementFromNode: () => response });
+			const resolved = resolveResponseSelection(widget);
+			assert.deepStrictEqual({ response: resolved?.response, text: resolved?.text }, { response, text: 'hello world' });
+		});
+	}
+
 	test('rejects a collapsed (empty) selection', () => {
 		const { store, doc, widgetDomNode } = setup();
 		const markdown = doc.createElement('div');

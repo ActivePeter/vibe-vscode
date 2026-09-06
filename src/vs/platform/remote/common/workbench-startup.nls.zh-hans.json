@@ -25,6 +25,10 @@
 	"chunkDescription": "分块经校验后保存在浏览器中。速率按最近 2 秒实际收到的压缩字节计算，每 0.5 秒更新；缓存量按解压后大小计算。",
 	"resourceProgressLabel": "核心资源加载进度",
 	"chunkLoadError": "资源未能完整加载。已保存的分块会保留，请检查网络后重试",
+	"unsupportedMode": "运行环境不受支持",
+	"unsupportedTitle": "当前环境无法启动工作台",
+	"insecureContextError": "请通过 HTTPS 或 localhost 打开此页面。工作台分块加载需要安全上下文。",
+	"unsupportedBrowserError": "请使用支持 DecompressionStream 和 crypto.subtle 的浏览器。工作台需要这些 API 来解压和校验资源。",
 	"resumeDownload": "继续加载",
 	"byteUnits": [
 		"B",

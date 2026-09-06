@@ -68,7 +68,8 @@ export class WorkbenchStartupView extends Disposable {
 		this.detail.textContent = {
 			loading: messages.loadingResources, starting: messages.startingWorkbench,
 			restoring: messages.restoringWorkbench, slow: messages.slowLoading,
-			error: state.cacheEnabled ? messages.chunkLoadError : messages.loadError, ready: messages.ready,
+			error: state.unsupportedReason ? messages[`${state.unsupportedReason}Error`] : state.cacheEnabled ? messages.chunkLoadError : messages.loadError,
+			ready: messages.ready,
 		}[state.phase];
 		this.overlay.style.setProperty('--vscode-workbench-startup-progress', `${state.progress}%`);
 		this.progress.setAttribute('aria-label', state.cacheEnabled ? messages.resourceProgressLabel : messages.progressLabel);
@@ -86,7 +87,7 @@ export class WorkbenchStartupView extends Disposable {
 			this.network.title = this.cache.title = messages.chunkDescription;
 		}
 		this.progress.setAttribute('aria-valuetext', [this.detail, this.metrics, this.network, this.cache].filter(element => !element.hidden).map(element => element.textContent).join('. '));
-		this.action.hidden = state.phase !== 'slow' && state.phase !== 'error';
+		this.action.hidden = !!state.unsupportedReason || (state.phase !== 'slow' && state.phase !== 'error');
 		this.action.textContent = state.phase === 'error' && state.cacheEnabled ? messages.resumeDownload : messages.reload;
 	}
 }

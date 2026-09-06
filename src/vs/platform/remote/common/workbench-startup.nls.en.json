@@ -25,6 +25,10 @@
 	"chunkDescription": "Verified chunks are saved in the browser. Transfer speed uses compressed bytes received during the last 2 seconds, updated every 0.5 seconds; cache bytes use the original sizes.",
 	"resourceProgressLabel": "Core resource loading progress",
 	"chunkLoadError": "Resources could not be fully loaded. Saved chunks are kept; check the connection and retry",
+	"unsupportedMode": "Unsupported environment",
+	"unsupportedTitle": "This environment cannot start the workbench",
+	"insecureContextError": "Open this page over HTTPS or from localhost. Workbench chunk loading requires a secure context.",
+	"unsupportedBrowserError": "Use a browser that supports DecompressionStream and crypto.subtle. These APIs are required to decompress and verify workbench resources.",
 	"resumeDownload": "Resume Loading",
 	"byteUnits": [
 		"B",

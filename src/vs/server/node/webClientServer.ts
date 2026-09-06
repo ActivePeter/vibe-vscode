@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { createReadStream, promises } from 'fs';
+import { createReadStream, promises, statSync } from 'fs';
 import type * as http from 'http';
 import * as cookie from 'cookie';
 import * as crypto from 'crypto';
@@ -205,7 +205,7 @@ export function parseWebClientStartupTemplate(content: string): IWebClientStartu
 }
 
 /** Reads startup data before workbench NLS is available, with safe locale and English fallbacks. */
-export async function getWebClientStartupConfiguration(locale: string, staticRoot: string, resourceCacheAvailable = false): Promise<IWebClientStartupConfiguration> {
+export async function getWebClientStartupConfiguration(locale: string, staticRoot?: string): Promise<IWebClientStartupConfiguration> {
 	const requested = locale.split(';', 1)[0].trim().toLowerCase();
 	const normalized = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(requested) ? requested : 'en';
 	const locales = new Set<string>();
@@ -223,7 +223,7 @@ export async function getWebClientStartupConfiguration(locale: string, staticRoo
 			const file = FileAccess.asFileUri(`vs/platform/remote/common/workbench-startup.nls.${candidate}.json`).fsPath;
 			const messages: IWebClientStartupMessages = JSON.parse(await promises.readFile(file, 'utf8'));
 			return {
-				resourceCache: resourceCacheAvailable ? posix.join(staticRoot, 'out', webClientCacheDirectory, 'manifest.json') : undefined,
+				resourceCache: staticRoot ? posix.join(staticRoot, 'out', webClientCacheDirectory, 'manifest.json') : undefined,
 				messages,
 			};
 		} catch (error) {
@@ -275,14 +275,12 @@ export class WebClientServer {
 	private readonly _cacheVersion: string | undefined;
 	private readonly _staticAssetRoute: string;
 	private readonly _staticAssetCacheControl: CacheControl;
-	private readonly _resourceCacheAvailable: Promise<boolean>;
 
 	constructor(
 		private readonly _connectionToken: ServerConnectionToken,
 		private readonly _basePath: string,
 		private readonly _productPath: string,
 		private readonly _remoteConnectionSigning: boolean,
-		probeResourceCache: () => Promise<boolean> = () => promises.stat(FileAccess.asFileUri(`${webClientCacheDirectory}/manifest.json`).fsPath).then(stat => stat.isFile(), () => false),
 		@IServerEnvironmentService private readonly _environmentService: IServerEnvironmentService,
 		@ILogService private readonly _logService: ILogService,
 		@IRequestService private readonly _requestService: IRequestService,
@@ -293,9 +291,12 @@ export class WebClientServer {
 		this._cacheVersion = this._environmentService.args['web-client-cache-version'];
 		this._staticAssetRoute = getWebClientStaticAssetRoute(this._cacheVersion);
 		this._staticAssetCacheControl = getWebClientStaticAssetCacheControl(this._environmentService.isBuilt, this._cacheVersion);
-		this._resourceCacheAvailable = this._cacheVersion
-			? probeResourceCache()
-			: Promise.resolve(false);
+		if (this._cacheVersion) {
+			const manifest = join(this._environmentService.appRoot, 'out', webClientCacheDirectory, 'manifest.json');
+			if (!statSync(manifest, { throwIfNoEntry: false })?.isFile()) {
+				throw new Error(`Missing workbench cache manifest file: ${manifest}. Build the chunk cache before using --web-client-cache-version.`);
+			}
+		}
 	}
 
 	/**
@@ -566,14 +567,14 @@ export class WebClientServer {
 		} else {
 			WORKBENCH_NLS_URL = ''; // fallback will apply
 		}
-		const startupConfiguration = await getWebClientStartupConfiguration(locale, staticRoute, await this._resourceCacheAvailable);
+		const startupConfiguration = await getWebClientStartupConfiguration(locale, this._cacheVersion ? staticRoute : undefined);
 
 		const values: { [key: string]: string } = {
 			WORKBENCH_WEB_CONFIGURATION: asJSON(workbenchWebConfiguration),
 			WORKBENCH_AUTH_SESSION: authSessionInfo ? asJSON(authSessionInfo) : '',
 			WORKBENCH_STARTUP_CONFIGURATION: asJSON(startupConfiguration),
 			WORKBENCH_WEB_BASE_URL: staticRoute,
-			WORKBENCH_MAIN_SCRIPT_TYPE: startupConfiguration.resourceCache ? 'application/json' : 'module',
+			WORKBENCH_MAIN_SCRIPT_TYPE: this._cacheVersion ? 'application/json' : 'module',
 			WORKBENCH_NLS_URL,
 			WORKBENCH_NLS_FALLBACK_URL: `${staticRoute}/out/nls.messages.js`
 		};

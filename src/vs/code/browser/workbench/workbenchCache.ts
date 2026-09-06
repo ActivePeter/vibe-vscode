@@ -37,9 +37,29 @@ export interface IPreparedWorkbenchCache {
 	commit(): Promise<void>;
 }
 
-/** The cache needs no service worker, HTTP-cache hits, certificate pin or fixed network address. */
-export function isWorkbenchCacheSupported(): boolean {
-	return typeof DecompressionStream === 'function' && !!globalThis.crypto?.subtle;
+export type WorkbenchCacheUnsupportedReason = 'insecureContext' | 'unsupportedBrowser';
+
+export class WorkbenchCacheUnsupportedError extends Error {
+	constructor(readonly reason: WorkbenchCacheUnsupportedReason) {
+		super(reason === 'insecureContext'
+			? 'Workbench chunk loading requires a secure context. Use HTTPS or localhost.'
+			: 'Workbench chunk loading requires DecompressionStream and crypto.subtle. Use a browser that supports these APIs.');
+		this.name = 'WorkbenchCacheUnsupportedError';
+	}
+}
+
+/** Chunk loading is required when enabled; unavailable cache storage does not affect these requirements. */
+export function assertWorkbenchCacheSupported(capabilities = {
+	secureContext: globalThis.isSecureContext,
+	decompression: typeof globalThis.DecompressionStream === 'function',
+	digest: typeof globalThis.crypto?.subtle?.digest === 'function',
+}): void {
+	if (!capabilities.secureContext) {
+		throw new WorkbenchCacheUnsupportedError('insecureContext');
+	}
+	if (!capabilities.decompression || !capabilities.digest) {
+		throw new WorkbenchCacheUnsupportedError('unsupportedBrowser');
+	}
 }
 
 function getEnvironment(): IWebClientCacheEnvironment {

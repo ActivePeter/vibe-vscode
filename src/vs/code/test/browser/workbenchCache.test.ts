@@ -6,11 +6,27 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import { isWebClientCacheManifest, type IWebClientCacheChunk, type IWebClientCacheManifest } from '../../../platform/remote/common/webClientCache.js';
-import { prepareWorkbenchCache, type IWebClientCacheEnvironment, type IWebClientCacheProgress, type IWebClientCacheStorage } from '../../browser/workbench/workbenchCache.js';
+import { assertWorkbenchCacheSupported, prepareWorkbenchCache, type IWebClientCacheEnvironment, type IWebClientCacheProgress, type IWebClientCacheStorage } from '../../browser/workbench/workbenchCache.js';
 
 suite('Workbench resource cache', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 	const manifestUrl = 'https://example.test/release/cache/manifest.json';
+
+	test('requires a secure context and both browser APIs independently of cache storage', () => {
+		for (const secureContext of [true, false]) {
+			for (const decompression of [true, false]) {
+				for (const digest of [true, false]) {
+					const check = () => assertWorkbenchCacheSupported({ secureContext, decompression, digest });
+					if (secureContext && decompression && digest) {
+						assert.doesNotThrow(check);
+					} else {
+						assert.throws(check, secureContext ? /DecompressionStream and crypto\.subtle/ : /HTTPS or localhost/);
+					}
+				}
+			}
+		}
+	});
+
 	const hash = async (data: Uint8Array<ArrayBuffer>) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), byte => byte.toString(16).padStart(2, '0')).join('');
 	const fixture = async (styleText = '.workbench { color: red; }') => {
 		const payloads = new Map<string, Uint8Array<ArrayBuffer>>();

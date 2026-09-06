@@ -15,6 +15,7 @@ import { ICSSDevelopmentService } from '../../../platform/cssDev/node/cssDevServ
 import { NullLogService } from '../../../platform/log/common/log.js';
 import { IProductService } from '../../../platform/product/common/productService.js';
 import { IRequestService } from '../../../platform/request/common/request.js';
+import { webClientCacheDirectory } from '../../../platform/remote/common/webClientCache.js';
 import { IWebClientStartupConfiguration } from '../../../platform/remote/common/webClientStartup.js';
 import { NoneServerConnectionToken } from '../../node/serverConnectionToken.js';
 import { IServerEnvironmentService } from '../../node/serverEnvironmentService.js';
@@ -166,12 +167,12 @@ suite('WebClientServer', () => {
 			const messages: IWebClientStartupConfiguration['messages'] = JSON.parse(await fs.readFile(file, 'utf8'));
 			return { title: messages.firstTitle, cache: undefined };
 		}));
-		const configurations = await Promise.all(['zh-CN;q=0.9', 'zh-Hant-HK', 'zh-TW', 'fr-FR', '../../product'].map(locale => getWebClientStartupConfiguration(locale, '/static')));
+		const configurations = await Promise.all(['zh-CN;q=0.9', 'zh-Hant-HK', 'zh-TW', 'fr-FR', '../../product'].map(locale => getWebClientStartupConfiguration(locale)));
 		assert.deepStrictEqual(configurations.map(value => ({ title: value.messages.firstTitle, cache: value.resourceCache })), [simplified, traditional, traditional, english, english]);
 	});
 
 	test('all startup translations preserve the English message keys, types and placeholders', async () => {
-		const configurations = await Promise.all(['en', 'zh-hans', 'zh-hant'].map(locale => getWebClientStartupConfiguration(locale, '/static')));
+		const configurations = await Promise.all(['en', 'zh-hans', 'zh-hant'].map(locale => getWebClientStartupConfiguration(locale)));
 		const contract = (configuration: IWebClientStartupConfiguration) => Object.entries(configuration.messages).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => ({
 			key, type: Array.isArray(value) ? 'array' : typeof value,
 			arrayTypes: Array.isArray(value) ? value.map(item => typeof item) : undefined,
@@ -201,48 +202,53 @@ suite('WebClientServer', () => {
 
 	test('builds the manifest URL under the public prefix only when the server enables the cache', async () => {
 		const staticRoot = '/forwarded/oss-dev/static/release';
-		const enabled = await getWebClientStartupConfiguration('en', staticRoot, true);
-		const missing = await getWebClientStartupConfiguration('en', staticRoot);
+		const enabled = await getWebClientStartupConfiguration('en', staticRoot);
+		const disabled = await getWebClientStartupConfiguration('en');
 		assert.deepStrictEqual({
-			enabled: enabled.resourceCache, missing: missing.resourceCache,
+			enabled: enabled.resourceCache, disabled: disabled.resourceCache,
 			fields: Object.keys(enabled).sort(),
 		}, {
 			enabled: `${staticRoot}/out/vs/code/browser/workbench/cache/manifest.json`,
-			missing: undefined, fields: ['messages', 'resourceCache'],
+			disabled: undefined, fields: ['messages', 'resourceCache'],
 		});
 	});
 
 	for (const isBuilt of [true, false]) {
-		for (const manifestAvailable of [true, false]) {
+		for (const manifest of ['file', 'missing', 'directory']) {
 			for (const versioned of [true, false]) {
-				test(`renders one startup path: built=${isBuilt}, manifest=${manifestAvailable}, versioned=${versioned}`, async () => {
+				test(`validates the startup path: built=${isBuilt}, manifest=${manifest}, versioned=${versioned}`, async () => {
 					const http = await import('http');
 					const directory = await fs.mkdtemp(join(os.tmpdir(), 'web-client-startup-'));
-					const manifestPath = join(directory, 'manifest.json');
-					if (manifestAvailable) {
-						await fs.writeFile(manifestPath, '{}');
-					}
-					let probes = 0;
-					const logService = store.add(new NullLogService());
-					const webClient = new WebClientServer(
-						new NoneServerConnectionToken(), '/base', '/oss-release', false,
-						() => {
-							probes++;
-							return fs.stat(manifestPath).then(stat => stat.isFile(), () => false);
-						},
-						upcastPartial<IServerEnvironmentService>({ isBuilt, args: upcastPartial<IServerEnvironmentService['args']>({ _: [], 'web-client-cache-version': versioned ? 'release' : undefined }) }),
-						logService,
-						upcastPartial<IRequestService>({}),
-						upcastPartial<IProductService>({}),
-						upcastPartial<ICSSDevelopmentService>({ isEnabled: false })
-					);
-					const server = http.createServer((req, res) => {
-						void webClient.handle(req, res, new URL(req.url!, 'http://example.test'), '/');
-					});
+					let server: import('http').Server | undefined;
 					try {
+						const cacheDirectory = join(directory, 'out', webClientCacheDirectory);
+						await fs.mkdir(cacheDirectory, { recursive: true });
+						const manifestPath = join(cacheDirectory, 'manifest.json');
+						if (manifest === 'file') {
+							await fs.writeFile(manifestPath, '{}');
+						} else if (manifest === 'directory') {
+							await fs.mkdir(manifestPath);
+						}
+						const logService = store.add(new NullLogService());
+						const createWebClient = () => new WebClientServer(
+							new NoneServerConnectionToken(), '/base', '/oss-release', false,
+							upcastPartial<IServerEnvironmentService>({ appRoot: directory, isBuilt, args: upcastPartial<IServerEnvironmentService['args']>({ _: [], 'web-client-cache-version': versioned ? 'release' : undefined }) }),
+							logService,
+							upcastPartial<IRequestService>({}),
+							upcastPartial<IProductService>({}),
+							upcastPartial<ICSSDevelopmentService>({ isEnabled: false })
+						);
+						if (versioned && manifest !== 'file') {
+							assert.throws(createWebClient, /Missing workbench cache manifest file: .*\.json\. Build the chunk cache before using --web-client-cache-version\./);
+							return;
+						}
+						const webClient = createWebClient();
+						server = http.createServer((req, res) => {
+							void webClient.handle(req, res, new URL(req.url!, 'http://example.test'), '/');
+						});
 						await new Promise<void>((resolve, reject) => {
-							server.once('error', reject);
-							server.listen(0, '127.0.0.1', resolve);
+							server!.once('error', reject);
+							server!.listen(0, '127.0.0.1', resolve);
 						});
 						const address = server.address();
 						if (!address || typeof address === 'string') {
@@ -253,7 +259,6 @@ suite('WebClientServer', () => {
 						const settings = /id="vscode-workbench-startup" data-settings="(?<settings>[^"]*)"/.exec(html)?.groups?.settings;
 						assert.ok(settings, html);
 						const configuration: IWebClientStartupConfiguration = JSON.parse(settings.replace(/&quot;/g, '"').replace(/&#39;/g, '\'').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
-						const enabled = versioned && manifestAvailable;
 						const staticRoot = `/base/oss-release${getWebClientStaticAssetRoute(versioned ? 'release' : undefined)}`;
 						assert.deepStrictEqual({
 							status: response.status,
@@ -261,17 +266,17 @@ suite('WebClientServer', () => {
 							startupScripts: [...html.matchAll(/<script id="vscode-workbench-startup-script" type="module" src="(?<src>[^"]*)"/g)].map(match => match.groups?.src),
 							startupBeforeMain: html.indexOf('id="vscode-workbench-startup-script"') < html.indexOf('id="vscode-workbench-main"'),
 							mainScripts: [...html.matchAll(/<script id="vscode-workbench-main" type="(?<type>[^"]*)"/g)].map(match => match.groups?.type),
-							probes,
 						}, {
 							status: 200,
-							cache: enabled ? `${staticRoot}/out/vs/code/browser/workbench/cache/manifest.json` : undefined,
+							cache: versioned ? `${staticRoot}/out/vs/code/browser/workbench/cache/manifest.json` : undefined,
 							startupScripts: [`${staticRoot}/out/vs/code/browser/workbench/workbenchStartup.js`],
 							startupBeforeMain: true,
-							mainScripts: [enabled ? 'application/json' : 'module'],
-							probes: versioned ? 1 : 0,
+							mainScripts: [versioned ? 'application/json' : 'module'],
 						});
 					} finally {
-						await new Promise<void>(resolve => server.close(() => resolve()));
+						if (server) {
+							await new Promise<void>(resolve => server!.close(() => resolve()));
+						}
 						await fs.rm(directory, { recursive: true, force: true });
 					}
 				});

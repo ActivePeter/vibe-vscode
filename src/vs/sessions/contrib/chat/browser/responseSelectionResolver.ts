@@ -72,7 +72,9 @@ function contributingTextEndpoints(range: Range): { first: Text; last: Text } | 
 	let last: Text | undefined;
 	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
 		const text = node as Text;
-		if (!range.intersectsNode(text)) {
+		// Compare the text's boundary points, not its containing node's intersection.
+		// A boundary at offset 0 of a following element selects none of its text.
+		if (range.comparePoint(text, text.data.length) < 0 || range.comparePoint(text, 0) > 0) {
 			continue;
 		}
 		const start = text === range.startContainer ? range.startOffset : 0;

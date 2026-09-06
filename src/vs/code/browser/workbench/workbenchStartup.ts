@@ -34,14 +34,6 @@ function startWorkbenchStartup(overlay: HTMLElement, mainScript: HTMLScriptEleme
 	const controller = lifetime.add(new WorkbenchStartupController(resourceCache, {
 		now: () => mainWindow.performance.now(), delay, interval,
 		loadCache: () => import(new URL('loader.js', resourceCache).href),
-		startNative: () => new Promise<void>((resolve, reject) => {
-			const script = mainWindow.document.createElement('script');
-			script.type = 'module';
-			script.src = mainScript.src;
-			listen(script, 'load', resolve);
-			listen(script, 'error', () => reject(new Error('The native workbench module failed to load.')));
-			mainWindow.document.body.appendChild(script);
-		}),
 		startCached: async prepared => {
 			const text = await prepared.style.text();
 			if (lifetime.isDisposed) {

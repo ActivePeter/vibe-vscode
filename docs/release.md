@@ -157,7 +157,7 @@ curl --fail --unix-socket /run/vibe-vscode/backend.sock http://localhost/version
 
 If activation or health checks fail, atomically point `current` back to the recorded previous release, restart the same service, and verify its health before releasing the lock. Do not delete or reset the state databases to repair a failed rollout. Preserve the active and previous releases, plus any release still referenced by a live process. Restarting the server can interrupt active connections; coordinate upgrades with users.
 
-## Verify browser caching and fallbacks
+## Verify browser caching and startup requirements
 
 After the first successful load, refresh or reopen the browser. In DevTools Network, requests for the core `cache/*.bin` chunks should be **zero while the verified chunks remain stored**, including when the HTTP cache is disabled. The HTML, manifest, loader, workers, extensions, and workspace resources can still make requests. An upgrade downloads the changed chunks; an interrupted load retains verified completed chunks and resumes the missing ones. The startup screen reports download progress, transfer speed, cache reuse, and unavailable storage.
 
@@ -166,8 +166,8 @@ The external `workbenchStartup.js` module precedes the main module and registers
 Startup translations live in `src/vs/platform/remote/common/workbench-startup.nls.<locale>.json`. The English bundle defines the message type; the server resolves a safe locale and falls back to English. Translation tests enforce matching keys and placeholders. These JSON assets and the external startup module are included in every Web build.
 
 - Without `--web-client-cache-version`, explicit chunk caching and versioned URLs are disabled. The upstream packaged-resource HTTP cache policy is unchanged. To test this mode, invoke the bundled `node out/server-main.js` directly without the launcher.
-- With a version but no manifest, startup uses the ordinary module path. Release validation rejects this incomplete package before publication.
-- Without `DecompressionStream` or `crypto.subtle`, startup falls back to ordinary modules.
-- If an ordinary module fails, the startup screen offers a manual reload. Persistent failures may require clearing the browser's HTTP cache. There are no special recovery URLs, localStorage recovery tokens, or inferred native cache-hit metrics. Chunk verification and downloading missing or corrupt chunks remain independent of this fallback.
+- With `--web-client-cache-version`, verified chunk loading is the only startup path. A missing manifest file makes the Web server constructor fail synchronously, before it serves a workbench; it never silently disables caching. Release validation also rejects an incomplete package before publication.
+- Chunk loading requires a secure context (HTTPS or localhost), `DecompressionStream`, and `crypto.subtle`. Unsupported environments stop at the startup screen with a specific explanation and guidance to change the connection or browser. Browser support is determined by these capabilities, not an assumed version number; there is no native-module fallback.
+- A chunk download or verification failure keeps already saved chunks and offers **Resume Loading**. When caching is explicitly disabled, an ordinary module failure instead offers a manual reload; persistent failures in that mode may require clearing the browser's HTTP cache. Neither mode uses special recovery URLs or localStorage recovery tokens, and native startup does not infer cache-hit metrics.
 - With CacheStorage denied, full, or unavailable, resources can still be downloaded and verified without being persisted.
 - Browser-managed storage can be evicted. Cached startup resources do not provide offline access to the remote workspace and are not a promise of permanent storage.

@@ -15,7 +15,7 @@ The release job builds `gulp vscode-reh-web-linux-x64-min`, verifies native depe
 - `vibe-vscode-server-<tag>-linux-x64.tar.gz`
 - `vibe-vscode-server-<tag>-linux-x64.tar.gz.sha256`
 
-Only the final publication job has repository write permission. It creates a **draft GitHub Release** for the existing tag; a maintainer reviews and publishes that draft. This PR does not itself create a tag or publish a release. Until a draft is published, its files are not public installation downloads. A rerun does not overwrite an existing release; use a new tag for changed code.
+Only the final publication job has repository write permission. It creates a **draft GitHub Release** for the existing tag; a maintainer reviews and publishes that draft. Pull requests and branch pushes do not create tags or publish releases. Until a draft is published, its files are not public installation downloads. A rerun does not overwrite an existing release; use a new tag for changed code.
 
 The archive preserves Gulp's production layout: dependencies originally built in `remote/node_modules` are packaged at the archive root as `node_modules`, not under `remote/`.
 
@@ -38,7 +38,7 @@ npm run gulp vscode-reh-web-linux-x64-min
 
 Its output is the `vscode-reh-web-linux-x64` directory beside the checkout. Do not run this command against an output directory owned by another build. For a local archive, pass that package, a separate artifact directory, a release tag, and its exact source commit to `node build/package-web-release.ts`.
 
-There is one cache implementation in `build/lib/webClientCache.ts` and one compression implementation in `build/lib/precompress.ts`. Gulp finalizes the standalone Web and Web Server outputs with these helpers before packaging. The development snapshot script remains a second caller of the same helpers: it prepares its staged source output and intentionally retains `VSCODE_DEV=1` for development-only features. This PR does not convert the always-latest development service into a download-only production installer. Release archives use the production launcher and do not set `VSCODE_DEV`.
+There is one cache implementation in `build/lib/webClientCache.ts` and one compression implementation in `build/lib/precompress.ts`. Gulp finalizes the standalone Web and Web Server outputs with these helpers before packaging. The development snapshot script remains a second caller of the same helpers: it prepares its staged source output and intentionally retains `VSCODE_DEV=1` for development-only features. The always-latest development service remains source-based. Release archives use the production launcher and do not set `VSCODE_DEV`.
 
 ## Download and install
 

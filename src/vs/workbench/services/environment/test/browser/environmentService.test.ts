@@ -12,12 +12,13 @@ import { LogLevel } from '../../../../../platform/log/common/log.js';
 import { BrowserWorkbenchEnvironmentService } from '../../browser/environmentService.js';
 import { TestProductService } from '../../../../test/common/workbenchTestServices.js';
 
+declare const __readFileInTests: (path: string) => Promise<string>;
+
 suite('BrowserWorkbenchEnvironmentService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('OSS fallback uses the same pinned, isolated webview endpoint as the product', async () => {
-		const response = await fetch(URI.joinPath(FileAccess.asBrowserUri(''), '..', 'product.json').toString(true));
-		const product: IProductConfiguration = await response.json();
+		const product: IProductConfiguration = JSON.parse(await __readFileInTests(URI.joinPath(FileAccess.asFileUri(''), '..', 'product.json').fsPath));
 		const environmentService = new BrowserWorkbenchEnvironmentService('', URI.file('/logs'), {}, {
 			...TestProductService,
 			commit: undefined,

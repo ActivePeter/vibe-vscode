@@ -15,14 +15,12 @@ import { validateWebClientCache } from './webClientCache.ts';
 const run = promisify(execFile);
 
 async function resolveOutputDirectory(directory: string): Promise<string> {
-	try {
-		return await fs.realpath(directory);
-	} catch (error) {
-		if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') {
+	return fs.realpath(directory).catch(async (error: NodeJS.ErrnoException) => {
+		if (error.code !== 'ENOENT') {
 			throw error;
 		}
 		return path.join(await resolveOutputDirectory(path.dirname(directory)), path.basename(directory));
-	}
+	});
 }
 
 async function validateRuntimeLinks(root: string, directory = root): Promise<void> {

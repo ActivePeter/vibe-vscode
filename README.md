@@ -15,7 +15,7 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
   - ✅ **Cached page loading and resumable downloads**: Core startup resources are compressed, chunked, verified, and cached in the browser with visible download progress. Refreshing or reopening the browser reuses cached chunks, interrupted downloads resume only missing chunks, and new releases reuse unchanged content to reduce repeated downloads and improve loading on slow or unreliable connections.
   - 🚧 **Non-blocking remote connectivity**: Replace modal interruption with status-bar reconnect state, immediate retry after network recovery, and uninterrupted access to the current work. This is not yet included in the current implementation.
 
-  After installing dependencies, start the development environment in two terminals:
+  See [Releases and installation](docs/release.md) for production packages, systemd/Caddy setup, upgrades, and rollback. For source development, install dependencies and start the environment in two terminals:
 
   ```bash
   # Terminal 1: continuously compile changes

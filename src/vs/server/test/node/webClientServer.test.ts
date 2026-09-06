@@ -8,12 +8,18 @@ import { promises as fs } from 'fs';
 import * as os from 'os';
 import { brotliCompressSync, brotliDecompressSync, gzipSync, gunzipSync } from 'zlib';
 import { join } from '../../../base/common/path.js';
+import { upcastPartial } from '../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
+import { ICSSDevelopmentService } from '../../../platform/cssDev/node/cssDevService.js';
 import { NullLogService } from '../../../platform/log/common/log.js';
-import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientCacheRecoveryToken, getWebClientPreferredEncodings, getWebClientResourceScheme, getWebClientStartupConfiguration, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRecoveryRoute, getWebClientStaticAssetResourcePath, getWebClientStaticAssetRoute, parseWebClientStartupTemplate, serveFile } from '../../node/webClientServer.js';
+import { IProductService } from '../../../platform/product/common/productService.js';
+import { IRequestService } from '../../../platform/request/common/request.js';
+import { NoneServerConnectionToken } from '../../node/serverConnectionToken.js';
+import { IServerEnvironmentService } from '../../node/serverEnvironmentService.js';
+import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientCacheRecoveryToken, getWebClientPreferredEncodings, getWebClientResourceScheme, getWebClientStartupConfiguration, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRecoveryRoute, getWebClientStaticAssetResourcePath, getWebClientStaticAssetRoute, IWebClientStartupConfiguration, parseWebClientStartupTemplate, serveFile, WebClientServer } from '../../node/webClientServer.js';
 
 suite('WebClientServer', () => {
-	ensureNoDisposablesAreLeakedInTestSuite();
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('negotiates compressed modules by quality without overriding explicit refusals', () => {
 		assert.deepStrictEqual([
@@ -195,7 +201,7 @@ suite('WebClientServer', () => {
 
 		assert.deepStrictEqual({
 			simplifiedChinese: {
-				cacheVersion: simplifiedChinese.cacheVersion,
+				staticRouteKey: simplifiedChinese.staticRouteKey,
 				first: simplifiedChinese.messages.firstTitle,
 				reuse: simplifiedChinese.messages.reuseTitle,
 				repair: simplifiedChinese.messages.repairTitle,
@@ -208,7 +214,7 @@ suite('WebClientServer', () => {
 				reuse: traditionalChinese.messages.reuseTitle,
 			},
 			english: {
-				cacheVersion: english.cacheVersion,
+				staticRouteKey: english.staticRouteKey,
 				staticRoot: english.staticRoot,
 				cacheRecoveryQuery: english.cacheRecoveryQuery,
 				first: english.messages.firstTitle,
@@ -217,7 +223,7 @@ suite('WebClientServer', () => {
 				metrics: english.messages.processedBytes,
 			},
 			recovery: {
-				cacheVersion: recovery.cacheVersion,
+				staticRouteKey: recovery.staticRouteKey,
 				staticRoot: recovery.staticRoot,
 				recoveryToken: recovery.recoveryToken,
 				recovering: recovery.messages.recovering,
@@ -225,7 +231,7 @@ suite('WebClientServer', () => {
 			},
 		}, {
 			simplifiedChinese: {
-				cacheVersion: staticRoot,
+				staticRouteKey: staticRoot,
 				first: '首次加载并缓存资源',
 				reuse: '正在复用本地缓存',
 				repair: '缓存不完整，正在补全',
@@ -238,7 +244,7 @@ suite('WebClientServer', () => {
 				reuse: '正在重用本機快取',
 			},
 			english: {
-				cacheVersion: undefined,
+				staticRouteKey: undefined,
 				staticRoot: '/static',
 				cacheRecoveryQuery: 'vscode-cache-recovery',
 				first: 'Loading and caching resources for the first time',
@@ -247,7 +253,7 @@ suite('WebClientServer', () => {
 				metrics: 'Processed {0} · Progress {1}%',
 			},
 			recovery: {
-				cacheVersion: staticRoot,
+				staticRouteKey: staticRoot,
 				staticRoot: recoveryRoot,
 				recoveryToken,
 				recovering: 'A cached resource failed to load. Retrying with a fresh copy',
@@ -292,4 +298,67 @@ suite('WebClientServer', () => {
 			retry: 'Resources could not be fully loaded. Saved chunks are kept; check the connection and retry',
 		});
 	});
+
+	for (const isBuilt of [true, false]) {
+		for (const manifestAvailable of [true, false]) {
+			for (const versioned of [true, false]) {
+				test(`renders one startup path: built=${isBuilt}, manifest=${manifestAvailable}, versioned=${versioned}`, async () => {
+					const http = await import('http');
+					const directory = await fs.mkdtemp(join(os.tmpdir(), 'web-client-startup-'));
+					const manifestPath = join(directory, 'manifest.json');
+					if (manifestAvailable) {
+						await fs.writeFile(manifestPath, '{}');
+					}
+					let probes = 0;
+					const logService = store.add(new NullLogService());
+					const webClient = new WebClientServer(
+						new NoneServerConnectionToken(), '/base', '/oss-release', false,
+						() => {
+							probes++;
+							return fs.stat(manifestPath).then(stat => stat.isFile(), () => false);
+						},
+						upcastPartial<IServerEnvironmentService>({ isBuilt, args: upcastPartial<IServerEnvironmentService['args']>({ _: [], 'web-client-cache-version': versioned ? 'release' : undefined }) }),
+						logService,
+						upcastPartial<IRequestService>({}),
+						upcastPartial<IProductService>({}),
+						upcastPartial<ICSSDevelopmentService>({ isEnabled: false })
+					);
+					const server = http.createServer((req, res) => {
+						void webClient.handle(req, res, new URL(req.url!, 'http://example.test'), '/');
+					});
+					try {
+						await new Promise<void>((resolve, reject) => {
+							server.once('error', reject);
+							server.listen(0, '127.0.0.1', resolve);
+						});
+						const address = server.address();
+						if (!address || typeof address === 'string') {
+							throw new Error('Expected a TCP listener.');
+						}
+						const response = await fetch(`http://127.0.0.1:${address.port}/`);
+						const html = await response.text();
+						const settings = /id="vscode-workbench-startup" data-settings="(?<settings>[^"]*)"/.exec(html)?.groups?.settings;
+						assert.ok(settings, html);
+						const configuration: IWebClientStartupConfiguration = JSON.parse(settings.replace(/&quot;/g, '"').replace(/&#39;/g, '\'').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+						const enabled = versioned && manifestAvailable;
+						const staticRoot = `/base/oss-release${getWebClientStaticAssetRoute(versioned ? 'release' : undefined)}`;
+						assert.deepStrictEqual({
+							status: response.status,
+							cache: configuration.resourceCache,
+							mainScripts: [...html.matchAll(/<script id="vscode-workbench-main" type="(?<type>[^"]*)"/g)].map(match => match.groups?.type),
+							probes,
+						}, {
+							status: 200,
+							cache: enabled ? `${staticRoot}/out/vs/code/browser/workbench/cache/manifest.json` : undefined,
+							mainScripts: [enabled ? 'application/json' : 'module'],
+							probes: versioned ? 1 : 0,
+						});
+					} finally {
+						await new Promise<void>(resolve => server.close(() => resolve()));
+						await fs.rm(directory, { recursive: true, force: true });
+					}
+				});
+			}
+		}
+	}
 });

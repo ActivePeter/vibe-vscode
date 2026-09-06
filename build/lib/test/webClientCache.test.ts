@@ -10,7 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { gunzipSync } from 'node:zlib';
-import { prepareWebClientCache } from '../webClientCache.ts';
+import { prepareWebClientAssets, prepareWebClientCache, validateWebClientCache } from '../webClientCache.ts';
 import { isWebClientCacheManifest, webClientCacheDirectory, type IWebClientCacheFile } from '../../../src/vs/platform/remote/common/webClientCache.ts';
 
 test('prepares deterministic, portable chunks without changing source modules or retaining external CSS assets', async () => {
@@ -46,6 +46,31 @@ test('prepares deterministic, portable chunks without changing source modules or
 			embeddedFont: restoredStyle.includes('data:'),
 			originalUnchanged: await fs.readFile(path.join(directory, 'workbench.js'), 'utf8') === script,
 		}, { valid: true, chunked: true, portable: true, noMachinePath: true, moduleLocation: true, embeddedFont: true, originalUnchanged: true });
+	} finally {
+		await fs.rm(temporary, { recursive: true, force: true });
+	}
+});
+
+test('includes the standalone stylesheet emitted by production bundlers', async () => {
+	const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'workbench-cache-production-'));
+	try {
+		const directory = path.join(temporary, 'vs/code/browser/workbench');
+		await fs.mkdir(directory, { recursive: true });
+		await Promise.all([
+			fs.writeFile(path.join(directory, 'workbench.js'), 'globalThis.workbenchProduction = true;'),
+			fs.writeFile(path.join(directory, 'workbenchCache.js'), 'export const loader = true;'),
+			fs.writeFile(path.join(directory, 'workbench.css'), '@font-face { font-family: production; src: url(./font.ttf); } .production { color: red; }'),
+			fs.writeFile(path.join(directory, 'font.ttf'), 'production fixture font'),
+		]);
+		await prepareWebClientAssets(temporary);
+		const manifest = await validateWebClientCache(temporary);
+		const style = Buffer.concat(await Promise.all(manifest.style.chunks.map(async chunk => gunzipSync(await fs.readFile(path.join(temporary, webClientCacheDirectory, `${chunk.hash}.bin`)))))).toString();
+		assert.deepStrictEqual({ valid: isWebClientCacheManifest(manifest), includesStyle: style.includes('.production'), embeddedFont: style.includes('data:') }, { valid: true, includesStyle: true, embeddedFont: true });
+		await fs.writeFile(path.join(temporary, webClientCacheDirectory, `${manifest.script.chunks[0].hash}.bin`), 'truncated');
+		await assert.rejects(validateWebClientCache(temporary), /incomplete or corrupt/);
+		await prepareWebClientAssets(temporary);
+		await fs.unlink(path.join(temporary, webClientCacheDirectory, 'loader.js'));
+		await assert.rejects(validateWebClientCache(temporary), /ENOENT/);
 	} finally {
 		await fs.rm(temporary, { recursive: true, force: true });
 	}

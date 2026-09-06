@@ -202,10 +202,10 @@
 			let usingResourceCache = !!configuration.resourceCache;
 			let cacheProgress;
 			let commitPreparedCache;
-			const storageKey = configuration.cacheVersion ? `vscode.server.workbenchCacheReady:${configuration.cacheVersion}` : undefined;
+			const storageKey = configuration.staticRouteKey ? `vscode.server.workbenchCacheReady:${configuration.staticRouteKey}` : undefined;
 			const getCacheRecoveryUrl = recoveryToken => {
 				const recoveryUrl = new URL(window.location.href);
-				const cacheKey = configuration.cacheVersion.substring(configuration.cacheVersion.lastIndexOf('/') + 1);
+				const cacheKey = configuration.staticRouteKey.substring(configuration.staticRouteKey.lastIndexOf('/') + 1);
 				recoveryUrl.searchParams.set(configuration.cacheRecoveryQuery, `${cacheKey}.${recoveryToken}`);
 				return recoveryUrl.href;
 			};
@@ -399,7 +399,7 @@
 			updateProgress(usingResourceCache ? 0 : 18, messages.loadingResources);
 
 			const reconcileCacheMode = () => {
-				if (usingResourceCache || !configuration.cacheVersion || !observedResources.size) {
+				if (usingResourceCache || !configuration.staticRouteKey || !observedResources.size) {
 					return;
 				}
 
@@ -498,7 +498,7 @@
 			};
 
 			const beginCacheRecovery = () => {
-				if (ready || recovering || !configuration.cacheVersion) {
+				if (ready || recovering || !configuration.staticRouteKey) {
 					return;
 				}
 				recovering = true;
@@ -521,7 +521,7 @@
 					return;
 				}
 				invalidateReadyVersion();
-				if (!usingResourceCache && configuration.cacheVersion && !configuration.recoveryToken) {
+				if (!usingResourceCache && configuration.staticRouteKey && !configuration.recoveryToken) {
 					beginCacheRecovery();
 					return;
 				}
@@ -535,8 +535,8 @@
 				progressElement.removeAttribute('aria-valuenow');
 				detailElement.textContent = usingResourceCache ? messages.chunkLoadError : messages.loadError;
 				updateAccessibleProgress();
-				actionHandler = !usingResourceCache && configuration.cacheVersion ? beginCacheRecovery : () => window.location.reload();
-				actionElement.textContent = usingResourceCache ? messages.resumeDownload : configuration.cacheVersion ? messages.retry : messages.reload;
+				actionHandler = !usingResourceCache && configuration.staticRouteKey ? beginCacheRecovery : () => window.location.reload();
+				actionElement.textContent = usingResourceCache ? messages.resumeDownload : configuration.staticRouteKey ? messages.retry : messages.reload;
 				actionElement.hidden = false;
 			};
 

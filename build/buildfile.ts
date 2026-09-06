@@ -52,6 +52,7 @@ export const code = [
 ];
 
 export const codeWeb = createModuleDescription('vs/code/browser/workbench/workbench');
+export const workbenchCache = createModuleDescription('vs/code/browser/workbench/workbenchCache');
 
 export const codeServer = [
 	// 'vs/server/node/server.main' is not included here because it gets inlined via ./src/server-main.js
@@ -80,6 +81,7 @@ const buildfile = {
 	keyboardMaps,
 	code,
 	codeWeb,
+	workbenchCache,
 	codeServer,
 	entrypoint: createModuleDescription
 };

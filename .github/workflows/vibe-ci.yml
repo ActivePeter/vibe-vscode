@@ -8,10 +8,16 @@ on:
     branches:
       - main
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Immutable source commit selected by the release workflow
+        type: string
+        default: ''
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: vibe-ci-${{ inputs.source_ref || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ inputs.source_ref == '' }}
 
 permissions:
   contents: read
@@ -31,6 +37,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           lfs: true
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -83,6 +90,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           lfs: true
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -156,6 +164,10 @@ jobs:
         run: |
           xvfb-run -a ./scripts/test.sh \
             --run src/vs/base/test/browser/ui/tree/asyncDataTree.test.ts \
+            --run src/vs/base/test/node/bootstrap.test.ts \
+            --run src/vs/code/test/browser/workbenchCache.test.ts \
+            --run src/vs/platform/sign/test/browser/signService.test.ts \
+            --run src/vs/platform/sign/test/common/abstractSignService.test.ts \
             --run src/vs/server/test/node/logicalWorkspaceStateChannel.test.ts \
             --run src/vs/server/test/node/webClientServer.test.ts \
             --run src/vs/sessions/test/web.test.ts \
@@ -166,6 +178,8 @@ jobs:
             --run src/vs/workbench/api/test/node/extHostLocalizationService.test.ts \
             --run src/vs/workbench/contrib/chat/test/browser/agentSessions/agentSessionViewModel.test.ts \
             --run src/vs/workbench/contrib/chat/test/browser/agentSessions/localAgentSessionsController.test.ts \
+            --run src/vs/workbench/contrib/chat/test/browser/chatContribution.test.ts \
+            --run src/vs/workbench/contrib/remote/test/browser/remoteExplorer.test.ts \
             --run src/vs/workbench/contrib/files/test/browser/explorerFindProvider.test.ts \
             --run src/vs/workbench/contrib/files/test/browser/explorerService.test.ts \
             --run src/vs/workbench/contrib/terminal/test/browser/agentHostTerminalService.test.ts \
@@ -177,6 +191,9 @@ jobs:
             --run src/vs/workbench/contrib/workspace/test/browser/logicalWorkspaceTerminalAdapter.test.ts \
             --run src/vs/workbench/contrib/workspace/test/browser/projectContext.test.ts \
             --run src/vs/workbench/services/editor/test/browser/modalEditorGroup.test.ts \
+            --run src/vs/workbench/services/accounts/test/browser/defaultAccount.test.ts \
+            --run src/vs/workbench/services/authentication/test/browser/authenticationService.test.ts \
+            --run src/vs/workbench/services/environment/test/browser/environmentService.test.ts \
             --run src/vs/workbench/services/logicalWorkspace/test/browser/logicalWorkspaceService.test.ts \
             --run src/vs/workbench/test/browser/layout.test.ts \
             --run src/vs/workbench/test/browser/parts/editor/editorParts.test.ts \
@@ -220,6 +237,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           lfs: true
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Verify clean extension checkout
         run: test ! -e extensions/vibe-vscode/dist
@@ -255,6 +273,12 @@ jobs:
           # Each mangler worker owns a full TypeScript language service. Keep the
           # GitHub-hosted runner below its memory limit while preserving local defaults.
           VSCODE_MANGLE_WORKERS: '1'
+
+      - name: Verify packaged Web cache
+        run: node build/verify-web-cache.ts ../vscode-reh-web-linux-x64/out
+
+      - name: Verify release archive and production launcher
+        run: node build/package-web-release.ts ../vscode-reh-web-linux-x64 .build/release-validation v0.0.0-ci "$(git rev-parse HEAD)"
 
       - name: Verify packaged Vibe extension
         env:

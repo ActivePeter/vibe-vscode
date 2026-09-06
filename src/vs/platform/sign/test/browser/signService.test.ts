@@ -9,7 +9,7 @@ import product from '../../../product/common/product.js';
 import { SignService } from '../../browser/signService.js';
 
 class TestSignService extends SignService {
-	public override getValidator() {
+	getValidatorForTest() {
 		return super.getValidator();
 	}
 }
@@ -20,7 +20,7 @@ suite('Browser SignService', () => {
 	test('does not request optional assets when the server advertises no signing module', async () => {
 		const service = new TestSignService({ _serviceBrand: undefined, ...product, remoteConnectionSigning: false });
 		assert.deepStrictEqual({
-			validator: await service.getValidator(),
+			validator: await service.getValidatorForTest(),
 			message: await service.createNewMessage('challenge'),
 			signed: await service.sign('response'),
 			unknownValidator: await service.validate({ id: 'unknown', data: 'challenge' }, 'response'),

@@ -204,8 +204,8 @@ export function parseWebClientStartupTemplate(content: string): IWebClientStartu
 	};
 }
 
-/** Reads startup data before workbench NLS is available, with safe locale and English fallbacks. */
-export async function getWebClientStartupConfiguration(locale: string, staticRoot?: string): Promise<IWebClientStartupConfiguration> {
+/** Returns safe startup locales in priority order, including Chinese script and English fallbacks. */
+export function getWebClientStartupLocaleCandidates(locale: string): readonly string[] {
 	const requested = locale.split(';', 1)[0].trim().toLowerCase();
 	const normalized = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(requested) ? requested : 'en';
 	const locales = new Set<string>();
@@ -218,21 +218,76 @@ export async function getWebClientStartupConfiguration(locale: string, staticRoo
 		candidate = separator === -1 ? '' : candidate.substring(0, separator);
 	}
 	locales.add('en');
-	for (const candidate of locales) {
-		try {
-			const file = FileAccess.asFileUri(`vs/platform/remote/common/workbench-startup.nls.${candidate}.json`).fsPath;
-			const messages: IWebClientStartupMessages = JSON.parse(await promises.readFile(file, 'utf8'));
-			return {
-				resourceCache: staticRoot ? posix.join(staticRoot, 'out', webClientCacheDirectory, 'manifest.json') : undefined,
-				messages,
-			};
-		} catch (error) {
-			if (error.code !== 'ENOENT' || candidate === 'en') {
-				throw error;
+	return [...locales];
+}
+
+const startupMessagesDirectory = 'vs/platform/remote/common';
+
+/** Owns localized startup data for one immutable Web resource root, not request-specific configuration. */
+export class WebClientStartupMessages {
+	private availableLocales: Promise<ReadonlySet<string>> | undefined;
+	private readonly messages = new Map<string, Promise<IWebClientStartupMessages>>();
+
+	constructor(
+		private readonly resolveWebResource: (relative: string) => string,
+		private readonly fileSystem = {
+			readDirectory: (path: string) => promises.readdir(path),
+			readFile: (path: string) => promises.readFile(path, 'utf8'),
+		},
+	) { }
+
+	private async readAvailableLocales(): Promise<ReadonlySet<string>> {
+		const files = await this.fileSystem.readDirectory(this.resolveWebResource(startupMessagesDirectory));
+		const locales = new Set<string>();
+		for (const file of files) {
+			const locale = /^workbench-startup\.nls\.(?<locale>[a-z0-9]+(?:-[a-z0-9]+)*)\.json$/.exec(file)?.groups?.locale;
+			if (locale) {
+				locales.add(locale);
 			}
 		}
+		return locales;
 	}
-	throw new Error('The default workbench startup messages are missing.');
+
+	private async readMessages(locale: string): Promise<IWebClientStartupMessages> {
+		const file = this.resolveWebResource(`${startupMessagesDirectory}/workbench-startup.nls.${locale}.json`);
+		return JSON.parse(await this.fileSystem.readFile(file));
+	}
+
+	/** Coalesces concurrent reads by shipped locale; failed reads can be retried on the next request. */
+	async get(locale: string): Promise<IWebClientStartupMessages> {
+		const pendingLocales = this.availableLocales ??= this.readAvailableLocales();
+		let availableLocales: ReadonlySet<string>;
+		try {
+			availableLocales = await pendingLocales;
+		} catch (error) {
+			if (this.availableLocales === pendingLocales) {
+				this.availableLocales = undefined;
+			}
+			throw error;
+		}
+		for (const candidate of getWebClientStartupLocaleCandidates(locale)) {
+			// Enumerate shipped bundles once instead of probing missing files or caching arbitrary request locales.
+			if (candidate !== 'en' && !availableLocales.has(candidate)) {
+				continue;
+			}
+			let messages = this.messages.get(candidate);
+			if (!messages) {
+				messages = this.readMessages(candidate);
+				this.messages.set(candidate, messages);
+			}
+			try {
+				return await messages;
+			} catch (error) {
+				if (this.messages.get(candidate) === messages) {
+					this.messages.delete(candidate);
+				}
+				if (error.code !== 'ENOENT' || candidate === 'en') {
+					throw error;
+				}
+			}
+		}
+		throw new Error('The default workbench startup messages are missing.');
+	}
 }
 
 /** Returns package NLS bundles from the most specific safe locale to the default bundle. */
@@ -275,6 +330,7 @@ export class WebClientServer {
 	private readonly _cacheVersion: string | undefined;
 	private readonly _staticAssetRoute: string;
 	private readonly _staticAssetCacheControl: CacheControl;
+	private readonly _startupMessages: WebClientStartupMessages;
 
 	constructor(
 		private readonly _connectionToken: ServerConnectionToken,
@@ -292,11 +348,17 @@ export class WebClientServer {
 		this._staticAssetRoute = getWebClientStaticAssetRoute(this._cacheVersion);
 		this._staticAssetCacheControl = getWebClientStaticAssetCacheControl(this._environmentService.isBuilt, this._cacheVersion);
 		if (this._cacheVersion) {
-			const manifest = join(this._environmentService.appRoot, 'out', webClientCacheDirectory, 'manifest.json');
+			const manifest = this._resolveWebResource(`${webClientCacheDirectory}/manifest.json`);
 			if (!statSync(manifest, { throwIfNoEntry: false })?.isFile()) {
 				throw new Error(`Missing workbench cache manifest file: ${manifest}. Build the chunk cache before using --web-client-cache-version.`);
 			}
 		}
+		this._startupMessages = new WebClientStartupMessages(relative => this._resolveWebResource(relative));
+	}
+
+	/** Uses the injectable app root so Web startup resources and server tests do not depend on this module's location. */
+	private _resolveWebResource(relative: string): string {
+		return join(this._environmentService.appRoot, 'out', relative);
 	}
 
 	/**
@@ -513,8 +575,8 @@ export class WebClientServer {
 
 		const resolveWorkspaceURI = (defaultLocation?: string) => defaultLocation && URI.file(resolve(defaultLocation)).with({ scheme: Schemas.vscodeRemote, authority: remoteAuthority });
 
-		const filePath = FileAccess.asFileUri(`vs/code/browser/workbench/workbench${this._environmentService.isBuilt ? '' : '-dev'}.html`).fsPath;
-		const startupFilePath = FileAccess.asFileUri('vs/code/browser/workbench/workbench-startup.html').fsPath;
+		const filePath = this._resolveWebResource(`vs/code/browser/workbench/workbench${this._environmentService.isBuilt ? '' : '-dev'}.html`);
+		const startupFilePath = this._resolveWebResource('vs/code/browser/workbench/workbench-startup.html');
 		const authSessionInfo = !this._environmentService.isBuilt && this._environmentService.args['github-auth'] ? {
 			id: generateUuid(),
 			providerId: 'github',
@@ -567,7 +629,10 @@ export class WebClientServer {
 		} else {
 			WORKBENCH_NLS_URL = ''; // fallback will apply
 		}
-		const startupConfiguration = await getWebClientStartupConfiguration(locale, this._cacheVersion ? staticRoute : undefined);
+		const startupConfiguration: IWebClientStartupConfiguration = {
+			resourceCache: this._cacheVersion ? posix.join(staticRoute, 'out', webClientCacheDirectory, 'manifest.json') : undefined,
+			messages: await this._startupMessages.get(locale),
+		};
 
 		const values: { [key: string]: string } = {
 			WORKBENCH_WEB_CONFIGURATION: asJSON(workbenchWebConfiguration),
@@ -683,7 +748,7 @@ export class WebClientServer {
 	 * Handle HTTP requests for /callback
 	 */
 	private async _handleCallback(res: http.ServerResponse): Promise<void> {
-		const filePath = FileAccess.asFileUri('vs/code/browser/workbench/callback.html').fsPath;
+		const filePath = this._resolveWebResource('vs/code/browser/workbench/callback.html');
 		const data = (await promises.readFile(filePath)).toString();
 		const cspDirectives = [
 			'default-src \'self\';',

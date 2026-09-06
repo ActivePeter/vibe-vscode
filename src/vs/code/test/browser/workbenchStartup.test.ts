@@ -66,6 +66,39 @@ suite('Workbench startup', () => {
 		});
 	});
 
+	test('the controller owns each native startup progress milestone', async () => {
+		const value = fixture('');
+		await value.controller.start();
+		value.controller.resourcesLoaded();
+		value.controller.restoringWorkbench();
+		value.controller.complete();
+		assert.deepStrictEqual(value.states.map(({ phase, progress }) => ({ phase, progress })), [
+			{ phase: 'loading', progress: 18 },
+			{ phase: 'starting', progress: 62 },
+			{ phase: 'restoring', progress: 84 },
+			{ phase: 'ready', progress: 100 },
+		]);
+	});
+
+	test('the startup template receives its initial progress from the controller in both loading modes', async () => {
+		const template = await __readFileInTests(FileAccess.asFileUri('vs/code/browser/workbench/workbench-startup.html').fsPath);
+		const messages: IWebClientStartupMessages = JSON.parse(await __readFileInTests(FileAccess.asFileUri('vs/platform/remote/common/workbench-startup.nls.en.json').fsPath));
+		const snapshots = [];
+		for (const resourceCache of ['', manifest]) {
+			const document = new DOMParser().parseFromString(template, 'text/html');
+			const overlay = document.getElementById('vscode-workbench-startup')!;
+			const bar = document.getElementById('vscode-workbench-startup-progress')!;
+			const initial = { progress: overlay.style.getPropertyValue('--vscode-workbench-startup-progress'), value: bar.getAttribute('aria-valuenow') };
+			const value = fixture(resourceCache);
+			const pending = value.controller.start();
+			const view = store.add(new WorkbenchStartupView(overlay, messages, () => { }));
+			view.render(value.states[0]);
+			snapshots.push({ initial, progress: overlay.style.getPropertyValue('--vscode-workbench-startup-progress'), value: bar.getAttribute('aria-valuenow') });
+			await pending;
+		}
+		assert.deepStrictEqual(snapshots, [18, 0].map(progress => ({ initial: { progress: '', value: null }, progress: `${progress}%`, value: String(progress) })));
+	});
+
 	test('only authoritative readiness commits, including readiness during the cached import', async () => {
 		const value = fixture();
 		const execution = new DeferredPromise<void>();

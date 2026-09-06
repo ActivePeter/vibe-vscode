@@ -86,11 +86,11 @@ async function readBytes(response: Response, size: number, onBytes?: (bytes: num
 			if (done) {
 				break;
 			}
-			onBytes?.(value.byteLength);
 			if (offset + value.byteLength > size) {
 				await reader.cancel();
 				throw new Error('A workbench resource exceeds its declared size.');
 			}
+			onBytes?.(value.byteLength);
 			bytes.set(value, offset);
 			offset += value.byteLength;
 		}

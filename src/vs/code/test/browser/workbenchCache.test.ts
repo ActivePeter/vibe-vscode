@@ -154,6 +154,42 @@ suite('Workbench resource cache', () => {
 		assert.strictEqual([...entries.values()].some(cache => cache.has(brokenUrl)), false);
 	});
 
+	for (const prefixBytes of [0, 1]) {
+		test(`rejects oversized streams without counting overflowing bytes after ${prefixBytes} accepted bytes`, async () => {
+			const data = await fixture();
+			const { storage, entries } = memoryStorage();
+			await prepareWorkbenchCache(manifestUrl, () => { }, environment(data, storage).value);
+			const oversized = data.manifest.script.chunks[0];
+			const key = new URL(`/vscode-workbench-cache/${oversized.hash}`, manifestUrl).href;
+			entries.values().next().value!.delete(key);
+			const base = environment(data, storage);
+			const snapshots: IWebClientCacheProgress[] = [];
+			let cancelled = false;
+			await assert.rejects(prepareWorkbenchCache(manifestUrl, progress => snapshots.push(progress), {
+				...base.value,
+				fetch: async (url, options) => {
+					if (!url.endsWith(`${oversized.hash}.bin`)) {
+						return base.value.fetch(url, options);
+					}
+					return new Response(new ReadableStream<Uint8Array<ArrayBuffer>>({
+						start(controller) {
+							if (prefixBytes) {
+								controller.enqueue(data.payloads.get(oversized.hash)!.slice(0, prefixBytes));
+							}
+							controller.enqueue(new Uint8Array(oversized.size - prefixBytes + 1));
+						},
+						cancel() { cancelled = true; },
+					}));
+				},
+			}), /exceeds its declared size/);
+			assert.deepStrictEqual({
+				transferredBytes: [...new Set(snapshots.map(progress => progress.transferredBytes))],
+				cancelled,
+				stored: [...entries.values()].some(cache => cache.has(key)),
+			}, { transferredBytes: prefixBytes ? [0, prefixBytes] : [0], cancelled: true, stored: false });
+		});
+	}
+
 	test('storage denial and quota errors allow startup but never claim persistent storage', async () => {
 		const data = await fixture();
 		const quota = memoryStorage(async () => { throw new Error('Quota exceeded'); });

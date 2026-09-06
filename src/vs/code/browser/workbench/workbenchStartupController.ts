@@ -9,6 +9,13 @@ import type * as workbenchCache from './workbenchCache.js';
 type StartupMode = 'unknown' | 'checking' | 'first' | 'reuse' | 'repair' | 'unavailable' | 'unsupported';
 type StartupPhase = 'loading' | 'starting' | 'restoring' | 'slow' | 'error' | 'ready';
 
+const PROGRESS_MILESTONES = {
+	initial: 18,
+	resourcesLoaded: 62,
+	restoring: 84,
+	complete: 100,
+} as const;
+
 export interface IWorkbenchStartupState {
 	readonly mode: StartupMode;
 	readonly phase: StartupPhase;
@@ -63,7 +70,7 @@ export class WorkbenchStartupController extends Disposable {
 	constructor(private readonly resourceCache: string | undefined, private readonly host: IWorkbenchStartupHost) {
 		super();
 		this.metrics = new WorkbenchStartupMetrics(host.now());
-		this.state = { mode: resourceCache ? 'checking' : 'unknown', phase: 'loading', progress: resourceCache ? 0 : 18, cacheEnabled: !!resourceCache, cache: undefined };
+		this.state = { mode: resourceCache ? 'checking' : 'unknown', phase: 'loading', progress: resourceCache ? 0 : PROGRESS_MILESTONES.initial, cacheEnabled: !!resourceCache, cache: undefined };
 	}
 
 	private get active(): boolean {
@@ -110,13 +117,13 @@ export class WorkbenchStartupController extends Disposable {
 					: value.cachedBytes > 0 ? (value.transferredBytes > 0 ? 'repair' : 'reuse')
 						: value.transferredBytes > 0 ? 'first' : 'checking';
 				this.state = { ...this.state, mode, cache: { ...value } };
-				this.update('loading', Math.round(value.completedBytes / Math.max(1, value.totalBytes) * 100));
+				this.update('loading', Math.round(value.completedBytes / Math.max(1, value.totalBytes) * PROGRESS_MILESTONES.complete));
 			});
 			if (!this.active) {
 				return;
 			}
 			this.prepared = prepared;
-			this.update('starting', 100);
+			this.update('starting', PROGRESS_MILESTONES.complete);
 			await this.host.startCached(prepared);
 		} catch (error) {
 			if (!this._store.isDisposed) {
@@ -129,12 +136,12 @@ export class WorkbenchStartupController extends Disposable {
 
 	resourcesLoaded(): void {
 		if (this.state.phase !== 'restoring') {
-			this.update('starting', 62);
+			this.update('starting', PROGRESS_MILESTONES.resourcesLoaded);
 		}
 	}
 
 	restoringWorkbench(): void {
-		this.update('restoring', 84);
+		this.update('restoring', PROGRESS_MILESTONES.restoring);
 	}
 
 	fail(unsupportedReason?: workbenchCache.WorkbenchCacheUnsupportedReason): void {
@@ -149,7 +156,7 @@ export class WorkbenchStartupController extends Disposable {
 		if (this._store.isDisposed || this.state.phase === 'ready') {
 			return;
 		}
-		this.state = { ...this.state, phase: 'ready', progress: 100 };
+		this.state = { ...this.state, phase: 'ready', progress: PROGRESS_MILESTONES.complete };
 		this.timers.clear();
 		const prepared = this.prepared;
 		this.prepared = undefined;

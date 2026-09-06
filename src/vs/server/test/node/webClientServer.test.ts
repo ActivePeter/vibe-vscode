@@ -4,11 +4,99 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { promises as fs } from 'fs';
+import * as os from 'os';
+import { brotliCompressSync, brotliDecompressSync, gzipSync, gunzipSync } from 'zlib';
+import { join } from '../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientCacheRecoveryToken, getWebClientResourceScheme, getWebClientStartupConfiguration, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRecoveryRoute, getWebClientStaticAssetResourcePath, getWebClientStaticAssetRoute, parseWebClientStartupTemplate } from '../../node/webClientServer.js';
+import { NullLogService } from '../../../platform/log/common/log.js';
+import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientCacheRecoveryToken, getWebClientPreferredEncodings, getWebClientResourceScheme, getWebClientStartupConfiguration, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRecoveryRoute, getWebClientStaticAssetResourcePath, getWebClientStaticAssetRoute, parseWebClientStartupTemplate, serveFile } from '../../node/webClientServer.js';
 
 suite('WebClientServer', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('negotiates compressed modules by quality without overriding explicit refusals', () => {
+		assert.deepStrictEqual([
+			getWebClientPreferredEncodings(undefined),
+			getWebClientPreferredEncodings('gzip, deflate, br, zstd'),
+			getWebClientPreferredEncodings('br;q=0.5, gzip;q=0.9'),
+			getWebClientPreferredEncodings('br;q=0, gzip;q=0, *;q=1'),
+			getWebClientPreferredEncodings('BR; q=1, gzip;q=invalid'),
+			getWebClientPreferredEncodings('identity'),
+		], [[], ['br', 'gzip'], ['gzip', 'br'], [], ['br'], []]);
+	});
+
+	test('serves prepared representations with cache negotiation and leaves mutable development files alone', async () => {
+		const http = await import('http');
+		const directory = await fs.mkdtemp(join(os.tmpdir(), 'web-client-compression-'));
+		const file = join(directory, 'module.js');
+		const contents = Buffer.from('export const text = "cacheable module";\n'.repeat(100));
+		const logService = new NullLogService();
+		const server = http.createServer((req, res) => {
+			void serveFile(file, CacheControl.NO_EXPIRY, logService, req, res, {}, req.url !== '/development');
+		});
+		try {
+			await Promise.all([
+				fs.writeFile(file, contents),
+				fs.writeFile(`${file}.br`, brotliCompressSync(contents)),
+				fs.writeFile(`${file}.gz`, gzipSync(contents)),
+			]);
+			await new Promise<void>((resolve, reject) => {
+				server.once('error', reject);
+				server.listen(0, '127.0.0.1', resolve);
+			});
+			const address = server.address();
+			if (!address || typeof address === 'string') {
+				throw new Error('Expected a TCP listener.');
+			}
+			const request = (encoding: string, requestPath = '/') => new Promise<{ encoding: string | undefined; vary: string | undefined; cache: string | undefined; length: number; wireBytes: number; contents: Buffer }>((resolve, reject) => {
+				http.get({ hostname: '127.0.0.1', port: address.port, path: requestPath, agent: false, headers: { 'Accept-Encoding': encoding } }, response => {
+					const chunks: Buffer[] = [];
+					response.on('data', chunk => chunks.push(chunk));
+					response.on('error', reject);
+					response.on('end', () => {
+						const data = Buffer.concat(chunks);
+						const contentEncoding = response.headers['content-encoding'];
+						resolve({
+							encoding: contentEncoding,
+							vary: response.headers.vary,
+							cache: response.headers['cache-control'],
+							length: Number(response.headers['content-length']),
+							wireBytes: data.length,
+							contents: contentEncoding === 'br' ? brotliDecompressSync(data) : contentEncoding === 'gzip' ? gunzipSync(data) : data,
+						});
+					});
+				}).on('error', reject);
+			});
+			const responses = await Promise.all([
+				request('br, gzip'),
+				request('br;q=0, gzip'),
+				request('identity'),
+				request('br, gzip', '/development'),
+			]);
+			await fs.unlink(`${file}.br`);
+			responses.push(await request('br, gzip'));
+			assert.deepStrictEqual(responses.map(response => ({
+				encoding: response.encoding,
+				vary: response.vary,
+				cache: response.cache,
+				lengthMatches: response.length === response.wireBytes,
+				roundTrips: response.contents.equals(contents),
+				smaller: response.wireBytes < contents.length,
+			})), ['br', 'gzip', undefined, undefined, 'gzip'].map((encoding, index) => ({
+				encoding,
+				vary: index === 3 ? undefined : 'Accept-Encoding',
+				cache: 'public, max-age=31536000, immutable',
+				lengthMatches: index !== 3,
+				roundTrips: true,
+				smaller: !!encoding,
+			})));
+		} finally {
+			await new Promise<void>(resolve => server.close(() => resolve()));
+			logService.dispose();
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
 
 	test('resolves locale bundles from most specific to default', () => {
 		assert.deepStrictEqual(getBuiltinExtensionPackageNLSCandidates('zh-Hans-CN;q=0.9'), [
@@ -185,5 +273,23 @@ suite('WebClientServer', () => {
 			script: '<script>script</script>',
 		});
 		assert.throws(() => parseWebClientStartupTemplate('<!-- WORKBENCH_STARTUP_STYLE -->'));
+	});
+
+	test('enables the prepared cache only for versioned resources and preserves forwarded and recovery prefixes', () => {
+		const staticRoot = '/forwarded/oss-dev/static/release/recovery-token';
+		const enabled = getWebClientStartupConfiguration('en', '/forwarded/oss-dev/static/release', staticRoot, undefined, true);
+		assert.deepStrictEqual({
+			enabled: enabled.resourceCache,
+			mutable: getWebClientStartupConfiguration('en', undefined, '/static', undefined, true).resourceCache,
+			missing: getWebClientStartupConfiguration('en', '/static/release', '/static/release').resourceCache,
+			checking: enabled.messages.checkingTitle,
+			retry: enabled.messages.chunkLoadError,
+		}, {
+			enabled: `${staticRoot}/out/vs/code/browser/workbench/cache/manifest.json`,
+			mutable: undefined,
+			missing: undefined,
+			checking: 'Checking saved resources',
+			retry: 'Resources could not be fully loaded. Saved chunks are kept; check the connection and retry',
+		});
 	});
 });

@@ -236,6 +236,9 @@ export class AutomaticPortForwarding extends Disposable implements IWorkbenchCon
 		}
 
 		configurationService.whenRemoteConfigurationLoaded().then(() => remoteAgentService.getEnvironment()).then(environment => {
+			if (this._store.isDisposed) {
+				return;
+			}
 			this.setup(environment);
 			this._register(configurationService.onDidChangeConfiguration(e => {
 				if (e.affectsConfiguration(PORT_AUTO_SOURCE_SETTING)) {
@@ -586,7 +589,7 @@ class OutputAutomaticPortForwarding extends Disposable {
 		readonly privilegedOnly: () => boolean
 	) {
 		super();
-		this.notifier = new OnAutoForwardedAction(notificationService, remoteExplorerService, openerService, externalOpenerService, tunnelService, hostService, logService, contextKeyService);
+		this.notifier = this._register(new OnAutoForwardedAction(notificationService, remoteExplorerService, openerService, externalOpenerService, tunnelService, hostService, logService, contextKeyService));
 		this._register(configurationService.onDidChangeConfiguration((e) => {
 			if (e.affectsConfiguration(PORT_AUTO_FORWARD_SETTING)) {
 				this.tryStartStopUrlFinder();
@@ -644,7 +647,7 @@ class OutputAutomaticPortForwarding extends Disposable {
 }
 
 class ProcAutomaticPortForwarding extends Disposable {
-	private candidateListener: IDisposable | undefined;
+	private readonly candidateListener = this._register(new MutableDisposable<IDisposable>());
 	private autoForwarded: Set<string> = new Set();
 	private notifiedOnly: Set<string> = new Set();
 	private notifier: OnAutoForwardedAction;
@@ -666,7 +669,7 @@ class ProcAutomaticPortForwarding extends Disposable {
 		readonly contextKeyService: IContextKeyService,
 	) {
 		super();
-		this.notifier = new OnAutoForwardedAction(notificationService, remoteExplorerService, openerService, externalOpenerService, tunnelService, hostService, logService, contextKeyService);
+		this.notifier = this._register(new OnAutoForwardedAction(notificationService, remoteExplorerService, openerService, externalOpenerService, tunnelService, hostService, logService, contextKeyService));
 		alreadyAutoForwarded?.forEach(port => this.autoForwarded.add(port));
 		this.initialize();
 	}
@@ -677,7 +680,10 @@ class ProcAutomaticPortForwarding extends Disposable {
 
 	private async initialize() {
 		if (!this.remoteExplorerService.tunnelModel.environmentTunnelsSet) {
-			await new Promise<void>(resolve => this.remoteExplorerService.tunnelModel.onEnvironmentTunnelsSet(() => resolve()));
+			await Event.toPromise(this.remoteExplorerService.tunnelModel.onEnvironmentTunnelsSet, this._store);
+		}
+		if (this._store.isDisposed) {
+			return;
 		}
 
 		this._register(this.configurationService.onDidChangeConfiguration(async (e) => {
@@ -702,14 +708,11 @@ class ProcAutomaticPortForwarding extends Disposable {
 	}
 
 	private stopCandidateListener() {
-		if (this.candidateListener) {
-			this.candidateListener.dispose();
-			this.candidateListener = undefined;
-		}
+		this.candidateListener.clear();
 	}
 
 	private async startCandidateListener() {
-		if (this.candidateListener || (this.remoteExplorerService.portsFeaturesEnabled !== PortsEnablement.AdditionalFeatures)) {
+		if (this._store.isDisposed || this.candidateListener.value || (this.remoteExplorerService.portsFeaturesEnabled !== PortsEnablement.AdditionalFeatures)) {
 			return;
 		}
 		this.portsFeatures?.dispose();
@@ -718,8 +721,8 @@ class ProcAutomaticPortForwarding extends Disposable {
 		await this.setInitialCandidates();
 
 		// Need to check the setting again, since it may have changed while we waited for the initial candidates to be set.
-		if (this.configurationService.getValue(PORT_AUTO_FORWARD_SETTING)) {
-			this.candidateListener = this._register(this.remoteExplorerService.tunnelModel.onCandidatesChanged(this.handleCandidateUpdate, this));
+		if (!this._store.isDisposed && !this.candidateListener.value && this.configurationService.getValue(PORT_AUTO_FORWARD_SETTING)) {
+			this.candidateListener.value = this.remoteExplorerService.tunnelModel.onCandidatesChanged(this.handleCandidateUpdate, this);
 		}
 	}
 
@@ -730,7 +733,10 @@ class ProcAutomaticPortForwarding extends Disposable {
 		}
 		let startingCandidates = this.remoteExplorerService.tunnelModel.candidatesOrUndefined;
 		if (!startingCandidates) {
-			await new Promise<void>(resolve => this.remoteExplorerService.tunnelModel.onCandidatesChanged(() => resolve()));
+			await Event.toPromise(this.remoteExplorerService.tunnelModel.onCandidatesChanged, this._store);
+			if (this._store.isDisposed) {
+				return;
+			}
 			startingCandidates = this.remoteExplorerService.tunnelModel.candidates;
 		}
 

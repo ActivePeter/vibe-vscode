@@ -278,6 +278,28 @@ validate_candidate_runtime_root() {
 	validate_runtime_links "$runtime_root"
 }
 
+validate_runtime_dependencies() {
+	local runtime_root="$1"
+
+	# Exercise both loading paths with the candidate's Node and bootstrap before
+	# stopping the active service. Do not open or mutate any user databases.
+	VSCODE_DEV=1 "$runtime_root/node" --input-type=module - "$runtime_root" <<'NODE'
+import { createRequire } from 'node:module';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const root = resolve(process.argv[2]);
+const { devInjectNodeModuleLookupPath } = await import(pathToFileURL(join(root, 'out/bootstrap-node.js')));
+devInjectNodeModuleLookupPath(join(root, 'remote/node_modules'));
+const require = createRequire(pathToFileURL(join(root, 'out/server-main.js')));
+for (const name of ['@vscode/sqlite3', '@vscode/spdlog', '@vscode/native-watchdog', '@parcel/watcher', 'node-pty']) {
+	await import(name);
+	require(name);
+}
+console.log('Runtime dependencies loaded successfully through ESM and CommonJS.');
+NODE
+}
+
 validate_runtime_links() {
 	local runtime_root="$1"
 	local link_path
@@ -346,8 +368,7 @@ copy_runtime_tree() {
 		resolved_previous_path="$(realpath -e -- "$previous_path")"
 	fi
 	case "$resolved_previous_path" in
-	'' | "$SOURCE_ROOT" | "$SOURCE_ROOT"/*) ;;
-	*) rsync_arguments+=(--link-dest="$resolved_previous_path") ;;
+	"$SERVICE_RELEASES_ROOT"/*) rsync_arguments+=(--link-dest="$resolved_previous_path") ;;
 	esac
 	mkdir -p -- "$target_path"
 	rsync "${rsync_arguments[@]}" "$source_path/" "$target_path/"
@@ -401,6 +422,10 @@ create_runtime_snapshot() {
 	done < <(find "$SOURCE_ROOT/extensions" -name node_modules -prune -print0)
 
 	remove_unresolved_package_bin_links "$STAGING_RUNTIME_ROOT"
+	"$NODE_BIN" "$SOURCE_ROOT/build/prepare-web-cache.ts" "$STAGING_RUNTIME_ROOT/out"
+	"$NODE_BIN" "$SOURCE_ROOT/build/precompress-web.ts" \
+		"$STAGING_RUNTIME_ROOT/out" \
+		"$STAGING_RUNTIME_ROOT/extensions/vibe-vscode/dist/browser"
 	validate_candidate_runtime_root "$STAGING_RUNTIME_ROOT" || fail "staged runtime is incomplete or depends on state outside its immutable release: $STAGING_RUNTIME_ROOT"
 	mv -- "$STAGING_RUNTIME_ROOT" "$release_root"
 	STAGING_RUNTIME_ROOT=
@@ -767,6 +792,7 @@ run_deployment_action() {
 		build_current
 		candidate_runtime=
 		create_runtime_snapshot candidate_runtime
+		validate_runtime_dependencies "$candidate_runtime" || fail "candidate runtime dependencies could not be loaded: $candidate_runtime"
 		activate_candidate_runtime "$candidate_runtime" "$workspace_path"
 		;;
 	*)

@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { FileAccess } from '../../../../../base/common/network.js';
+import { IProductConfiguration } from '../../../../../base/common/product.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { LogLevel } from '../../../../../platform/log/common/log.js';
@@ -12,6 +14,29 @@ import { TestProductService } from '../../../../test/common/workbenchTestService
 
 suite('BrowserWorkbenchEnvironmentService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('OSS fallback uses the same pinned, isolated webview endpoint as the product', async () => {
+		const response = await fetch(URI.joinPath(FileAccess.asBrowserUri(''), '..', 'product.json').toString(true));
+		const product: IProductConfiguration = await response.json();
+		const environmentService = new BrowserWorkbenchEnvironmentService('', URI.file('/logs'), {}, {
+			...TestProductService,
+			commit: undefined,
+			quality: undefined,
+			webviewContentExternalBaseUrlTemplate: undefined
+		});
+		assert.strictEqual(environmentService.webviewExternalEndpoint, product.webviewContentExternalBaseUrlTemplate);
+	});
+
+	test('explicit webview endpoints and published product commits retain precedence', () => {
+		const options = { webviewEndpoint: 'https://{{uuid}}.example.com/{{quality}}/{{commit}}/' };
+		const productService = { ...TestProductService, commit: 'published', quality: 'stable' };
+		const custom = new BrowserWorkbenchEnvironmentService('', URI.file('/logs'), options, productService);
+		const published = new BrowserWorkbenchEnvironmentService('', URI.file('/logs'), {}, { ...productService, webviewContentExternalBaseUrlTemplate: undefined });
+		assert.deepStrictEqual([custom.webviewExternalEndpoint, published.webviewExternalEndpoint], [
+			'https://{{uuid}}.example.com/stable/published/',
+			'https://{{uuid}}.vscode-cdn.net/stable/published/out/vs/workbench/contrib/webview/browser/pre/'
+		]);
+	});
 
 	test('gets enabled extension proposed API from workbench options', () => {
 		const empty = new BrowserWorkbenchEnvironmentService('', URI.file('logs'), { enabledExtensionProposedApi: [] }, TestProductService);

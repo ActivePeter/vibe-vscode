@@ -95,25 +95,44 @@ create_runtime_snapshot() {
 	calls+=(snapshot)
 	printf -v "$1" '%s' /test/candidate
 }
+validate_runtime_dependencies() { calls+=("dependencies:$1"); }
 activate_candidate_runtime() { calls+=("activate:$1:$2"); }
 run_deployment_action update /test/workspace.code-workspace >/dev/null
-assert_equal 'require-update ensure-caddy require-source prepare-active:/test/workspace.code-workspace build snapshot activate:/test/candidate:/test/workspace.code-workspace' "${calls[*]}"
+assert_equal 'require-update ensure-caddy require-source prepare-active:/test/workspace.code-workspace build snapshot dependencies:/test/candidate activate:/test/candidate:/test/workspace.code-workspace' "${calls[*]}"
 
 temporary_root="$(mktemp -d)"
 holder_pid=
+copy_test_root=
 cleanup() {
 	touch "$temporary_root/release" 2>/dev/null || true
 	if [[ -n "$holder_pid" ]]; then
 		wait "$holder_pid" 2>/dev/null || true
 	fi
 	rm -rf -- "$temporary_root"
+	if [[ -n "$copy_test_root" ]]; then
+		rm -rf -- "$copy_test_root"
+	fi
 }
 trap cleanup EXIT
+
+mkdir -p "$SOURCE_ROOT/.build"
+copy_test_root="$(mktemp -d "$SOURCE_ROOT/.build/deploy-copy-test.XXXXXX")"
+mkdir -p "$copy_test_root/source" "$copy_test_root/releases/previous/lib"
+printf 'unchanged dependency\n' > "$copy_test_root/source/dependency.js"
+cp -a "$copy_test_root/source/dependency.js" "$copy_test_root/releases/previous/lib/dependency.js"
+VIBE_VSCODE_SERVICE_RUNTIME_ROOT="$copy_test_root" bash -c '
+	source "$1"
+	copy_runtime_tree "$2/source" "$2/candidate" "$2/releases/previous/lib"
+	copy_runtime_tree "$2/source" "$2/mutable-candidate" "$2/source"
+' bash "$DEPLOY_SCRIPT" "$copy_test_root"
+[[ "$copy_test_root/candidate/dependency.js" -ef "$copy_test_root/releases/previous/lib/dependency.js" ]] || fail_test 'staging did not reuse an unchanged immutable dependency below the checkout'
+[[ ! "$copy_test_root/mutable-candidate/dependency.js" -ef "$copy_test_root/source/dependency.js" ]] || fail_test 'staging linked to mutable source'
 
 if grep -Eq -- 'run_legacy_server|--tls-(key|cert)-path' "$DEPLOY_SCRIPT"; then
 	fail_test 'deployment script still contains a direct-TLS server path'
 fi
 grep -Fq -- '--web-client-cache-version "$(basename -- "$runtime_root")"' "$DEPLOY_SCRIPT" || fail_test 'deployment does not version immutable web client assets from the selected release'
+grep -Fq -- '"$SOURCE_ROOT/build/prepare-web-cache.ts" "$STAGING_RUNTIME_ROOT/out"' "$DEPLOY_SCRIPT" || fail_test 'deployment does not prepare persistent cache chunks inside staging'
 
 set +e
 (
@@ -218,6 +237,25 @@ build_failure_status=$?
 set -e
 assert_equal 42 "$build_failure_status"
 [[ ! -e "$temporary_root/snapshot-after-failed-build" && ! -e "$temporary_root/activation-after-failed-build" ]] || fail_test 'failed build reached service activation'
+
+set +e
+(
+	trap - EXIT
+	set -e
+	require_update_commands() { :; }
+	ensure_caddy_binary() { :; }
+	require_source_tree() { :; }
+	prepare_active_runtime() { :; }
+	build_current() { :; }
+	create_runtime_snapshot() { printf -v "$1" '%s' /test/candidate; }
+	validate_runtime_dependencies() { return 1; }
+	activate_candidate_runtime() { touch "$temporary_root/activation-after-failed-dependencies"; }
+	run_deployment_action update /test/workspace.code-workspace
+) >"$temporary_root/dependency-failure.log" 2>&1
+dependency_failure_status=$?
+set -e
+assert_equal 1 "$dependency_failure_status"
+[[ ! -e "$temporary_root/activation-after-failed-dependencies" ]] || fail_test 'unloadable runtime dependencies reached service activation'
 
 acquire_definition="$(declare -f acquire_deployment_lock)"
 eval "${acquire_definition/acquire_deployment_lock/acquire_real_deployment_lock}"

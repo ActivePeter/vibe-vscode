@@ -34,6 +34,8 @@ The script must remain the single automation entry for this skill. It:
 - holds one stable fail-fast `flock` across build, staging, stop, activation, health checks, rollback, and cleanup;
 - stages and validates a complete runtime snapshot before stopping the active service;
 - versions web client static URLs from the selected immutable release and serves those assets with a long-lived browser cache;
+- prepares Brotli and gzip copies of web assets inside staging, preserving independently cacheable module URLs; Caddy compresses other eligible responses;
+- bundles startup code and styles into verified gzip chunks; the browser explicitly saves these in CacheStorage, resumes missing chunks after interruption, and does not infer persistence from a successful startup marker;
 - downloads a pinned standalone Caddy release with fixed checksums, then copies Caddy, Node, runtime dependency trees, and server helpers into that snapshot, reusing unchanged files only from the previous versioned release rather than linking to mutable source;
 - switches to the candidate only after the build succeeds, and automatically restores the last-known-good runtime when startup or health checks fail;
 - resolves and builds the source checkout relative to this skill, without invoking another project's control code;

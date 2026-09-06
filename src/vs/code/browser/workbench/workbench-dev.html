@@ -66,6 +66,6 @@
 	<script>
 		performance.mark('code/willLoadWorkbenchMain');
 	</script>
-	<script id="vscode-workbench-main" type="module" src="{{WORKBENCH_WEB_BASE_URL}}/out/vs/code/browser/workbench/workbench.js"></script>
+	<script id="vscode-workbench-main" type="{{WORKBENCH_MAIN_SCRIPT_TYPE}}" src="{{WORKBENCH_WEB_BASE_URL}}/out/vs/code/browser/workbench/workbench.js"></script>
 {{WORKBENCH_STARTUP_SCRIPT}}
 </html>

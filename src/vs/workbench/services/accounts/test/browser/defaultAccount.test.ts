@@ -4,8 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { bufferToStream, VSBuffer } from '../../../../../base/common/buffer.js';
-import { Event } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { IRequestContext, IRequestOptions } from '../../../../../base/parts/request/common/request.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
@@ -23,12 +24,12 @@ import { ITelemetryService } from '../../../../../platform/telemetry/common/tele
 import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
 import { AuthenticationSession, IAuthenticationExtensionsService, IAuthenticationService } from '../../../authentication/common/authentication.js';
 import { IWorkbenchEnvironmentService } from '../../../environment/common/environmentService.js';
-import { IExtensionService } from '../../../extensions/common/extensions.js';
+import { ActivationKind, IExtensionService } from '../../../extensions/common/extensions.js';
 import { IHostService } from '../../../host/browser/host.js';
 import { DefaultAccountProvider } from '../../browser/defaultAccount.js';
 import { TestProductService } from '../../../../test/common/workbenchTestServices.js';
 
-suite('DefaultAccountProvider managed settings', () => {
+suite('DefaultAccountProvider', () => {
 
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 	const accountId = 'account';
@@ -38,6 +39,75 @@ suite('DefaultAccountProvider managed settings', () => {
 		account: { id: accountId, label: 'octocat' },
 		scopes: ['user:email'],
 	}];
+
+	suite('startup', () => {
+		for (const activation of ['completed', 'pending', 'failed'] as const) {
+			test(`does not query sessions before provider availability when early activation is ${activation}`, async () => {
+				const registered = disposables.add(new Emitter<{ id: string; label: string }>());
+				const activationComplete = new DeferredPromise<void>();
+				const installedExtensions = new DeferredPromise<boolean>();
+				const activationRequests: { event: string; kind: ActivationKind | undefined }[] = [];
+				const diagnostics: string[] = [];
+				let available = false;
+				let sessionQueries = 0;
+				let accountQueries = 0;
+				let initialized = false;
+				const providerPromise = createProvider(new TestRequestService(async () => jsonResponse({})), {
+					remoteAuthority: 'test-remote',
+					authenticationService: {
+						isAuthenticationProviderRegistered: () => available,
+						onDidRegisterAuthenticationProvider: registered.event,
+						getSessions: async () => { sessionQueries++; return []; },
+						getAccounts: async () => { accountQueries++; return []; },
+					},
+					extensionService: {
+						activateByEvent: (event, kind) => {
+							activationRequests.push({ event, kind });
+							return activation === 'pending' ? activationComplete.p : activation === 'failed' ? Promise.reject(new Error('host not ready')) : Promise.resolve();
+						},
+						whenInstalledExtensionsRegistered: () => installedExtensions.p,
+					},
+					logService: new class extends NullLogService {
+						override debug(message: string): void {
+							if (message.includes('Early authentication provider activation failed')) {
+								diagnostics.push(message);
+							}
+						}
+					},
+				}).then(provider => { initialized = true; return provider; });
+				await Promise.resolve();
+				assert.deepStrictEqual({ activationRequests, sessionQueries, accountQueries, initialized }, {
+					activationRequests: [{ event: 'onAuthenticationRequest:github', kind: ActivationKind.Immediate }],
+					sessionQueries: 0, accountQueries: 0, initialized: false,
+				});
+
+				available = true;
+				registered.fire({ id: 'github', label: 'GitHub' });
+				const provider = await providerPromise;
+				assert.deepStrictEqual({ initialized, sessionQueries, accountQueries, account: provider.defaultAccount, diagnostics: diagnostics.length }, {
+					initialized: true, sessionQueries: 1, accountQueries: 1, account: null, diagnostics: activation === 'failed' ? 1 : 0,
+				});
+				await activationComplete.complete();
+				await installedExtensions.complete(true);
+			});
+		}
+
+		test('still reports a failed account query after the provider is available', async () => {
+			const errors: string[] = [];
+			const provider = await createProvider(new TestRequestService(async () => jsonResponse({})), {
+				remoteAuthority: 'test-remote',
+				authenticationService: {
+					getAccounts: async () => { throw new Error('account query failed'); },
+				},
+				logService: new class extends NullLogService {
+					override error(message: string | Error): void { errors.push(String(message)); }
+				},
+			});
+			assert.deepStrictEqual({ account: provider.defaultAccount, errors }, {
+				account: null, errors: ['[DefaultAccount] Failed to get default account for provider:'],
+			});
+		});
+	});
 
 	test('cached settings perform one startup compatibility fetch', async () => {
 		const requestService = new TestRequestService(async () => jsonResponse({
@@ -201,7 +271,12 @@ suite('DefaultAccountProvider managed settings', () => {
 		});
 	});
 
-	async function createProvider(requestService: TestRequestService): Promise<DefaultAccountProvider> {
+	async function createProvider(requestService: TestRequestService, options: {
+		remoteAuthority?: string;
+		authenticationService?: Partial<IAuthenticationService>;
+		extensionService?: Partial<IExtensionService>;
+		logService?: ILogService;
+	} = {}): Promise<DefaultAccountProvider> {
 		const instantiationService = disposables.add(new TestInstantiationService());
 		instantiationService.stub(IConfigurationService, new TestConfigurationService());
 		instantiationService.stub(IAuthenticationService, {
@@ -213,17 +288,18 @@ suite('DefaultAccountProvider managed settings', () => {
 			onDidChangeSessions: Event.None,
 			onDidRegisterAuthenticationProvider: Event.None,
 			onDidUnregisterAuthenticationProvider: Event.None,
+			...options.authenticationService,
 		});
 		instantiationService.stub(IAuthenticationExtensionsService, {
 			getAccountPreference: () => undefined,
 			onDidChangeAccountPreference: Event.None,
 		});
 		instantiationService.stub(ITelemetryService, NullTelemetryService);
-		instantiationService.stub(IExtensionService, {});
+		instantiationService.stub(IExtensionService, options.extensionService ?? {});
 		instantiationService.stub(IRequestService, requestService);
-		instantiationService.stub(ILogService, new NullLogService());
+		instantiationService.stub(ILogService, options.logService ?? new NullLogService());
 		instantiationService.stub(IWorkbenchEnvironmentService, {
-			remoteAuthority: undefined,
+			remoteAuthority: options.remoteAuthority,
 			isSessionsWindow: false,
 		});
 		instantiationService.stub(IProductService, {

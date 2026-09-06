@@ -163,6 +163,8 @@
 					<div class="vscode-workbench-startup-progress-value"></div>
 				</div>
 				<p id="vscode-workbench-startup-metrics" class="vscode-workbench-startup-metrics"></p>
+				<p id="vscode-workbench-startup-network" class="vscode-workbench-startup-metrics"></p>
+				<p id="vscode-workbench-startup-cache" class="vscode-workbench-startup-metrics"></p>
 				<button id="vscode-workbench-startup-action" class="vscode-workbench-startup-action" type="button" hidden></button>
 			</div>
 		</div>
@@ -187,14 +189,19 @@
 			const detailElement = document.getElementById('vscode-workbench-startup-detail');
 			const progressElement = document.getElementById('vscode-workbench-startup-progress');
 			const metricsElement = document.getElementById('vscode-workbench-startup-metrics');
+			const networkElement = document.getElementById('vscode-workbench-startup-network');
+			const cacheElement = document.getElementById('vscode-workbench-startup-cache');
 			const actionElement = document.getElementById('vscode-workbench-startup-action');
 			const mainScript = document.getElementById('vscode-workbench-main');
-			if (!modeElement || !titleElement || !detailElement || !progressElement || !metricsElement || !actionElement || !mainScript) {
+			if (!modeElement || !titleElement || !detailElement || !progressElement || !metricsElement || !networkElement || !cacheElement || !actionElement || !mainScript) {
 				overlay.remove();
 				return;
 			}
 
 			const messages = configuration.messages;
+			let usingResourceCache = !!configuration.resourceCache;
+			let cacheProgress;
+			let commitPreparedCache;
 			const storageKey = configuration.cacheVersion ? `vscode.server.workbenchCacheReady:${configuration.cacheVersion}` : undefined;
 			const getCacheRecoveryUrl = recoveryToken => {
 				const recoveryUrl = new URL(window.location.href);
@@ -248,12 +255,17 @@
 					// Browser storage can be unavailable without preventing the workbench from loading.
 				}
 			}
-			if (storedRecoveryToken && !configuration.recoveryToken) {
+			if (!usingResourceCache && storedRecoveryToken && !configuration.recoveryToken) {
 				window.location.replace(getCacheRecoveryUrl(storedRecoveryToken));
 				return;
 			}
 			if (configuration.recoveryToken && storedRecoveryToken !== configuration.recoveryToken) {
 				cacheMode = 'repair';
+			}
+			if (usingResourceCache) {
+				// A previous successful startup is not proof that any payload is still stored.
+				cacheMode = 'checking';
+				knownTotalBytes = 0;
 			}
 
 			const updateCacheMode = mode => {
@@ -268,6 +280,12 @@
 				} else if (mode === 'repair') {
 					modeElement.textContent = messages.repairMode;
 					titleElement.textContent = messages.repairTitle;
+				} else if (mode === 'checking') {
+					modeElement.textContent = messages.checkingMode;
+					titleElement.textContent = messages.checkingTitle;
+				} else if (mode === 'unavailable') {
+					modeElement.textContent = messages.unavailableMode;
+					titleElement.textContent = messages.unavailableTitle;
 				} else {
 					modeElement.textContent = messages.unknownMode;
 					titleElement.textContent = messages.unknownTitle;
@@ -277,9 +295,12 @@
 			const staticRoot = new URL(configuration.staticRoot, window.location.origin).href.replace(/\/?$/, '/');
 			const observedResources = new Set();
 			let processedBytes = 0;
+			let transferredBytes = 0;
+			let cachedBytes = 0;
+			const transferSamples = [];
+			let metricsTimer;
 			let downloadedResource = false;
 			let resourceObserver;
-			let metricsFrame = 0;
 			let progress = 0;
 			let slowLoading = false;
 
@@ -296,15 +317,29 @@
 			};
 
 			const updateAccessibleProgress = () => {
-				progressElement.setAttribute('aria-valuetext', `${detailElement.textContent}. ${metricsElement.textContent}`);
+				progressElement.setAttribute('aria-valuetext', `${detailElement.textContent}. ${metricsElement.textContent}. ${networkElement.textContent}. ${cacheElement.textContent}`);
 			};
 
 			const updateMetrics = () => {
-				if (knownTotalBytes > 0) {
+				const now = window.performance.now();
+				// Buffered entries can arrive out of completion order.
+				transferSamples.sort((first, second) => first.time - second.time);
+				while (transferSamples.length && transferSamples[0].time <= now - 2000) {
+					transferSamples.shift();
+				}
+				const recentBytes = transferSamples.reduce((sum, sample) => sum + sample.bytes, 0);
+				const bytesPerSecond = recentBytes / (Math.min(2000, Math.max(1, now)) / 1000);
+				if (cacheProgress) {
+					metricsElement.textContent = formatMessage(messages.preparedBytes, formatBytes(cacheProgress.completedBytes), formatBytes(cacheProgress.totalBytes), Math.round(cacheProgress.completedBytes / Math.max(1, cacheProgress.totalBytes) * 100));
+				} else if (knownTotalBytes > 0) {
 					metricsElement.textContent = formatMessage(messages.processedBytesWithTotal, formatBytes(processedBytes), formatBytes(knownTotalBytes), progress);
 				} else {
 					metricsElement.textContent = formatMessage(messages.processedBytes, formatBytes(processedBytes), progress);
 				}
+				networkElement.textContent = formatMessage(messages.networkBytes, formatBytes(bytesPerSecond), formatBytes(transferredBytes + (cacheProgress?.transferredBytes ?? 0)));
+				cacheElement.textContent = cacheProgress
+					? formatMessage(messages.cachedChunks, formatBytes(cacheProgress.cachedBytes), Math.round(cacheProgress.cachedBytes / Math.max(1, cacheProgress.completedBytes) * 100), cacheProgress.completedChunks, cacheProgress.totalChunks)
+					: formatMessage(messages.cachedBytes, formatBytes(cachedBytes), processedBytes > 0 ? Math.round(cachedBytes / processedBytes * 100) : 0, observedResources.size);
 				updateAccessibleProgress();
 			};
 
@@ -322,25 +357,27 @@
 			};
 
 			const recordResources = entries => {
-				let changed = false;
 				for (const entry of entries) {
 					if (entry.entryType !== 'resource' || !entry.name.startsWith(staticRoot)) {
 						continue;
+					}
+					if (usingResourceCache && entry.name.endsWith('.bin')) {
+						continue; // The chunk reader counts these bytes live, including unfinished requests.
 					}
 					const resourceKey = `${entry.name}\n${entry.startTime}`;
 					if (observedResources.has(resourceKey)) {
 						continue;
 					}
 					observedResources.add(resourceKey);
-					downloadedResource ||= entry.transferSize > 0;
-					processedBytes += entry.encodedBodySize || entry.transferSize || 0;
-					changed = true;
-				}
-				if (changed && !metricsFrame) {
-					metricsFrame = window.requestAnimationFrame(() => {
-						metricsFrame = 0;
-						updateMetrics();
-					});
+					downloadedResource ||= entry.transferSize > 0 && !(entry.responseStatus >= 400);
+					const resourceBytes = entry.decodedBodySize || entry.encodedBodySize || 0;
+					processedBytes += resourceBytes;
+					if (entry.transferSize > 0) {
+						transferredBytes += entry.transferSize;
+						transferSamples.push({ time: entry.responseEnd, bytes: entry.transferSize });
+					} else if (resourceBytes > 0) {
+						cachedBytes += resourceBytes;
+					}
 				}
 			};
 
@@ -356,11 +393,13 @@
 			}
 
 			updateCacheMode(cacheMode);
-			progressElement.setAttribute('aria-label', messages.progressLabel);
-			updateProgress(18, messages.loadingResources);
+			progressElement.setAttribute('aria-label', usingResourceCache ? messages.resourceProgressLabel : messages.progressLabel);
+			networkElement.title = usingResourceCache ? messages.chunkDescription : messages.bandwidthDescription;
+			cacheElement.title = networkElement.title;
+			updateProgress(usingResourceCache ? 0 : 18, messages.loadingResources);
 
 			const reconcileCacheMode = () => {
-				if (!configuration.cacheVersion || !observedResources.size) {
+				if (usingResourceCache || !configuration.cacheVersion || !observedResources.size) {
 					return;
 				}
 
@@ -369,6 +408,14 @@
 				} else if (cacheMode === 'first' && !downloadedResource) {
 					updateCacheMode('reuse');
 				}
+			};
+			metricsTimer = window.setInterval(() => {
+				reconcileCacheMode();
+				updateMetrics();
+			}, 500);
+			const stopMetrics = () => {
+				window.clearInterval(metricsTimer);
+				resourceObserver?.disconnect();
 			};
 
 			const stylesheet = document.getElementById('vscode-workbench-styles');
@@ -434,13 +481,11 @@
 				window.clearTimeout(slowLoadingTimeout);
 				readinessObserver?.disconnect();
 				recordResources(window.performance?.getEntriesByType?.('resource') ?? []);
-				resourceObserver?.disconnect();
-				if (metricsFrame) {
-					window.cancelAnimationFrame(metricsFrame);
-					metricsFrame = 0;
-				}
+				stopMetrics();
 				reconcileCacheMode();
 				persistReadyVersion();
+				void commitPreparedCache?.();
+				commitPreparedCache = undefined;
 				updateProgress(100, messages.ready);
 				actionElement.hidden = true;
 				overlay.setAttribute('aria-busy', 'false');
@@ -459,7 +504,7 @@
 				recovering = true;
 				window.clearTimeout(slowLoadingTimeout);
 				readinessObserver?.disconnect();
-				resourceObserver?.disconnect();
+				stopMetrics();
 				invalidateReadyVersion();
 				updateCacheMode('repair');
 				slowLoading = false;
@@ -476,20 +521,22 @@
 					return;
 				}
 				invalidateReadyVersion();
-				if (configuration.cacheVersion && !configuration.recoveryToken) {
+				if (!usingResourceCache && configuration.cacheVersion && !configuration.recoveryToken) {
 					beginCacheRecovery();
 					return;
 				}
 				window.clearTimeout(slowLoadingTimeout);
-				resourceObserver?.disconnect();
+				stopMetrics();
+				transferSamples.length = 0;
+				updateMetrics();
 				slowLoading = false;
 				overlay.setAttribute('data-state', 'error');
 				overlay.setAttribute('aria-busy', 'false');
 				progressElement.removeAttribute('aria-valuenow');
-				detailElement.textContent = messages.loadError;
+				detailElement.textContent = usingResourceCache ? messages.chunkLoadError : messages.loadError;
 				updateAccessibleProgress();
-				actionHandler = configuration.cacheVersion ? beginCacheRecovery : () => window.location.reload();
-				actionElement.textContent = configuration.cacheVersion ? messages.retry : messages.reload;
+				actionHandler = !usingResourceCache && configuration.cacheVersion ? beginCacheRecovery : () => window.location.reload();
+				actionElement.textContent = usingResourceCache ? messages.resumeDownload : configuration.cacheVersion ? messages.retry : messages.reload;
 				actionElement.hidden = false;
 			};
 
@@ -538,6 +585,57 @@
 				} catch (error) {
 					readinessObserver.observe({ entryTypes: ['mark'] });
 				}
+			}
+
+			if (usingResourceCache) {
+				const loadPreparedResources = async () => {
+					try {
+						const manifestUrl = new URL(configuration.resourceCache, window.location.origin).href;
+						const loader = await import(new URL('loader.js', manifestUrl).href);
+						if (!loader.isWorkbenchCacheSupported()) {
+							usingResourceCache = false;
+							updateCacheMode('unavailable');
+							updateProgress(18, messages.loadingResources);
+							const nativeScript = document.createElement('script');
+							nativeScript.type = 'module';
+							nativeScript.src = mainScript.src;
+							nativeScript.addEventListener('error', showLoadError, { once: true });
+							nativeScript.addEventListener('load', () => updateProgress(62, messages.startingWorkbench), { once: true });
+							document.body.appendChild(nativeScript);
+							return;
+						}
+						const preparedCache = await loader.prepareWorkbenchCache(manifestUrl, value => {
+							const received = value.transferredBytes - (cacheProgress?.transferredBytes ?? 0);
+							if (received > 0) {
+								transferSamples.push({ time: window.performance.now(), bytes: received });
+							}
+							cacheProgress = value;
+							knownTotalBytes = value.totalBytes;
+							updateCacheMode(value.storage === 'unavailable' ? 'unavailable' : value.cachedBytes > 0 ? (value.transferredBytes > 0 ? 'repair' : 'reuse') : value.transferredBytes > 0 ? 'first' : 'checking');
+							updateProgress(Math.round(value.completedBytes / Math.max(1, value.totalBytes) * 100), messages.loadingResources);
+						});
+						commitPreparedCache = preparedCache.commit;
+						const style = document.createElement('style');
+						style.id = 'vscode-workbench-cached-styles';
+						style.textContent = await preparedCache.style.text();
+						document.head.appendChild(style);
+						updateProgress(100, messages.startingWorkbench);
+						const scriptUrl = URL.createObjectURL(preparedCache.script);
+						try {
+							await import(scriptUrl);
+						} finally {
+							URL.revokeObjectURL(scriptUrl);
+						}
+						if (ready) {
+							void commitPreparedCache?.();
+							commitPreparedCache = undefined;
+						}
+					} catch (error) {
+						console.error('Unable to start from the prepared workbench cache.', error);
+						showLoadError();
+					}
+				};
+				void loadPreparedResources();
 			}
 		})();
 	</script>

@@ -28,6 +28,7 @@ import { CharCode } from '../../base/common/charCode.js';
 import { IExtensionManifest } from '../../platform/extensions/common/extensions.js';
 import { ITranslations, localizeManifest } from '../../platform/extensionManagement/common/extensionNls.js';
 import { ICSSDevelopmentService } from '../../platform/cssDev/node/cssDevService.js';
+import { webClientCacheDirectory } from '../../platform/remote/common/webClientCache.js';
 
 const textMimeType: { [ext: string]: string | undefined } = {
 	'.html': 'text/html',
@@ -49,22 +50,57 @@ export const enum CacheControl {
 	NO_CACHING, ETAG, NO_EXPIRY
 }
 
+/** Orders supported compressed representations, respecting explicit refusals and quality values. */
+export function getWebClientPreferredEncodings(acceptEncoding: string | undefined): readonly ('br' | 'gzip')[] {
+	const qualities = new Map<string, number>();
+	for (const part of acceptEncoding?.split(',') ?? []) {
+		const [encoding, ...parameters] = part.trim().toLowerCase().split(';');
+		const qualityParameter = parameters.map(parameter => parameter.trim()).find(parameter => parameter.startsWith('q='));
+		const quality = qualityParameter ? Number(qualityParameter.substring(2)) : 1;
+		qualities.set(encoding.trim(), Number.isFinite(quality) && quality >= 0 && quality <= 1 ? quality : 0);
+	}
+	const quality = (encoding: string) => qualities.get(encoding) ?? qualities.get('*') ?? 0;
+	return (['br', 'gzip'] as const).filter(encoding => quality(encoding) > 0).sort((first, second) => quality(second) - quality(first));
+}
+
 /**
  * Serve a file at a given path or 404 if the file is missing.
  */
-export async function serveFile(filePath: string, cacheControl: CacheControl, logService: ILogService, req: http.IncomingMessage, res: http.ServerResponse, responseHeaders: Record<string, string>): Promise<void> {
+export async function serveFile(filePath: string, cacheControl: CacheControl, logService: ILogService, req: http.IncomingMessage, res: http.ServerResponse, responseHeaders: Record<string, string>, precompressed = false): Promise<void> {
 	try {
-		const stat = await promises.stat(filePath); // throws an error if file doesn't exist
+		let stat = await promises.stat(filePath); // throws an error if the original doesn't exist
+		let representationPath = filePath;
+		// Only immutable releases have build-time representations. A developer editing a source file
+		// must never receive an older sidecar, nor may mutable workspace files opt into this path.
+		if (precompressed) {
+			responseHeaders['Vary'] = responseHeaders['Vary'] ? `${responseHeaders['Vary']}, Accept-Encoding` : 'Accept-Encoding';
+			for (const encoding of getWebClientPreferredEncodings(req.headers['accept-encoding'])) {
+				const candidate = `${filePath}.${encoding === 'br' ? 'br' : 'gz'}`;
+				try {
+					const candidateStat = await promises.stat(candidate);
+					if (candidateStat.isFile()) {
+						representationPath = candidate;
+						stat = candidateStat;
+						responseHeaders['Content-Encoding'] = encoding;
+						break;
+					}
+				} catch (error) {
+					if (error.code !== 'ENOENT') {
+						throw error;
+					}
+				}
+			}
+			responseHeaders['Content-Length'] = String(stat.size);
+		}
 		if (cacheControl === CacheControl.ETAG) {
 
 			// Check if file modified since
 			const etag = `W/"${[stat.ino, stat.size, stat.mtime.getTime()].join('-')}"`; // weak validator (https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag)
+			responseHeaders['Etag'] = etag;
 			if (req.headers['if-none-match'] === etag) {
-				res.writeHead(304);
+				res.writeHead(304, responseHeaders);
 				return void res.end();
 			}
-
-			responseHeaders['Etag'] = etag;
 		} else if (cacheControl === CacheControl.NO_EXPIRY) {
 			responseHeaders['Cache-Control'] = 'public, max-age=31536000, immutable';
 		} else if (cacheControl === CacheControl.NO_CACHING) {
@@ -76,7 +112,7 @@ export async function serveFile(filePath: string, cacheControl: CacheControl, lo
 		// Create the stream first and wait for it to open before sending
 		// headers so that errors (e.g. ENOENT race) can still produce a
 		// proper 404 response instead of aborting a half-sent 200.
-		const fileStream = createReadStream(filePath);
+		const fileStream = createReadStream(representationPath);
 		await new Promise<void>((resolve, reject) => {
 			fileStream.on('error', reject);
 			fileStream.on('open', () => {
@@ -187,11 +223,25 @@ interface IWebClientStartupMessages {
 	readonly progressLabel: string;
 	readonly processedBytes: string;
 	readonly processedBytesWithTotal: string;
+	readonly networkBytes: string;
+	readonly cachedBytes: string;
+	readonly bandwidthDescription: string;
+	readonly checkingMode: string;
+	readonly checkingTitle: string;
+	readonly unavailableMode: string;
+	readonly unavailableTitle: string;
+	readonly preparedBytes: string;
+	readonly cachedChunks: string;
+	readonly chunkDescription: string;
+	readonly resourceProgressLabel: string;
+	readonly chunkLoadError: string;
+	readonly resumeDownload: string;
 	readonly byteUnits: readonly string[];
 }
 
 export interface IWebClientStartupConfiguration {
 	readonly cacheVersion: string | undefined;
+	readonly resourceCache: string | undefined;
 	readonly staticRoot: string;
 	readonly cacheRecoveryQuery: string;
 	readonly recoveryToken: string | undefined;
@@ -239,7 +289,7 @@ export function parseWebClientStartupTemplate(content: string): IWebClientStartu
 /**
  * Returns the small localized configuration needed before the workbench NLS bundles are available.
  */
-export function getWebClientStartupConfiguration(locale: string, cacheVersion: string | undefined, staticRoot: string, recoveryToken?: string): IWebClientStartupConfiguration {
+export function getWebClientStartupConfiguration(locale: string, cacheVersion: string | undefined, staticRoot: string, recoveryToken?: string, resourceCacheAvailable = false): IWebClientStartupConfiguration {
 	const normalizedLocale = locale.split(';', 1)[0].trim().toLowerCase();
 	let messages: IWebClientStartupMessages;
 	if (/^zh-(?:hant|hk|mo|tw)(?:-|$)/.test(normalizedLocale)) {
@@ -264,6 +314,19 @@ export function getWebClientStartupConfiguration(locale: string, cacheVersion: s
 			progressLabel: '工作區載入進度',
 			processedBytes: '已處理 {0} · 進度 {1}%',
 			processedBytesWithTotal: '已處理 {0} / {1} · 進度 {2}%',
+			networkBytes: '下載 {0}/s · 已傳輸 {1}',
+			cachedBytes: '快取 {0} · 重用比例 {1}% · {2} 個資源',
+			bandwidthDescription: '最近 2 秒完成的資源傳輸速率，每 0.5 秒更新。網路流量按壓縮後的傳輸量計算，不包含快取讀取；快取量按解壓後的資源大小計算。',
+			checkingMode: '檢查快取',
+			checkingTitle: '正在檢查已儲存的資源',
+			unavailableMode: '無法儲存快取',
+			unavailableTitle: '瀏覽器無法儲存完整快取，重新整理時可能需要再次下載',
+			preparedBytes: '核心資源 {0} / {1} · 已就緒 {2}%',
+			cachedChunks: '快取 {0} · 重用比例 {1}% · {2}/{3} 個分塊',
+			chunkDescription: '分塊經校驗後儲存在瀏覽器中。速率按最近 2 秒實際收到的壓縮位元組計算，每 0.5 秒更新；快取量按解壓後大小計算。',
+			resourceProgressLabel: '核心資源載入進度',
+			chunkLoadError: '資源未能完整載入。已儲存的分塊會保留，請檢查網路後重試',
+			resumeDownload: '繼續載入',
 			byteUnits: ['B', 'KB', 'MB', 'GB'],
 		};
 	} else if (normalizedLocale === 'zh' || normalizedLocale.startsWith('zh-')) {
@@ -288,6 +351,19 @@ export function getWebClientStartupConfiguration(locale: string, cacheVersion: s
 			progressLabel: '工作台加载进度',
 			processedBytes: '已处理 {0} · 进度 {1}%',
 			processedBytesWithTotal: '已处理 {0} / {1} · 进度 {2}%',
+			networkBytes: '下载 {0}/s · 已传输 {1}',
+			cachedBytes: '缓存 {0} · 复用比例 {1}% · {2} 个资源',
+			bandwidthDescription: '最近 2 秒完成的资源传输速率，每 0.5 秒更新。网络流量按压缩后的传输量计算，不包含缓存读取；缓存量按解压后的资源大小计算。',
+			checkingMode: '检查缓存',
+			checkingTitle: '正在检查已保存的资源',
+			unavailableMode: '无法保存缓存',
+			unavailableTitle: '浏览器无法保存完整缓存，刷新时可能需要再次下载',
+			preparedBytes: '核心资源 {0} / {1} · 已就绪 {2}%',
+			cachedChunks: '缓存 {0} · 复用比例 {1}% · {2}/{3} 个分块',
+			chunkDescription: '分块经校验后保存在浏览器中。速率按最近 2 秒实际收到的压缩字节计算，每 0.5 秒更新；缓存量按解压后大小计算。',
+			resourceProgressLabel: '核心资源加载进度',
+			chunkLoadError: '资源未能完整加载。已保存的分块会保留，请检查网络后重试',
+			resumeDownload: '继续加载',
 			byteUnits: ['B', 'KB', 'MB', 'GB'],
 		};
 	} else {
@@ -312,11 +388,25 @@ export function getWebClientStartupConfiguration(locale: string, cacheVersion: s
 			progressLabel: 'Workbench loading progress',
 			processedBytes: 'Processed {0} · Progress {1}%',
 			processedBytesWithTotal: 'Processed {0} / {1} · Progress {2}%',
+			networkBytes: 'Download {0}/s · Transferred {1}',
+			cachedBytes: 'Cache {0} · Reused {1}% · {2} resources',
+			bandwidthDescription: 'Recent transfer rate for resources completed in the last 2 seconds, updated every 0.5 seconds. Network traffic uses compressed transfer sizes and excludes cache reads; cache bytes use the original resource sizes.',
+			checkingMode: 'Checking cache',
+			checkingTitle: 'Checking saved resources',
+			unavailableMode: 'Cache storage unavailable',
+			unavailableTitle: 'The browser cannot save the complete cache. Reloading may require another download',
+			preparedBytes: 'Core resources {0} / {1} · {2}% ready',
+			cachedChunks: 'Cache {0} · Reused {1}% · {2}/{3} chunks',
+			chunkDescription: 'Verified chunks are saved in the browser. Transfer speed uses compressed bytes received during the last 2 seconds, updated every 0.5 seconds; cache bytes use the original sizes.',
+			resourceProgressLabel: 'Core resource loading progress',
+			chunkLoadError: 'Resources could not be fully loaded. Saved chunks are kept; check the connection and retry',
+			resumeDownload: 'Resume Loading',
 			byteUnits: ['B', 'KB', 'MB', 'GB'],
 		};
 	}
 
-	return { cacheVersion, staticRoot, cacheRecoveryQuery: WEB_CLIENT_CACHE_RECOVERY_QUERY, recoveryToken, messages };
+	const resourceCache = cacheVersion && resourceCacheAvailable ? posix.join(staticRoot, 'out', webClientCacheDirectory, 'manifest.json') : undefined;
+	return { cacheVersion, resourceCache, staticRoot, cacheRecoveryQuery: WEB_CLIENT_CACHE_RECOVERY_QUERY, recoveryToken, messages };
 }
 
 /** Returns package NLS bundles from the most specific safe locale to the default bundle. */
@@ -359,11 +449,13 @@ export class WebClientServer {
 	private readonly _cacheVersion: string | undefined;
 	private readonly _staticAssetRoute: string;
 	private readonly _staticAssetCacheControl: CacheControl;
+	private readonly _resourceCacheAvailable: Promise<boolean>;
 
 	constructor(
 		private readonly _connectionToken: ServerConnectionToken,
 		private readonly _basePath: string,
 		private readonly _productPath: string,
+		private readonly _remoteConnectionSigning: boolean,
 		@IServerEnvironmentService private readonly _environmentService: IServerEnvironmentService,
 		@ILogService private readonly _logService: ILogService,
 		@IRequestService private readonly _requestService: IRequestService,
@@ -374,6 +466,9 @@ export class WebClientServer {
 		this._cacheVersion = this._environmentService.args['web-client-cache-version'];
 		this._staticAssetRoute = getWebClientStaticAssetRoute(this._cacheVersion);
 		this._staticAssetCacheControl = getWebClientStaticAssetCacheControl(this._environmentService.isBuilt, this._cacheVersion);
+		this._resourceCacheAvailable = this._cacheVersion && !this._environmentService.isBuilt
+			? promises.stat(FileAccess.asFileUri(`${webClientCacheDirectory}/manifest.json`).fsPath).then(stat => stat.isFile(), () => false)
+			: Promise.resolve(false);
 	}
 
 	/**
@@ -422,7 +517,7 @@ export class WebClientServer {
 			return serveError(req, res, 400, `Bad request.`);
 		}
 
-		return serveFile(filePath, this._staticAssetCacheControl, this._logService, req, res, headers);
+		return serveFile(filePath, this._staticAssetCacheControl, this._logService, req, res, headers, !!this._cacheVersion);
 	}
 
 	private _getResourceURLTemplateAuthority(uri: URI): string | undefined {
@@ -603,6 +698,7 @@ export class WebClientServer {
 
 		const productConfiguration: Partial<Mutable<IProductConfiguration>> = {
 			embedderIdentifier: 'server-distro',
+			remoteConnectionSigning: this._remoteConnectionSigning,
 			voiceWsUrl: this._productService.voiceWsUrl,
 			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
 				...this._productService.extensionsGallery,
@@ -649,7 +745,8 @@ export class WebClientServer {
 			locale,
 			this._cacheVersion ? canonicalStaticRoute : undefined,
 			staticRoute,
-			recoveryToken
+			recoveryToken,
+			await this._resourceCacheAvailable
 		);
 
 		const values: { [key: string]: string } = {
@@ -657,6 +754,7 @@ export class WebClientServer {
 			WORKBENCH_AUTH_SESSION: authSessionInfo ? asJSON(authSessionInfo) : '',
 			WORKBENCH_STARTUP_CONFIGURATION: asJSON(startupConfiguration),
 			WORKBENCH_WEB_BASE_URL: staticRoute,
+			WORKBENCH_MAIN_SCRIPT_TYPE: startupConfiguration.resourceCache ? 'application/json' : 'module',
 			WORKBENCH_NLS_URL,
 			WORKBENCH_NLS_FALLBACK_URL: `${staticRoute}/out/nls.messages.js`
 		};
@@ -715,7 +813,7 @@ export class WebClientServer {
 			'worker-src \'self\' data: blob:;',
 			'style-src \'self\' \'unsafe-inline\';',
 			'connect-src \'self\' ws: wss: https:;',
-			'font-src \'self\' blob:;',
+			`font-src 'self' blob:${startupConfiguration.resourceCache ? ' data:' : ''};`,
 			'manifest-src \'self\';'
 		].join(' ');
 

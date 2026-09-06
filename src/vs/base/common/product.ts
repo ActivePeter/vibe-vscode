@@ -129,6 +129,8 @@ export interface IProductConfiguration {
 	readonly webUrl?: string;
 	readonly webEndpointUrlTemplate?: string;
 	readonly webviewContentExternalBaseUrlTemplate?: string;
+	/** Whether the server provides the optional remote connection signing module. Undefined preserves the embedder's default. */
+	readonly remoteConnectionSigning?: boolean;
 	readonly target?: string;
 	readonly nlsCoreBaseUrl?: string;
 

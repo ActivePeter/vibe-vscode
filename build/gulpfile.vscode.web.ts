@@ -20,6 +20,7 @@ import { compileBuildWithManglingTask } from './gulpfile.compile.ts';
 import { copyCodiconsTask } from './lib/compilation.ts';
 import * as extensions from './lib/extensions.ts';
 import buildfile from './buildfile.ts';
+import { prepareWebClientAssets } from './lib/webClientCache.ts';
 
 const REPO_ROOT = path.dirname(import.meta.dirname);
 const BUILD_ROOT = path.dirname(REPO_ROOT);
@@ -62,6 +63,8 @@ function runEsbuildBundle(outDir: string, minify: boolean, nls: boolean, sourceM
 }
 
 export const vscodeWebResourceIncludes = [
+	'out-build/vs/code/browser/workbench/workbench-startup.html',
+	'out-build/vs/platform/remote/common/workbench-startup.nls.*.json',
 
 	// NLS
 	'out-build/nls.messages.js',
@@ -117,6 +120,9 @@ const vscodeWebEntryPoints = [
 	buildfile.workerBackgroundTokenization,
 	buildfile.keyboardMaps,
 	buildfile.workbenchWeb,
+	buildfile.codeWeb,
+	buildfile.workbenchCache,
+	buildfile.workbenchStartup,
 	buildfile.sessionsWeb,
 ].flat();
 
@@ -171,8 +177,16 @@ task.task(minifyVSCodeWebTask);
 
 // esbuild-based tasks (new)
 const sourceMappingURLBase = `https://main.vscode-cdn.net/sourcemaps/${commit}`;
-const esbuildBundleVSCodeWebTask = task.define('esbuild-vscode-web', () => runEsbuildBundle('out-vscode-web', false, true));
-const esbuildBundleVSCodeWebMinTask = task.define('esbuild-vscode-web-min', () => runEsbuildBundle('out-vscode-web-min', true, true, `${sourceMappingURLBase}/core`));
+const esbuildBundleVSCodeWebTask = task.define('esbuild-vscode-web', task.series(
+	() => runEsbuildBundle('out-vscode-web', false, true),
+	() => prepareWebClientAssets('out-vscode-web')
+));
+const esbuildBundleVSCodeWebMinTask = task.define('esbuild-vscode-web-min', task.series(
+	() => runEsbuildBundle('out-vscode-web-min', true, true, `${sourceMappingURLBase}/core`),
+	() => prepareWebClientAssets('out-vscode-web-min')
+));
+task.task(esbuildBundleVSCodeWebTask);
+task.task(esbuildBundleVSCodeWebMinTask);
 
 function packageTask(sourceFolderName: string, destinationFolderName: string) {
 	const destination = path.join(BUILD_ROOT, destinationFolderName);

@@ -5,9 +5,10 @@
 
 import assert from 'assert';
 import { afterEach, beforeEach, suite, test } from 'node:test';
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import ts from 'typescript';
 import { getMangleWorkerCount, Mangler } from '../mangle/index.ts';
 
 suite('Mangler', () => {
@@ -84,5 +85,77 @@ suite('Mangler', () => {
 			ordinaryMemberMangled: true,
 			mixinMemberPreserved: true,
 		});
+	});
+
+	test('type-checks the workbench cache loader contract and test double after export mangling', async () => {
+		writeFileSync(join(rootPath, 'package.json'), JSON.stringify({ type: 'module' }));
+		const controllerPath = new URL('../../../src/vs/code/browser/workbench/workbenchStartupController.ts', import.meta.url);
+		const controller = ts.createSourceFile(controllerPath.pathname, readFileSync(controllerPath, 'utf8'), ts.ScriptTarget.Latest, true);
+		const host = controller.statements.find(statement => ts.isInterfaceDeclaration(statement) && statement.name.text === 'IWorkbenchStartupHost');
+		assert.ok(host && ts.isInterfaceDeclaration(host));
+		const loadCache = host.members.find(member => ts.isMethodSignature(member) && member.name.getText(controller) === 'loadCache');
+		assert.ok(loadCache);
+		const cacheImport = controller.statements.find(statement => ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text === './workbenchCache.js');
+		assert.ok(cacheImport);
+		const startupTestsPath = new URL('../../../src/vs/code/test/browser/workbenchStartup.test.ts', import.meta.url);
+		const startupTests = ts.createSourceFile(startupTestsPath.pathname, readFileSync(startupTestsPath, 'utf8'), ts.ScriptTarget.Latest, true);
+		const testCacheImport = startupTests.statements.find(statement => ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text.endsWith('/workbenchCache.js'));
+		assert.ok(testCacheImport && ts.isImportDeclaration(testCacheImport));
+		const findLoader = (node: ts.Node): ts.VariableDeclaration | undefined => ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'loader' ? node : ts.forEachChild(node, findLoader);
+		const testLoader = findLoader(startupTests);
+		assert.ok(testLoader);
+
+		// Use the production return type: literal Pick keys are not rewritten by the
+		// TypeScript rename service even though the module's exports and calls are.
+		writeFileSync(sourcePath, `
+			${cacheImport.getText(controller)}
+			interface Host { ${loadCache.getText(controller)} }
+			export async function start(host: Host): Promise<void> {
+				const loader = await host.loadCache();
+				try {
+					loader.assertWorkbenchCacheSupported();
+					await loader.prepareWorkbenchCache('manifest.json', value => value.completedBytes);
+				} catch (error) {
+					if (!(error instanceof loader.WorkbenchCacheUnsupportedError)) { throw error; }
+				}
+			}
+		`);
+		// Test doubles need the module type as context too; otherwise their object
+		// keys do not follow renamed exports. Exercise the actual startup fixture.
+		const testDoublePath = join(rootPath, 'startupFixture.ts');
+		writeFileSync(testDoublePath, `
+			${testCacheImport.getText(startupTests).replace(testCacheImport.moduleSpecifier.getText(startupTests), JSON.stringify('./workbenchCache.js'))}
+			export function createHost() {
+				const calls = { prepare: 0 };
+				const hooks: { capabilities: object; prepare?: Promise<void> } = { capabilities: {} };
+				let report: (value: workbenchCache.IWebClientCacheProgress) => void = () => { };
+				const prepared = undefined;
+				const preparing = { complete: async () => { } };
+				const ${testLoader.getText(startupTests)};
+				return { loadCache: async () => loader, report: (value: workbenchCache.IWebClientCacheProgress) => report(value) };
+			}
+		`);
+		const cachePath = join(rootPath, 'workbenchCache.ts');
+		writeFileSync(cachePath, `
+			export interface IWebClientCacheProgress { completedBytes: number; }
+			export class WorkbenchCacheUnsupportedError extends Error { }
+			export function assertWorkbenchCacheSupported(_capabilities?: object): void { }
+			export async function prepareWorkbenchCache(url: string, progress: (value: IWebClientCacheProgress) => void): Promise<void> {
+				progress({ completedBytes: url.length });
+			}
+		`);
+		const config = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+		config.config.files.push('workbenchCache.ts', 'startupFixture.ts');
+		writeFileSync(tsconfigPath, JSON.stringify(config.config));
+		const mangler = new Mangler(tsconfigPath, () => { }, { mangleExports: true, manglePrivateFields: true });
+		const output = await mangler.computeNewFileContents();
+		assert.ok(output.has(sourcePath) && output.has(cachePath) && output.has(testDoublePath));
+		assert.doesNotMatch(output.get(cachePath)!.out, /assertWorkbenchCacheSupported|prepareWorkbenchCache|WorkbenchCacheUnsupportedError/);
+		for (const path of [sourcePath, cachePath, testDoublePath]) {
+			writeFileSync(path, output.get(path)!.out);
+		}
+		const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, rootPath);
+		const program = ts.createProgram(parsed.fileNames, parsed.options);
+		assert.deepStrictEqual(ts.getPreEmitDiagnostics(program).map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')), [], [sourcePath, testDoublePath].map(path => output.get(path)!.out).join('\n'));
 	});
 });

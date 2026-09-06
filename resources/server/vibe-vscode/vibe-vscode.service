@@ -1,0 +1,22 @@
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License. See License.txt in the project root for license information.
+
+[Unit]
+Description=Vibe VS Code Web Server
+After=network.target
+
+[Service]
+Type=simple
+User=vibe-vscode
+Group=vibe-vscode
+EnvironmentFile=/etc/vibe-vscode/service.env
+RuntimeDirectory=vibe-vscode
+RuntimeDirectoryMode=0750
+UMask=0007
+ExecStart=/usr/bin/env ${VIBE_VSCODE_INSTALL_ROOT}/current/bin/vibe-vscode-server --socket-path /run/vibe-vscode/backend.sock --server-data-dir ${VIBE_VSCODE_SERVICE_STATE_ROOT}/server --extensions-dir ${VIBE_VSCODE_SERVICE_STATE_ROOT}/extensions --connection-token-file ${VIBE_VSCODE_CONNECTION_TOKEN_FILE}
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

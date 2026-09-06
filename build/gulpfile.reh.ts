@@ -33,6 +33,7 @@ import { fetchUrls } from './lib/fetch.ts';
 import { downloadFeedPackage } from './lib/azureFeed.ts';
 import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotTgrepExcludeFilter, getMxcExcludeFilter, getRipgrepExcludeFilter, prepareBuiltInCopilotRipgrepShim } from './lib/copilot.ts';
 import { readAgentSdkResults } from './agent-sdk/common.ts';
+import { prepareWebClientAssets } from './lib/webClientCache.ts';
 
 
 const rcedit = promisify(rceditCallback);
@@ -122,7 +123,9 @@ const webEntryPoints = [
 	buildfile.workerOutputLinks,
 	buildfile.workerBackgroundTokenization,
 	buildfile.keyboardMaps,
-	buildfile.codeWeb
+	buildfile.codeWeb,
+	buildfile.workbenchCache,
+	buildfile.workbenchStartup
 ].flat();
 
 const serverWithWebEntryPoints = [
@@ -657,6 +660,7 @@ function tweakProductForServerWeb(product: typeof import('../product.json')) {
 			const destinationFolderName = `vscode-${type}${dashed(platform)}${dashed(arch)}`;
 
 			const packageTasks: task.Task[] = [
+				...(type === 'reh-web' ? [task.define(`prepare-web-client-assets${dashed(minified)}`, () => prepareWebClientAssets(sourceFolderName))] : []),
 				compileNativeExtensionsBuildTask,
 				task.task(`node-${platform}-${arch}`) as task.Task,
 				util.rimraf(path.join(BUILD_ROOT, destinationFolderName)),

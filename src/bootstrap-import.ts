@@ -10,7 +10,7 @@
 // *                                                                   *
 // *********************************************************************
 
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { promises } from 'node:fs';
 import { join } from 'node:path';
 
@@ -22,12 +22,12 @@ const _specifierToFormat: Record<string, string> = {};
 export async function initialize(injectPath: string): Promise<void> {
 	// populate mappings
 
-	const injectPackageJSONPath = fileURLToPath(new URL('../package.json', pathToFileURL(injectPath)));
+	const injectPackageJSONPath = join(injectPath, '..', 'package.json');
 	const packageJSON = JSON.parse(String(await promises.readFile(injectPackageJSONPath)));
 
 	for (const [name] of Object.entries(packageJSON.dependencies)) {
 		try {
-			const path = join(injectPackageJSONPath, `../node_modules/${name}/package.json`);
+			const path = join(injectPath, name, 'package.json');
 			const pkgJson = JSON.parse(String(await promises.readFile(path)));
 
 			// Determine the entry point: prefer exports["."].import for ESM, then main.
@@ -65,7 +65,7 @@ export async function initialize(injectPath: string): Promise<void> {
 			if (!main.endsWith('.js') && !main.endsWith('.mjs') && !main.endsWith('.cjs')) {
 				main += '.js';
 			}
-			const mainPath = join(injectPackageJSONPath, `../node_modules/${name}/${main}`);
+			const mainPath = join(injectPath, name, main);
 			_specifierToUrl[name] = pathToFileURL(mainPath).href;
 			// Determine module format: .mjs is always ESM, .cjs always CJS, otherwise check type field
 			const isModule = main.endsWith('.mjs')

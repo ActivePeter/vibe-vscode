@@ -58,21 +58,23 @@ function contributingTextEndpoints(range: Range): { first: Text; last: Text } | 
 				return NodeFilter.FILTER_ACCEPT;
 			}
 			const element = node as Element;
-			if (element.checkVisibility()) {
-				return NodeFilter.FILTER_SKIP;
-			}
-			// A `display: contents` element has no box of its own — so it reads
-			// as invisible — but its descendants do render and are selectable.
-			// Only read the computed style on this rare branch.
-			const display = dom.getWindow(element).getComputedStyle(element).display;
-			return display === 'contents' ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_REJECT;
+			// Prune by CSS hiding rules, not a visibility probe of the current
+			// layout boxes: WebKit can report newly inserted visible nodes as
+			// invisible before layout. A `display: contents` wrapper also has
+			// no box, but its descendants remain selectable.
+			const style = dom.getWindow(element).getComputedStyle(element);
+			return style.display === 'none' || (style.display !== 'contents' && style.contentVisibility === 'hidden')
+				? NodeFilter.FILTER_REJECT
+				: NodeFilter.FILTER_SKIP;
 		},
 	});
 	let first: Text | undefined;
 	let last: Text | undefined;
 	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
 		const text = node as Text;
-		if (!range.intersectsNode(text)) {
+		// Compare the text's boundary points, not its containing node's intersection.
+		// A boundary at offset 0 of a following element selects none of its text.
+		if (range.comparePoint(text, text.data.length) < 0 || range.comparePoint(text, 0) > 0) {
 			continue;
 		}
 		const start = text === range.startContainer ? range.startOffset : 0;

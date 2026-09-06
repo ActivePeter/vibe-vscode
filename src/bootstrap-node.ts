@@ -140,8 +140,26 @@ export function devInjectNodeModuleLookupPath(injectPath: string): void {
 		throw new Error('Missing injectPath');
 	}
 
-	// register a loader hook
-	const Module = require('node:module');
+	const Module = require('node:module') as typeof import('node:module') & {
+		_resolveLookupPaths: (request: string, parent: unknown) => string[] | null;
+	};
+
+	// Asynchronous ESM hooks do not redirect createRequire(). Prefer the remote
+	// dependencies at the application boundary, preserving package-local overrides.
+	const nodeModulesPath = path.join(import.meta.dirname, '../node_modules');
+	const originalResolveLookupPaths = Module._resolveLookupPaths;
+	Module._resolveLookupPaths = function (request: string, parent: unknown): string[] | null {
+		const paths = originalResolveLookupPaths(request, parent);
+		if (Array.isArray(paths) && !paths.some(candidate => path.relative(candidate, injectPath) === '')) {
+			const index = paths.findIndex(candidate => path.relative(candidate, nodeModulesPath) === '');
+			if (index !== -1) {
+				paths.splice(index, 0, injectPath);
+			}
+		}
+		return paths;
+	};
+
+	// Register the ESM loader hook as well.
 	Module.register('./bootstrap-import.js', { parentURL: import.meta.url, data: injectPath });
 }
 

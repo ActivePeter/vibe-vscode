@@ -162,45 +162,14 @@ jobs:
         if: steps.electron.outcome == 'success'
         continue-on-error: true
         run: |
+          # Discover new tests within each product area; never register individual test files.
           xvfb-run -a ./scripts/test.sh \
-            --run src/vs/base/test/browser/ui/tree/asyncDataTree.test.ts \
-            --run src/vs/base/test/node/bootstrap.test.ts \
-            --run src/vs/code/test/browser/workbenchCache.test.ts \
-            --run src/vs/platform/sign/test/browser/signService.test.ts \
-            --run src/vs/platform/sign/test/common/abstractSignService.test.ts \
-            --run src/vs/server/test/node/logicalWorkspaceStateChannel.test.ts \
-            --run src/vs/server/test/node/webClientServer.test.ts \
-            --run src/vs/sessions/test/web.test.ts \
-            --run src/vs/workbench/api/test/browser/extHostWebview.test.ts \
-            --run src/vs/workbench/api/test/browser/mainThreadTerminalService.test.ts \
-            --run src/vs/workbench/api/test/browser/mainThreadWebviewPanels.test.ts \
-            --run src/vs/workbench/api/test/common/extHostTerminalService.test.ts \
-            --run src/vs/workbench/api/test/node/extHostLocalizationService.test.ts \
-            --run src/vs/workbench/contrib/chat/test/browser/agentSessions/agentSessionViewModel.test.ts \
-            --run src/vs/workbench/contrib/chat/test/browser/agentSessions/localAgentSessionsController.test.ts \
-            --run src/vs/workbench/contrib/chat/test/browser/chatContribution.test.ts \
-            --run src/vs/workbench/contrib/remote/test/browser/remoteExplorer.test.ts \
-            --run src/vs/workbench/contrib/files/test/browser/explorerFindProvider.test.ts \
-            --run src/vs/workbench/contrib/files/test/browser/explorerService.test.ts \
-            --run src/vs/workbench/contrib/terminal/test/browser/agentHostTerminalService.test.ts \
-            --run src/vs/workbench/contrib/terminal/test/browser/terminalProcessManager.test.ts \
-            --run src/vs/workbench/contrib/terminal/test/browser/terminalService.test.ts \
-            --run src/vs/workbench/contrib/update/test/browser/releaseNotesEditor.test.ts \
-            --run src/vs/workbench/contrib/workspace/test/browser/logicalWorkspace.contribution.test.ts \
-            --run src/vs/workbench/contrib/workspace/test/browser/logicalWorkspaceLayoutAdapter.test.ts \
-            --run src/vs/workbench/contrib/workspace/test/browser/logicalWorkspaceTerminalAdapter.test.ts \
-            --run src/vs/workbench/contrib/workspace/test/browser/projectContext.test.ts \
-            --run src/vs/workbench/services/editor/test/browser/modalEditorGroup.test.ts \
-            --run src/vs/workbench/services/accounts/test/browser/defaultAccount.test.ts \
-            --run src/vs/workbench/services/authentication/test/browser/authenticationService.test.ts \
-            --run src/vs/workbench/services/environment/test/browser/environmentService.test.ts \
-            --run src/vs/workbench/services/logicalWorkspace/test/browser/logicalWorkspaceService.test.ts \
-            --run src/vs/workbench/test/browser/layout.test.ts \
-            --run src/vs/workbench/test/browser/parts/editor/editorParts.test.ts \
-            --run src/vs/workbench/test/browser/parts/editor/modalEditorResize.test.ts \
+            --runGlob '{vs/base/test/{browser/ui/tree,node},vs/code/test/browser,vs/platform/sign/test,vs/server/test,vs/sessions/test,vs/workbench/api/test,vs/workbench/contrib/{chat,remote,files,terminal,update,workspace}/test,vs/workbench/services/{editor,accounts,authentication,environment,logicalWorkspace}/test,vs/workbench/test/browser}/**/*.test.js' \
+            --excludeRunGlob '**/electron-*/**/*.test.js' \
             --timeout 20000
         env:
           VSCODE_SKIP_PRELAUNCH: '1'
+          TZ: UTC
 
       - name: Verify quality and tests
         if: always()
@@ -275,10 +244,10 @@ jobs:
           VSCODE_MANGLE_WORKERS: '1'
 
       - name: Verify packaged Web cache
-        run: node build/verify-web-cache.ts ../vscode-reh-web-linux-x64/out
+        run: node build/web-release.ts verify ../vscode-reh-web-linux-x64
 
       - name: Verify release archive and production launcher
-        run: node build/package-web-release.ts ../vscode-reh-web-linux-x64 .build/release-validation v0.0.0-ci "$(git rev-parse HEAD)"
+        run: node build/web-release.ts package ../vscode-reh-web-linux-x64 .build/release-validation v0.0.0-ci "$(git rev-parse HEAD)"
 
       - name: Verify packaged Vibe extension
         env:

@@ -37,6 +37,19 @@ async function validateRuntimeLinks(root: string, directory = root): Promise<voi
 	}
 }
 
+/** Installs the one launcher contract shared by source snapshots and production archives. */
+export async function installWebClientLauncher(root: string, version: string, commit: string, mode: 'development' | 'production'): Promise<void> {
+	if (!/^[0-9A-Za-z][0-9A-Za-z._-]*$/.test(version) || !/^[0-9a-f]{40}$/.test(commit)) {
+		throw new Error('Runtime metadata requires a safe version and a full commit hash.');
+	}
+	const resources = path.resolve(import.meta.dirname, '../../resources/server/vibe-vscode');
+	await fs.cp(resources, path.join(root, 'resources/server/vibe-vscode'), { recursive: true });
+	await fs.mkdir(path.join(root, 'bin'), { recursive: true });
+	await fs.copyFile(path.join(resources, 'vibe-vscode-server.sh'), path.join(root, 'bin/vibe-vscode-server'));
+	await fs.chmod(path.join(root, 'bin/vibe-vscode-server'), 0o755);
+	await fs.writeFile(path.join(root, 'vibe-release.json'), `${JSON.stringify({ version, commit, platform: process.platform, arch: process.arch, mode }, null, '\t')}\n`);
+}
+
 /** Stamps and archives a verified Linux package without modifying the Gulp output or an existing release. */
 export async function packageWebClientRelease(packageRoot: string, outputDirectory: string, version: string, commit: string): Promise<string> {
 	if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) || !/^[0-9a-f]{40}$/.test(commit)) {
@@ -84,12 +97,7 @@ for (const name of ['@vscode/sqlite3', '@vscode/spdlog', '@vscode/native-watchdo
 	require(name);
 }`], { cwd: root, env });
 
-		const resources = path.resolve(import.meta.dirname, '../../resources/server/vibe-vscode');
-		await fs.cp(resources, path.join(root, 'resources/server/vibe-vscode'), { recursive: true });
-		await fs.mkdir(path.join(root, 'bin'), { recursive: true });
-		await fs.copyFile(path.join(resources, 'vibe-vscode-server.sh'), path.join(root, 'bin/vibe-vscode-server'));
-		await fs.chmod(path.join(root, 'bin/vibe-vscode-server'), 0o755);
-		await fs.writeFile(path.join(root, 'vibe-release.json'), `${JSON.stringify({ version, commit, platform: 'linux', arch: 'x64' }, null, '\t')}\n`);
+		await installWebClientLauncher(root, version, commit, 'production');
 		await run(path.join(root, 'bin/vibe-vscode-server'), ['--version'], { cwd: root, env });
 
 		const name = `vibe-vscode-server-${version}-linux-x64.tar.gz`;

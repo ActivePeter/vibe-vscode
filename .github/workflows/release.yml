@@ -105,7 +105,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.source.outputs.tag }}
           SOURCE_COMMIT: ${{ needs.source.outputs.commit }}
-        run: node build/package-web-release.ts ../vscode-reh-web-linux-x64 .build/release "$RELEASE_TAG" "$SOURCE_COMMIT"
+        run: node build/web-release.ts package ../vscode-reh-web-linux-x64 .build/release "$RELEASE_TAG" "$SOURCE_COMMIT"
       - name: Upload release candidates
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

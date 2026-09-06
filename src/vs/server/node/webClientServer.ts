@@ -29,6 +29,7 @@ import { IExtensionManifest } from '../../platform/extensions/common/extensions.
 import { ITranslations, localizeManifest } from '../../platform/extensionManagement/common/extensionNls.js';
 import { ICSSDevelopmentService } from '../../platform/cssDev/node/cssDevService.js';
 import { webClientCacheDirectory } from '../../platform/remote/common/webClientCache.js';
+import { IWebClientStartupConfiguration, IWebClientStartupMessages } from '../../platform/remote/common/webClientStartup.js';
 
 const textMimeType: { [ext: string]: string | undefined } = {
 	'.html': 'text/html',
@@ -151,10 +152,6 @@ const STATIC_PATH = `/static`;
 const CALLBACK_PATH = `/callback`;
 const WEB_EXTENSION_PATH = `/web-extension-resource`;
 const VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH = 'vibe-vscode';
-const WEB_CLIENT_CACHE_RECOVERY_QUERY = 'vscode-cache-recovery';
-const WEB_CLIENT_CACHE_RECOVERY_PATH_PREFIX = 'recovery-';
-const WEB_CLIENT_CACHE_RECOVERY_QUERY_PATTERN = /^([0-9a-f]{64})\.([0-9a-f]{32})$/;
-const WEB_CLIENT_CACHE_RECOVERY_RESOURCE_PATTERN = /^\/recovery-[0-9a-f]{32}(\/.*)$/;
 
 export function getWebClientStaticAssetRoute(cacheVersion: string | undefined): string {
 	if (!cacheVersion) {
@@ -165,88 +162,8 @@ export function getWebClientStaticAssetRoute(cacheVersion: string | undefined): 
 	return `${STATIC_PATH}/${cacheKey}`;
 }
 
-/**
- * Returns a distinct static route so the browser reloads the complete ESM graph
- * instead of reusing a failed immutable-cache entry.
- */
-export function getWebClientStaticAssetRecoveryRoute(staticAssetRoute: string, recoveryToken: string): string {
-	return `${staticAssetRoute}/${WEB_CLIENT_CACHE_RECOVERY_PATH_PREFIX}${recoveryToken}`;
-}
-
-/** Returns a validated recovery token from the workbench URL. */
-export function getWebClientCacheRecoveryToken(parsedUrl: URL, cacheVersion: string | undefined): string | undefined {
-	if (!cacheVersion) {
-		return undefined;
-	}
-
-	const recoveryTokens = parsedUrl.searchParams.getAll(WEB_CLIENT_CACHE_RECOVERY_QUERY);
-	if (recoveryTokens.length !== 1) {
-		return undefined;
-	}
-
-	const recoveryMatch = WEB_CLIENT_CACHE_RECOVERY_QUERY_PATTERN.exec(recoveryTokens[0]);
-	const cacheKey = crypto.createHash('sha256').update(cacheVersion).digest('hex');
-	return recoveryMatch?.[1] === cacheKey ? recoveryMatch[2] : undefined;
-}
-
-/** Maps a cache-recovery URL back to the same immutable release file. */
-export function getWebClientStaticAssetResourcePath(resourcePath: string, recoveryEnabled: boolean): string {
-	if (!recoveryEnabled) {
-		return resourcePath;
-	}
-
-	return WEB_CLIENT_CACHE_RECOVERY_RESOURCE_PATTERN.exec(resourcePath)?.[1] ?? resourcePath;
-}
-
 export function getWebClientStaticAssetCacheControl(isBuilt: boolean, cacheVersion: string | undefined): CacheControl {
 	return isBuilt || !!cacheVersion ? CacheControl.NO_EXPIRY : CacheControl.ETAG;
-}
-
-interface IWebClientStartupMessages {
-	readonly firstMode: string;
-	readonly firstTitle: string;
-	readonly reuseMode: string;
-	readonly reuseTitle: string;
-	readonly repairMode: string;
-	readonly repairTitle: string;
-	readonly unknownMode: string;
-	readonly unknownTitle: string;
-	readonly loadingResources: string;
-	readonly startingWorkbench: string;
-	readonly restoringWorkbench: string;
-	readonly ready: string;
-	readonly slowLoading: string;
-	readonly recovering: string;
-	readonly loadError: string;
-	readonly reload: string;
-	readonly retry: string;
-	readonly progressLabel: string;
-	readonly processedBytes: string;
-	readonly processedBytesWithTotal: string;
-	readonly networkBytes: string;
-	readonly cachedBytes: string;
-	readonly bandwidthDescription: string;
-	readonly checkingMode: string;
-	readonly checkingTitle: string;
-	readonly unavailableMode: string;
-	readonly unavailableTitle: string;
-	readonly preparedBytes: string;
-	readonly cachedChunks: string;
-	readonly chunkDescription: string;
-	readonly resourceProgressLabel: string;
-	readonly chunkLoadError: string;
-	readonly resumeDownload: string;
-	readonly byteUnits: readonly string[];
-}
-
-export interface IWebClientStartupConfiguration {
-	/** Canonical versioned static route, including the public base path; not the release identifier. */
-	readonly staticRouteKey: string | undefined;
-	readonly resourceCache: string | undefined;
-	readonly staticRoot: string;
-	readonly cacheRecoveryQuery: string;
-	readonly recoveryToken: string | undefined;
-	readonly messages: IWebClientStartupMessages;
 }
 
 export interface IWebClientStartupTemplate {
@@ -287,194 +204,35 @@ export function parseWebClientStartupTemplate(content: string): IWebClientStartu
 	};
 }
 
-/**
- * Returns the small localized configuration needed before the workbench NLS bundles are available.
- * The inline translations intentionally contain Unicode because they must work before NLS loads.
- */
-export function getWebClientStartupConfiguration(locale: string, staticRouteKey: string | undefined, staticRoot: string, recoveryToken?: string, resourceCacheAvailable = false): IWebClientStartupConfiguration {
-	const normalizedLocale = locale.split(';', 1)[0].trim().toLowerCase();
-	let messages: IWebClientStartupMessages;
-	if (/^zh-(?:hant|hk|mo|tw)(?:-|$)/.test(normalizedLocale)) {
-		messages = {
-			// allow-any-unicode-next-line
-			firstMode: '首次載入',
-			// allow-any-unicode-next-line
-			firstTitle: '首次載入並快取資源',
-			// allow-any-unicode-next-line
-			reuseMode: '重用快取',
-			// allow-any-unicode-next-line
-			reuseTitle: '正在重用本機快取',
-			// allow-any-unicode-next-line
-			repairMode: '補全快取',
-			// allow-any-unicode-next-line
-			repairTitle: '快取不完整，正在補全',
-			// allow-any-unicode-next-line
-			unknownMode: '載入資源',
-			// allow-any-unicode-next-line
-			unknownTitle: '正在準備工作區',
-			// allow-any-unicode-next-line
-			loadingResources: '正在載入核心資源',
-			// allow-any-unicode-next-line
-			startingWorkbench: '核心資源已就緒，正在啟動工作區',
-			// allow-any-unicode-next-line
-			restoringWorkbench: '工作區已啟動，正在還原介面',
-			// allow-any-unicode-next-line
-			ready: '工作區已就緒',
-			// allow-any-unicode-next-line
-			slowLoading: '載入時間較長，仍在繼續；網路較慢時可能需要更久',
-			// allow-any-unicode-next-line
-			recovering: '偵測到快取資源載入失敗，正在改用全新的資源副本',
-			// allow-any-unicode-next-line
-			loadError: '全新的核心資源仍載入失敗，請檢查網路後重試',
-			// allow-any-unicode-next-line
-			reload: '重新載入',
-			// allow-any-unicode-next-line
-			retry: '使用新快取重試',
-			// allow-any-unicode-next-line
-			progressLabel: '工作區載入進度',
-			// allow-any-unicode-next-line
-			processedBytes: '已處理 {0} · 進度 {1}%',
-			// allow-any-unicode-next-line
-			processedBytesWithTotal: '已處理 {0} / {1} · 進度 {2}%',
-			// allow-any-unicode-next-line
-			networkBytes: '下載 {0}/s · 已傳輸 {1}',
-			// allow-any-unicode-next-line
-			cachedBytes: '快取 {0} · 重用比例 {1}% · {2} 個資源',
-			// allow-any-unicode-next-line
-			bandwidthDescription: '最近 2 秒完成的資源傳輸速率，每 0.5 秒更新。網路流量按壓縮後的傳輸量計算，不包含快取讀取；快取量按解壓後的資源大小計算。',
-			// allow-any-unicode-next-line
-			checkingMode: '檢查快取',
-			// allow-any-unicode-next-line
-			checkingTitle: '正在檢查已儲存的資源',
-			// allow-any-unicode-next-line
-			unavailableMode: '無法儲存快取',
-			// allow-any-unicode-next-line
-			unavailableTitle: '瀏覽器無法儲存完整快取，重新整理時可能需要再次下載',
-			// allow-any-unicode-next-line
-			preparedBytes: '核心資源 {0} / {1} · 已就緒 {2}%',
-			// allow-any-unicode-next-line
-			cachedChunks: '快取 {0} · 重用比例 {1}% · {2}/{3} 個分塊',
-			// allow-any-unicode-next-line
-			chunkDescription: '分塊經校驗後儲存在瀏覽器中。速率按最近 2 秒實際收到的壓縮位元組計算，每 0.5 秒更新；快取量按解壓後大小計算。',
-			// allow-any-unicode-next-line
-			resourceProgressLabel: '核心資源載入進度',
-			// allow-any-unicode-next-line
-			chunkLoadError: '資源未能完整載入。已儲存的分塊會保留，請檢查網路後重試',
-			// allow-any-unicode-next-line
-			resumeDownload: '繼續載入',
-			byteUnits: ['B', 'KB', 'MB', 'GB'],
-		};
-	} else if (normalizedLocale === 'zh' || normalizedLocale.startsWith('zh-')) {
-		messages = {
-			// allow-any-unicode-next-line
-			firstMode: '首次加载',
-			// allow-any-unicode-next-line
-			firstTitle: '首次加载并缓存资源',
-			// allow-any-unicode-next-line
-			reuseMode: '复用缓存',
-			// allow-any-unicode-next-line
-			reuseTitle: '正在复用本地缓存',
-			// allow-any-unicode-next-line
-			repairMode: '补全缓存',
-			// allow-any-unicode-next-line
-			repairTitle: '缓存不完整，正在补全',
-			// allow-any-unicode-next-line
-			unknownMode: '加载资源',
-			// allow-any-unicode-next-line
-			unknownTitle: '正在准备工作台',
-			// allow-any-unicode-next-line
-			loadingResources: '正在加载核心资源',
-			// allow-any-unicode-next-line
-			startingWorkbench: '核心资源已就绪，正在启动工作台',
-			// allow-any-unicode-next-line
-			restoringWorkbench: '工作台已启动，正在恢复界面',
-			// allow-any-unicode-next-line
-			ready: '工作台已就绪',
-			// allow-any-unicode-next-line
-			slowLoading: '加载时间较长，仍在继续；网络较慢时可能需要更久',
-			// allow-any-unicode-next-line
-			recovering: '检测到缓存资源加载失败，正在改用全新的资源副本',
-			// allow-any-unicode-next-line
-			loadError: '全新的核心资源仍然加载失败，请检查网络后重试',
-			// allow-any-unicode-next-line
-			reload: '重新加载',
-			// allow-any-unicode-next-line
-			retry: '使用新缓存重试',
-			// allow-any-unicode-next-line
-			progressLabel: '工作台加载进度',
-			// allow-any-unicode-next-line
-			processedBytes: '已处理 {0} · 进度 {1}%',
-			// allow-any-unicode-next-line
-			processedBytesWithTotal: '已处理 {0} / {1} · 进度 {2}%',
-			// allow-any-unicode-next-line
-			networkBytes: '下载 {0}/s · 已传输 {1}',
-			// allow-any-unicode-next-line
-			cachedBytes: '缓存 {0} · 复用比例 {1}% · {2} 个资源',
-			// allow-any-unicode-next-line
-			bandwidthDescription: '最近 2 秒完成的资源传输速率，每 0.5 秒更新。网络流量按压缩后的传输量计算，不包含缓存读取；缓存量按解压后的资源大小计算。',
-			// allow-any-unicode-next-line
-			checkingMode: '检查缓存',
-			// allow-any-unicode-next-line
-			checkingTitle: '正在检查已保存的资源',
-			// allow-any-unicode-next-line
-			unavailableMode: '无法保存缓存',
-			// allow-any-unicode-next-line
-			unavailableTitle: '浏览器无法保存完整缓存，刷新时可能需要再次下载',
-			// allow-any-unicode-next-line
-			preparedBytes: '核心资源 {0} / {1} · 已就绪 {2}%',
-			// allow-any-unicode-next-line
-			cachedChunks: '缓存 {0} · 复用比例 {1}% · {2}/{3} 个分块',
-			// allow-any-unicode-next-line
-			chunkDescription: '分块经校验后保存在浏览器中。速率按最近 2 秒实际收到的压缩字节计算，每 0.5 秒更新；缓存量按解压后大小计算。',
-			// allow-any-unicode-next-line
-			resourceProgressLabel: '核心资源加载进度',
-			// allow-any-unicode-next-line
-			chunkLoadError: '资源未能完整加载。已保存的分块会保留，请检查网络后重试',
-			// allow-any-unicode-next-line
-			resumeDownload: '继续加载',
-			byteUnits: ['B', 'KB', 'MB', 'GB'],
-		};
-	} else {
-		messages = {
-			firstMode: 'First load',
-			firstTitle: 'Loading and caching resources for the first time',
-			reuseMode: 'Cached',
-			reuseTitle: 'Reusing the local cache',
-			repairMode: 'Refreshing cache',
-			repairTitle: 'Completing the local cache',
-			unknownMode: 'Loading',
-			unknownTitle: 'Preparing the workbench',
-			loadingResources: 'Loading core resources',
-			startingWorkbench: 'Core resources are ready. Starting the workbench',
-			restoringWorkbench: 'The workbench has started. Restoring the interface',
-			ready: 'The workbench is ready',
-			slowLoading: 'Loading is taking longer than usual and is still continuing. A slow network may need more time',
-			recovering: 'A cached resource failed to load. Retrying with a fresh copy',
-			loadError: 'Fresh core resources still failed to load. Check the connection and try again',
-			reload: 'Reload',
-			retry: 'Retry with a fresh cache',
-			progressLabel: 'Workbench loading progress',
-			processedBytes: 'Processed {0} · Progress {1}%',
-			processedBytesWithTotal: 'Processed {0} / {1} · Progress {2}%',
-			networkBytes: 'Download {0}/s · Transferred {1}',
-			cachedBytes: 'Cache {0} · Reused {1}% · {2} resources',
-			bandwidthDescription: 'Recent transfer rate for resources completed in the last 2 seconds, updated every 0.5 seconds. Network traffic uses compressed transfer sizes and excludes cache reads; cache bytes use the original resource sizes.',
-			checkingMode: 'Checking cache',
-			checkingTitle: 'Checking saved resources',
-			unavailableMode: 'Cache storage unavailable',
-			unavailableTitle: 'The browser cannot save the complete cache. Reloading may require another download',
-			preparedBytes: 'Core resources {0} / {1} · {2}% ready',
-			cachedChunks: 'Cache {0} · Reused {1}% · {2}/{3} chunks',
-			chunkDescription: 'Verified chunks are saved in the browser. Transfer speed uses compressed bytes received during the last 2 seconds, updated every 0.5 seconds; cache bytes use the original sizes.',
-			resourceProgressLabel: 'Core resource loading progress',
-			chunkLoadError: 'Resources could not be fully loaded. Saved chunks are kept; check the connection and retry',
-			resumeDownload: 'Resume Loading',
-			byteUnits: ['B', 'KB', 'MB', 'GB'],
-		};
+/** Reads startup data before workbench NLS is available, with safe locale and English fallbacks. */
+export async function getWebClientStartupConfiguration(locale: string, staticRoot: string, resourceCacheAvailable = false): Promise<IWebClientStartupConfiguration> {
+	const requested = locale.split(';', 1)[0].trim().toLowerCase();
+	const normalized = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(requested) ? requested : 'en';
+	const locales = new Set<string>();
+	for (let candidate = normalized; candidate;) {
+		if (candidate === 'zh') {
+			locales.add(/^zh-(?:hant|tw|hk|mo)(?:-|$)/.test(normalized) ? 'zh-hant' : 'zh-hans');
+		}
+		locales.add(candidate);
+		const separator = candidate.lastIndexOf('-');
+		candidate = separator === -1 ? '' : candidate.substring(0, separator);
 	}
-
-	const resourceCache = staticRouteKey && resourceCacheAvailable ? posix.join(staticRoot, 'out', webClientCacheDirectory, 'manifest.json') : undefined;
-	return { staticRouteKey, resourceCache, staticRoot, cacheRecoveryQuery: WEB_CLIENT_CACHE_RECOVERY_QUERY, recoveryToken, messages };
+	locales.add('en');
+	for (const candidate of locales) {
+		try {
+			const file = FileAccess.asFileUri(`vs/platform/remote/common/workbench-startup.nls.${candidate}.json`).fsPath;
+			const messages: IWebClientStartupMessages = JSON.parse(await promises.readFile(file, 'utf8'));
+			return {
+				resourceCache: resourceCacheAvailable ? posix.join(staticRoot, 'out', webClientCacheDirectory, 'manifest.json') : undefined,
+				messages,
+			};
+		} catch (error) {
+			if (error.code !== 'ENOENT' || candidate === 'en') {
+				throw error;
+			}
+		}
+	}
+	throw new Error('The default workbench startup messages are missing.');
 }
 
 /** Returns package NLS bundles from the most specific safe locale to the default bundle. */
@@ -579,7 +337,7 @@ export class WebClientServer {
 	private async _handleStatic(req: http.IncomingMessage, res: http.ServerResponse, resourcePath: string): Promise<void> {
 		const headers: Record<string, string> = Object.create(null);
 
-		const normalizedPathname = decodeURIComponent(getWebClientStaticAssetResourcePath(resourcePath, !!this._cacheVersion)); // support paths that are uri-encoded (e.g. spaces => %20)
+		const normalizedPathname = decodeURIComponent(resourcePath); // support paths that are uri-encoded (e.g. spaces => %20)
 
 		const filePath = join(APP_ROOT, normalizedPathname); // join also normalizes the path
 		if (!isEqualOrParent(filePath, APP_ROOT, !isLinux)) {
@@ -748,9 +506,7 @@ export class WebClientServer {
 			this._logService.trace(`[WebClientServer] Request URL: ${req.url}, basePath: ${basePath}, remoteAuthority: ${remoteAuthority}`);
 		}
 
-		const canonicalStaticRoute = posix.join(basePath, this._productPath, this._staticAssetRoute);
-		const recoveryToken = getWebClientCacheRecoveryToken(parsedUrl, this._cacheVersion);
-		const staticRoute = recoveryToken ? getWebClientStaticAssetRecoveryRoute(canonicalStaticRoute, recoveryToken) : canonicalStaticRoute;
+		const staticRoute = posix.join(basePath, this._productPath, this._staticAssetRoute);
 		const callbackRoute = posix.join(basePath, this._productPath, CALLBACK_PATH);
 		const webExtensionRoute = posix.join(basePath, this._productPath, WEB_EXTENSION_PATH);
 
@@ -810,13 +566,7 @@ export class WebClientServer {
 		} else {
 			WORKBENCH_NLS_URL = ''; // fallback will apply
 		}
-		const startupConfiguration = getWebClientStartupConfiguration(
-			locale,
-			this._cacheVersion ? canonicalStaticRoute : undefined,
-			staticRoute,
-			recoveryToken,
-			await this._resourceCacheAvailable
-		);
+		const startupConfiguration = await getWebClientStartupConfiguration(locale, staticRoute, await this._resourceCacheAvailable);
 
 		const values: { [key: string]: string } = {
 			WORKBENCH_WEB_CONFIGURATION: asJSON(workbenchWebConfiguration),

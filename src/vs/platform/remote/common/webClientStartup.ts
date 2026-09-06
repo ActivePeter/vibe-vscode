@@ -3,10 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { packageWebClientRelease } from './lib/webClientRelease.ts';
+/** Startup runs before workbench NLS is available; the English data file owns its message contract. */
+export type IWebClientStartupMessages = typeof import('./workbench-startup.nls.en.json');
 
-if (process.argv.length !== 6) {
-	throw new Error('Usage: node build/package-web-release.ts <package-root> <output-directory> <release-tag> <commit>');
+export interface IWebClientStartupConfiguration {
+	readonly resourceCache: string | undefined;
+	readonly messages: IWebClientStartupMessages;
 }
-
-console.log(await packageWebClientRelease(process.argv[2], process.argv[3], process.argv[4], process.argv[5]));

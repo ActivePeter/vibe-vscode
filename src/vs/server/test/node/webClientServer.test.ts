@@ -8,15 +8,17 @@ import { promises as fs } from 'fs';
 import * as os from 'os';
 import { brotliCompressSync, brotliDecompressSync, gzipSync, gunzipSync } from 'zlib';
 import { join } from '../../../base/common/path.js';
+import { FileAccess } from '../../../base/common/network.js';
 import { upcastPartial } from '../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import { ICSSDevelopmentService } from '../../../platform/cssDev/node/cssDevService.js';
 import { NullLogService } from '../../../platform/log/common/log.js';
 import { IProductService } from '../../../platform/product/common/productService.js';
 import { IRequestService } from '../../../platform/request/common/request.js';
+import { IWebClientStartupConfiguration } from '../../../platform/remote/common/webClientStartup.js';
 import { NoneServerConnectionToken } from '../../node/serverConnectionToken.js';
 import { IServerEnvironmentService } from '../../node/serverEnvironmentService.js';
-import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientCacheRecoveryToken, getWebClientPreferredEncodings, getWebClientResourceScheme, getWebClientStartupConfiguration, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRecoveryRoute, getWebClientStaticAssetResourcePath, getWebClientStaticAssetRoute, IWebClientStartupConfiguration, parseWebClientStartupTemplate, serveFile, WebClientServer } from '../../node/webClientServer.js';
+import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientPreferredEncodings, getWebClientResourceScheme, getWebClientStartupConfiguration, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRoute, parseWebClientStartupTemplate, serveFile, WebClientServer } from '../../node/webClientServer.js';
 
 suite('WebClientServer', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -158,108 +160,24 @@ suite('WebClientServer', () => {
 		});
 	});
 
-	test('isolates cache recovery in a fresh static module graph', () => {
-		const recoveryToken = '0123456789abcdef0123456789abcdef';
-		const cacheVersion = 'release';
-		const staticRoute = getWebClientStaticAssetRoute(cacheVersion);
-		const cacheKey = staticRoute.substring(staticRoute.lastIndexOf('/') + 1);
-		const recoveryQueryValue = `${cacheKey}.${recoveryToken}`;
-		const recoveryRoute = getWebClientStaticAssetRecoveryRoute(staticRoute, recoveryToken);
-		const duplicateTokenUrl = new URL(`https://example.test/?vscode-cache-recovery=${recoveryQueryValue}&vscode-cache-recovery=${recoveryQueryValue}`);
-
-		assert.deepStrictEqual({
-			recoveryRoute,
-			validToken: getWebClientCacheRecoveryToken(new URL(`https://example.test/?vscode-cache-recovery=${recoveryQueryValue}`), cacheVersion),
-			staleVersionToken: getWebClientCacheRecoveryToken(new URL(`https://example.test/?vscode-cache-recovery=${'0'.repeat(64)}.${recoveryToken}`), cacheVersion),
-			invalidToken: getWebClientCacheRecoveryToken(new URL('https://example.test/?vscode-cache-recovery=../out'), cacheVersion),
-			duplicateToken: getWebClientCacheRecoveryToken(duplicateTokenUrl, cacheVersion),
-			disabledToken: getWebClientCacheRecoveryToken(new URL(`https://example.test/?vscode-cache-recovery=${recoveryQueryValue}`), undefined),
-			recoveryResource: getWebClientStaticAssetResourcePath(`/recovery-${recoveryToken}/out/vs/code/browser/workbench/workbench.js`, true),
-			canonicalResource: getWebClientStaticAssetResourcePath('/out/vs/code/browser/workbench/workbench.js', true),
-			disabledRecoveryResource: getWebClientStaticAssetResourcePath(`/recovery-${recoveryToken}/out/file.js`, false),
-		}, {
-			recoveryRoute: `${staticRoute}/recovery-${recoveryToken}`,
-			validToken: recoveryToken,
-			staleVersionToken: undefined,
-			invalidToken: undefined,
-			duplicateToken: undefined,
-			disabledToken: undefined,
-			recoveryResource: '/out/vs/code/browser/workbench/workbench.js',
-			canonicalResource: '/out/vs/code/browser/workbench/workbench.js',
-			disabledRecoveryResource: `/recovery-${recoveryToken}/out/file.js`,
-		});
+	test('reads matching startup translations and safely falls back to English', async () => {
+		const [english, simplified, traditional] = await Promise.all(['en', 'zh-hans', 'zh-hant'].map(async locale => {
+			const file = FileAccess.asFileUri(`vs/platform/remote/common/workbench-startup.nls.${locale}.json`).fsPath;
+			const messages: IWebClientStartupConfiguration['messages'] = JSON.parse(await fs.readFile(file, 'utf8'));
+			return { title: messages.firstTitle, cache: undefined };
+		}));
+		const configurations = await Promise.all(['zh-CN;q=0.9', 'zh-Hant-HK', 'zh-TW', 'fr-FR', '../../product'].map(locale => getWebClientStartupConfiguration(locale, '/static')));
+		assert.deepStrictEqual(configurations.map(value => ({ title: value.messages.firstTitle, cache: value.resourceCache })), [simplified, traditional, traditional, english, english]);
 	});
 
-	test('localizes the pre-workbench cache status without changing its version identity', () => {
-		const staticRoot = getWebClientStaticAssetRoute('release-1');
-		const simplifiedChinese = getWebClientStartupConfiguration('zh-CN;q=0.9', staticRoot, staticRoot);
-		const traditionalChinese = getWebClientStartupConfiguration('zh-Hant-HK', staticRoot, staticRoot);
-		const english = getWebClientStartupConfiguration('fr-FR', undefined, '/static');
-		const recoveryToken = '0123456789abcdef0123456789abcdef';
-		const recoveryRoot = getWebClientStaticAssetRecoveryRoute(staticRoot, recoveryToken);
-		const recovery = getWebClientStartupConfiguration('en', staticRoot, recoveryRoot, recoveryToken);
-
-		assert.deepStrictEqual({
-			simplifiedChinese: {
-				staticRouteKey: simplifiedChinese.staticRouteKey,
-				first: simplifiedChinese.messages.firstTitle,
-				reuse: simplifiedChinese.messages.reuseTitle,
-				repair: simplifiedChinese.messages.repairTitle,
-				slow: simplifiedChinese.messages.slowLoading,
-				metrics: simplifiedChinese.messages.processedBytesWithTotal,
-				ready: simplifiedChinese.messages.ready,
-			},
-			traditionalChinese: {
-				first: traditionalChinese.messages.firstTitle,
-				reuse: traditionalChinese.messages.reuseTitle,
-			},
-			english: {
-				staticRouteKey: english.staticRouteKey,
-				staticRoot: english.staticRoot,
-				cacheRecoveryQuery: english.cacheRecoveryQuery,
-				first: english.messages.firstTitle,
-				reuse: english.messages.reuseTitle,
-				slow: english.messages.slowLoading,
-				metrics: english.messages.processedBytes,
-			},
-			recovery: {
-				staticRouteKey: recovery.staticRouteKey,
-				staticRoot: recovery.staticRoot,
-				recoveryToken: recovery.recoveryToken,
-				recovering: recovery.messages.recovering,
-				retry: recovery.messages.retry,
-			},
-		}, {
-			simplifiedChinese: {
-				staticRouteKey: staticRoot,
-				first: '首次加载并缓存资源',
-				reuse: '正在复用本地缓存',
-				repair: '缓存不完整，正在补全',
-				slow: '加载时间较长，仍在继续；网络较慢时可能需要更久',
-				metrics: '已处理 {0} / {1} · 进度 {2}%',
-				ready: '工作台已就绪',
-			},
-			traditionalChinese: {
-				first: '首次載入並快取資源',
-				reuse: '正在重用本機快取',
-			},
-			english: {
-				staticRouteKey: undefined,
-				staticRoot: '/static',
-				cacheRecoveryQuery: 'vscode-cache-recovery',
-				first: 'Loading and caching resources for the first time',
-				reuse: 'Reusing the local cache',
-				slow: 'Loading is taking longer than usual and is still continuing. A slow network may need more time',
-				metrics: 'Processed {0} · Progress {1}%',
-			},
-			recovery: {
-				staticRouteKey: staticRoot,
-				staticRoot: recoveryRoot,
-				recoveryToken,
-				recovering: 'A cached resource failed to load. Retrying with a fresh copy',
-				retry: 'Retry with a fresh cache',
-			},
-		});
+	test('all startup translations preserve the English message keys, types and placeholders', async () => {
+		const configurations = await Promise.all(['en', 'zh-hans', 'zh-hant'].map(locale => getWebClientStartupConfiguration(locale, '/static')));
+		const contract = (configuration: IWebClientStartupConfiguration) => Object.entries(configuration.messages).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => ({
+			key, type: Array.isArray(value) ? 'array' : typeof value,
+			arrayTypes: Array.isArray(value) ? value.map(item => typeof item) : undefined,
+			placeholders: typeof value === 'string' ? (value.match(/\{\d+\}/g) ?? []).sort() : [],
+		}));
+		assert.deepStrictEqual(configurations.slice(1).map(contract), [contract(configurations[0]), contract(configurations[0])]);
 	});
 
 	test('splits the shared startup template and rejects missing sections', () => {
@@ -281,21 +199,16 @@ suite('WebClientServer', () => {
 		assert.throws(() => parseWebClientStartupTemplate('<!-- WORKBENCH_STARTUP_STYLE -->'));
 	});
 
-	test('enables the prepared cache only for versioned resources and preserves forwarded and recovery prefixes', () => {
-		const staticRoot = '/forwarded/oss-dev/static/release/recovery-token';
-		const enabled = getWebClientStartupConfiguration('en', '/forwarded/oss-dev/static/release', staticRoot, undefined, true);
+	test('builds the manifest URL under the public prefix only when the server enables the cache', async () => {
+		const staticRoot = '/forwarded/oss-dev/static/release';
+		const enabled = await getWebClientStartupConfiguration('en', staticRoot, true);
+		const missing = await getWebClientStartupConfiguration('en', staticRoot);
 		assert.deepStrictEqual({
-			enabled: enabled.resourceCache,
-			mutable: getWebClientStartupConfiguration('en', undefined, '/static', undefined, true).resourceCache,
-			missing: getWebClientStartupConfiguration('en', '/static/release', '/static/release').resourceCache,
-			checking: enabled.messages.checkingTitle,
-			retry: enabled.messages.chunkLoadError,
+			enabled: enabled.resourceCache, missing: missing.resourceCache,
+			fields: Object.keys(enabled).sort(),
 		}, {
 			enabled: `${staticRoot}/out/vs/code/browser/workbench/cache/manifest.json`,
-			mutable: undefined,
-			missing: undefined,
-			checking: 'Checking saved resources',
-			retry: 'Resources could not be fully loaded. Saved chunks are kept; check the connection and retry',
+			missing: undefined, fields: ['messages', 'resourceCache'],
 		});
 	});
 
@@ -345,11 +258,15 @@ suite('WebClientServer', () => {
 						assert.deepStrictEqual({
 							status: response.status,
 							cache: configuration.resourceCache,
+							startupScripts: [...html.matchAll(/<script id="vscode-workbench-startup-script" type="module" src="(?<src>[^"]*)"/g)].map(match => match.groups?.src),
+							startupBeforeMain: html.indexOf('id="vscode-workbench-startup-script"') < html.indexOf('id="vscode-workbench-main"'),
 							mainScripts: [...html.matchAll(/<script id="vscode-workbench-main" type="(?<type>[^"]*)"/g)].map(match => match.groups?.type),
 							probes,
 						}, {
 							status: 200,
 							cache: enabled ? `${staticRoot}/out/vs/code/browser/workbench/cache/manifest.json` : undefined,
+							startupScripts: [`${staticRoot}/out/vs/code/browser/workbench/workbenchStartup.js`],
+							startupBeforeMain: true,
 							mainScripts: [enabled ? 'application/json' : 'module'],
 							probes: versioned ? 1 : 0,
 						});

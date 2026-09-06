@@ -64,6 +64,7 @@ function runEsbuildBundle(outDir: string, minify: boolean, nls: boolean, sourceM
 
 export const vscodeWebResourceIncludes = [
 	'out-build/vs/code/browser/workbench/workbench-startup.html',
+	'out-build/vs/platform/remote/common/workbench-startup.nls.*.json',
 
 	// NLS
 	'out-build/nls.messages.js',
@@ -121,6 +122,7 @@ const vscodeWebEntryPoints = [
 	buildfile.workbenchWeb,
 	buildfile.codeWeb,
 	buildfile.workbenchCache,
+	buildfile.workbenchStartup,
 	buildfile.sessionsWeb,
 ].flat();
 

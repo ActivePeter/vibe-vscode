@@ -8,7 +8,7 @@ Vibe VS Code releases target Linux x64 and run the Web workbench with a remote s
 
 [Vibe Release](../.github/workflows/release.yml) runs on a pushed `vMAJOR.MINOR.PATCH` tag, including prerelease suffixes. It can also be dispatched manually with an **existing tag**. Both paths resolve the tag to one commit before validation, and build that same commit throughout.
 
-The workflow reuses [Vibe CI](../.github/workflows/vibe-ci.yml): build-tool type checking, client/extension compilation, ESLint, hygiene, dependency layers, build tests, and focused regression tests are release gates. Both bundled and minified Web Server packages must pass cache integrity, native dependency loading, archive creation, and production-launcher checks. These checks also run on pull requests, before any release tag is created. A failed gate prevents publication.
+The workflow reuses [Vibe CI](../.github/workflows/vibe-ci.yml): build-tool type checking, client/extension compilation, ESLint, hygiene, dependency layers, build tests, and regression tests discovered by product-area globs are release gates. New tests in those directories run without a separate file registration. Both bundled and minified Web Server packages must pass cache integrity, native dependency loading, archive creation, and production-launcher checks. These checks also run on pull requests, before any release tag is created. A failed gate prevents publication.
 
 The release job builds `gulp vscode-reh-web-linux-x64-min`, verifies native dependencies through ESM and CommonJS with the packaged Node, checks compressed JS/CSS and runtime-link containment, then creates:
 
@@ -24,8 +24,8 @@ The archive preserves Gulp's production layout: dependencies originally built in
 | `node`, `node_modules/` | Matching Node runtime and production/native dependencies |
 | `out/`, `extensions/` | Built server, browser workbench, and extensions |
 | `out/vs/code/browser/workbench/cache/` | Manifest, loader, and verified gzip chunks |
-| `bin/vibe-vscode-server` | Production launcher; adds the release's cache version |
-| `vibe-release.json` | Release tag, exact source commit, platform, and architecture |
+| `bin/vibe-vscode-server` | Shared runtime launcher; applies immutable release metadata |
+| `vibe-release.json` | Version, exact source commit, runtime mode, platform, and architecture |
 | `resources/server/vibe-vscode/` | Caddy, systemd, and operator configuration templates |
 
 ### Source builds and development deployments
@@ -36,9 +36,19 @@ From an installed source checkout, the standard production command is:
 npm run gulp vscode-reh-web-linux-x64-min
 ```
 
-Its output is the `vscode-reh-web-linux-x64` directory beside the checkout. Do not run this command against an output directory owned by another build. For a local archive, pass that package, a separate artifact directory, a release tag, and its exact source commit to `node build/package-web-release.ts`.
+Its output is the `vscode-reh-web-linux-x64` directory beside the checkout. Do not run this command against an output directory owned by another build. One CLI owns runtime preparation, cache verification, and archive creation:
 
-There is one cache implementation in `build/lib/webClientCache.ts` and one compression implementation in `build/lib/precompress.ts`. Gulp finalizes the standalone Web and Web Server outputs with these helpers before packaging. The development snapshot script remains a second caller of the same helpers: it prepares its staged source output and intentionally retains `VSCODE_DEV=1` for development-only features. The always-latest development service remains source-based. Release archives use the production launcher and do not set `VSCODE_DEV`.
+```bash
+node build/web-release.ts prepare '<staged-runtime-root>' '<version>' '<source-commit>' --development
+node build/web-release.ts verify '<runtime-root>'
+node build/web-release.ts package '<gulp-package-root>' '<artifact-directory>' '<release-tag>' '<source-commit>'
+```
+
+`prepare` bundles and compresses staged browser assets and installs the launcher with release metadata. Omit `--development` for production output. `verify` checks the core cache manifest and its payloads; `package` additionally validates the production layout, compressed assets, native loading, launcher, and source identity before creating an archive outside the input package.
+
+There is one cache implementation in `build/lib/webClientCache.ts` and one compression implementation in `build/lib/precompress.ts`, shared by Gulp, `build/next`, and staged development preparation. The cache always reads the explicit `workbench.css` entry and ignores CSS imports when bundling JavaScript. Source staging first materializes that stylesheet and the standalone startup module from copied source output; it never rewrites the live checkout's output. Production builds already emit those entries.
+
+The always-latest development service remains source-based. Its deployment script builds a staged snapshot and starts the same [metadata-driven launcher](#configure-and-start) as the systemd template. The existing single-writer lock, process-ownership checks, private backend, health gates, and rollback transaction stay in the deployment coordinator. A healthy pre-launcher runtime may be retained only as the exact rollback anchor during migration; new candidates and selected snapshot restarts must pass the shared launcher's `--version` preflight.
 
 ## Download and install
 
@@ -79,7 +89,14 @@ Do not reuse an existing release directory, merge a tarball into `current`, or c
 
 ## Configure and start
 
-The launcher reads the tag from `vibe-release.json`, supplies `--web-client-cache-version <tag>`, unsets `VSCODE_DEV`, and sets `NODE_ENV=production`. Cache identity therefore comes from the release, not its installation directory name.
+The shared launcher reads `version` and `mode` from `vibe-release.json` and supplies `--web-client-cache-version <version>`. Cache identity comes from the release, not its installation directory name or inherited environment.
+
+| Metadata mode | Runtime environment | Producer |
+| --- | --- | --- |
+| `production` | `NODE_ENV=production`, `VSCODE_DEV` unset | Release archive |
+| `development` | `NODE_ENV=development`, `VSCODE_DEV=1` | Staged source snapshot |
+
+Missing `mode` defaults to production for older release metadata; an unknown mode fails before the server starts. Operators configure sockets, state, and authentication through launch arguments, not by editing immutable metadata.
 
 For a private backend, the equivalent operator-facing launch is:
 
@@ -144,8 +161,13 @@ If activation or health checks fail, atomically point `current` back to the reco
 
 After the first successful load, refresh or reopen the browser. In DevTools Network, requests for the core `cache/*.bin` chunks should be **zero while the verified chunks remain stored**, including when the HTTP cache is disabled. The HTML, manifest, loader, workers, extensions, and workspace resources can still make requests. An upgrade downloads the changed chunks; an interrupted load retains verified completed chunks and resumes the missing ones. The startup screen reports download progress, transfer speed, cache reuse, and unavailable storage.
 
+The external `workbenchStartup.js` module precedes the main module and registers its load/error listeners synchronously. Its controller owns startup transitions and timers, its view owns accessible DOM updates, and its metrics object counts verified-loader transfer progress. Only `code/didStartWorkbench` readiness permits cache-generation cleanup; preparing resources or rendering the workbench shell is not success. Page disposal prevents late asynchronous work from starting another workbench or updating the overlay.
+
+Startup translations live in `src/vs/platform/remote/common/workbench-startup.nls.<locale>.json`. The English bundle defines the message type; the server resolves a safe locale and falls back to English. Translation tests enforce matching keys and placeholders. These JSON assets and the external startup module are included in every Web build.
+
 - Without `--web-client-cache-version`, explicit chunk caching and versioned URLs are disabled. The upstream packaged-resource HTTP cache policy is unchanged. To test this mode, invoke the bundled `node out/server-main.js` directly without the launcher.
 - With a version but no manifest, startup uses the ordinary module path. Release validation rejects this incomplete package before publication.
 - Without `DecompressionStream` or `crypto.subtle`, startup falls back to ordinary modules.
+- If an ordinary module fails, the startup screen offers a manual reload. Persistent failures may require clearing the browser's HTTP cache. There are no special recovery URLs, localStorage recovery tokens, or inferred native cache-hit metrics. Chunk verification and downloading missing or corrupt chunks remain independent of this fallback.
 - With CacheStorage denied, full, or unavailable, resources can still be downloaded and verified without being persisted.
 - Browser-managed storage can be evicted. Cached startup resources do not provide offline access to the remote workspace and are not a promise of permanent storage.

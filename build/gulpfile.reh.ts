@@ -124,7 +124,8 @@ const webEntryPoints = [
 	buildfile.workerBackgroundTokenization,
 	buildfile.keyboardMaps,
 	buildfile.codeWeb,
-	buildfile.workbenchCache
+	buildfile.workbenchCache,
+	buildfile.workbenchStartup
 ].flat();
 
 const serverWithWebEntryPoints = [

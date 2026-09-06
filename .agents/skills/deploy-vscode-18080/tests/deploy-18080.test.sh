@@ -131,8 +131,37 @@ VIBE_VSCODE_SERVICE_RUNTIME_ROOT="$copy_test_root" bash -c '
 if grep -Eq -- 'run_legacy_server|--tls-(key|cert)-path' "$DEPLOY_SCRIPT"; then
 	fail_test 'deployment script still contains a direct-TLS server path'
 fi
-grep -Fq -- '--web-client-cache-version "$(basename -- "$runtime_root")"' "$DEPLOY_SCRIPT" || fail_test 'deployment does not version immutable web client assets from the selected release'
-grep -Fq -- '"$SOURCE_ROOT/build/prepare-web-cache.ts" "$STAGING_RUNTIME_ROOT/out"' "$DEPLOY_SCRIPT" || fail_test 'deployment does not prepare persistent cache chunks inside staging'
+grep -Fq -- 'local -a server=("$runtime_root/bin/vibe-vscode-server")' "$DEPLOY_SCRIPT" || fail_test 'deployment does not use the shared runtime launcher'
+grep -Fq -- '"$SOURCE_ROOT/build/web-release.ts" prepare' "$DEPLOY_SCRIPT" || fail_test 'deployment does not use the consolidated preparation command'
+grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" --development' "$DEPLOY_SCRIPT" || fail_test 'deployment does not stamp source identity and the development profile inside staging'
+
+(
+	# Both source staging and production archives satisfy the same runtime contract.
+	# Only Caddy validation is replaced; the launcher, metadata, links, and preflight are real gates.
+	validate_caddy_runtime_root() { validate_runtime_root "$1"; }
+	runtime_root="$temporary_root/candidate"
+	mkdir -p "$runtime_root/bin" "$runtime_root/node_modules" "$runtime_root/out/vs/code/browser/workbench" "$runtime_root/extensions/vibe-vscode/dist/browser"
+	touch "$runtime_root/package.json" "$runtime_root/product.json" "$runtime_root/out/server-main.js" \
+		"$runtime_root/extensions/vibe-vscode/package.json" "$runtime_root/extensions/vibe-vscode/dist/browser/extension.js" \
+		"$runtime_root/out/vs/code/browser/workbench/workbench.html"
+	validate_runtime_root "$runtime_root" || fail_test 'production layout unexpectedly requires development-only paths'
+	if validate_candidate_runtime_root "$runtime_root"; then
+		fail_test 'pre-launcher runtime was accepted as a new candidate'
+	fi
+	printf '#!/bin/sh\n[ "$1" = "--version" ]\n' > "$runtime_root/bin/vibe-vscode-server"
+	chmod +x "$runtime_root/bin/vibe-vscode-server"
+	if validate_candidate_runtime_root "$runtime_root"; then
+		fail_test 'candidate without release metadata was accepted'
+	fi
+	printf '{}\n' > "$runtime_root/vibe-release.json"
+	validate_candidate_runtime_root "$runtime_root" || fail_test 'complete runtime failed the shared launcher preflight'
+	mv "$runtime_root/out/vs/code/browser/workbench/workbench.html" "$runtime_root/out/vs/code/browser/workbench/workbench-dev.html"
+	validate_candidate_runtime_root "$runtime_root" || fail_test 'source layout failed the shared runtime contract'
+	printf '#!/bin/sh\nexit 17\n' > "$runtime_root/bin/vibe-vscode-server"
+	if validate_candidate_runtime_root "$runtime_root"; then
+		fail_test 'unlaunchable candidate passed the pre-stop preflight'
+	fi
+)
 
 set +e
 (
@@ -148,10 +177,18 @@ assert_equal 1 "$caddy_only_status"
 
 gateway_call="$(
 	validate_candidate_runtime_root() { :; }
-	run_gateway_stack() { printf '%s|%s\n' "$1" "$2"; }
+	run_gateway_stack() { printf '%s|%s|%s\n' "$1" "$2" "$3"; }
 	run_service /test/caddy-runtime /test/workspace.code-workspace
 )"
-assert_equal '/test/caddy-runtime|/test/workspace.code-workspace' "$gateway_call"
+assert_equal '/test/caddy-runtime|/test/workspace.code-workspace|false' "$gateway_call"
+
+legacy_gateway_call="$(
+	validate_caddy_runtime_root() { :; }
+	validate_candidate_runtime_root() { fail_test 'verified legacy rollback was treated as a new candidate'; }
+	run_gateway_stack() { printf '%s|%s|%s\n' "$1" "$2" "$3"; }
+	run_service /test/pre-launcher-runtime /test/workspace.code-workspace true
+)"
+assert_equal '/test/pre-launcher-runtime|/test/workspace.code-workspace|true' "$legacy_gateway_call"
 
 runtime_links_root="$temporary_root/runtime-links"
 external_links_root="$temporary_root/external-links"
@@ -179,28 +216,30 @@ fi
 rm "$runtime_links_root/broken-runtime-link"
 validate_runtime_links "$runtime_links_root"
 
-legacy_anchor="$({
-	tmux() { [[ "$1" == has-session ]]; }
-	is_recognized_service_session() { :; }
-	service_runtime_root() { printf '/test/running\n'; }
-	validate_caddy_runtime_root() { :; }
-	validate_runtime_links() { return 1; }
-	health_status() { printf '200\n'; }
-	has_public_listener() { :; }
-	backend_health_status() { printf '200\n'; }
-	set_runtime_link() { fail_test 'legacy runtime became the strict selected snapshot'; }
-	ACTIVE_RUNTIME_ROOT=
-	ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS=false
-	prepare_real_active_runtime /test/workspace.code-workspace
-	printf '%s|%s\n' "$ACTIVE_RUNTIME_ROOT" "$ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS"
-} 2>/dev/null)"
-assert_equal '/test/running|true' "$legacy_anchor"
+for valid_legacy_links in true false; do
+	legacy_anchor="$({
+		tmux() { [[ "$1" == has-session ]]; }
+		is_recognized_service_session() { :; }
+		service_runtime_root() { printf '/test/running\n'; }
+		validate_caddy_runtime_root() { :; }
+		validate_runtime_links() { "$valid_legacy_links"; }
+		health_status() { printf '200\n'; }
+		has_public_listener() { :; }
+		backend_health_status() { printf '200\n'; }
+		set_runtime_link() { fail_test 'legacy runtime became the strict selected snapshot'; }
+		ACTIVE_RUNTIME_ROOT=
+		ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=false
+		prepare_real_active_runtime /test/workspace.code-workspace
+		printf '%s|%s\n' "$ACTIVE_RUNTIME_ROOT" "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME"
+	} 2>/dev/null)"
+	assert_equal '/test/running|true' "$legacy_anchor"
+done
 
 set +e
 (
 	trap - EXIT
 	ACTIVE_RUNTIME_ROOT=/test/running
-	ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS=true
+	ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=true
 	validate_candidate_runtime_root() { :; }
 	stop_service() { printf 'stop\n' >> "$temporary_root/rollback.calls"; }
 	start_service() { printf 'start:%s:%s\n' "$1" "${3:-false}" >> "$temporary_root/rollback.calls"; }

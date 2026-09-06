@@ -91,7 +91,7 @@ async function matchesHash(bytes: Uint8Array<ArrayBuffer>, expected: string): Pr
 /**
  * Loads and verifies real cached payloads before reporting reuse. Each verified gzip chunk is
  * committed independently, so an interrupted load never loses already completed downloads.
- * Only this loader owns the cache; the progress view and its readiness marker are advisory.
+ * Only this loader owns the cache; the startup view projects its verified progress.
  */
 export async function prepareWorkbenchCache(
 	manifestUrl: string,
@@ -171,7 +171,7 @@ export async function prepareWorkbenchCache(
 			const index = nextIndex++;
 			const chunk = chunks[index];
 			try {
-				// The local key depends on content and origin, never the release URL or recovery token.
+				// The local key depends on content and origin, never the release URL.
 				const key = new URL(`/vscode-workbench-cache/${chunk.hash}`, manifestUrl).href;
 				let bytes = await readCached(key, chunk);
 				const reused = !!bytes;

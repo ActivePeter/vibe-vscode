@@ -34,7 +34,7 @@ readonly NODE_BIN="$NODE_ROOT/bin/node"
 readonly NPM_BIN="$NODE_ROOT/bin/npm"
 
 ACTIVE_RUNTIME_ROOT=
-ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS=false
+ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=false
 STAGING_RUNTIME_ROOT=
 DEPLOY_LOCK_FD=
 
@@ -237,9 +237,7 @@ validate_runtime_root() {
 		"$runtime_root/package.json"
 		"$runtime_root/product.json"
 		"$runtime_root/node_modules"
-		"$runtime_root/remote/node_modules"
 		"$runtime_root/out/server-main.js"
-		"$runtime_root/out/vs/code/browser/workbench/workbench-dev.html"
 		"$runtime_root/extensions/vibe-vscode/package.json"
 		"$runtime_root/extensions/vibe-vscode/dist/browser/extension.js"
 	)
@@ -247,6 +245,7 @@ validate_runtime_root() {
 	for required_path in "${required_paths[@]}"; do
 		[[ -e "$required_path" ]] || return 1
 	done
+	[[ -f "$runtime_root/out/vs/code/browser/workbench/workbench.html" || -f "$runtime_root/out/vs/code/browser/workbench/workbench-dev.html" ]]
 }
 
 validate_caddy_runtime_root() {
@@ -255,8 +254,6 @@ validate_caddy_runtime_root() {
 	local -a executable_paths=(
 		"$runtime_root/node"
 		"$runtime_root/caddy"
-		"$runtime_root/resources/server/bin-dev/helpers/browser.sh"
-		"$runtime_root/resources/server/bin-dev/remote-cli/code.sh"
 	)
 
 	validate_runtime_root "$runtime_root" || return 1
@@ -275,7 +272,10 @@ validate_candidate_runtime_root() {
 	local runtime_root="$1"
 
 	validate_caddy_runtime_root "$runtime_root" || return 1
-	validate_runtime_links "$runtime_root"
+	[[ -x "$runtime_root/bin/vibe-vscode-server" && -f "$runtime_root/vibe-release.json" ]] || return 1
+	validate_runtime_links "$runtime_root" || return 1
+	# Exercise the same metadata and bootstrap as the service, without opening its databases.
+	"$runtime_root/bin/vibe-vscode-server" --version >/dev/null
 }
 
 validate_runtime_dependencies() {
@@ -422,10 +422,8 @@ create_runtime_snapshot() {
 	done < <(find "$SOURCE_ROOT/extensions" -name node_modules -prune -print0)
 
 	remove_unresolved_package_bin_links "$STAGING_RUNTIME_ROOT"
-	"$NODE_BIN" "$SOURCE_ROOT/build/prepare-web-cache.ts" "$STAGING_RUNTIME_ROOT/out"
-	"$NODE_BIN" "$SOURCE_ROOT/build/precompress-web.ts" \
-		"$STAGING_RUNTIME_ROOT/out" \
-		"$STAGING_RUNTIME_ROOT/extensions/vibe-vscode/dist/browser"
+	"$NODE_BIN" "$SOURCE_ROOT/build/web-release.ts" prepare \
+		"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" --development
 	validate_candidate_runtime_root "$STAGING_RUNTIME_ROOT" || fail "staged runtime is incomplete or depends on state outside its immutable release: $STAGING_RUNTIME_ROOT"
 	mv -- "$STAGING_RUNTIME_ROOT" "$release_root"
 	STAGING_RUNTIME_ROOT=
@@ -488,11 +486,19 @@ build_current() {
 run_gateway_stack() {
 	local runtime_root="$1"
 	local workspace_path="$2"
-	local runtime_node="$runtime_root/node"
+	local allow_legacy_runtime="${3:-false}"
+	local -a server=("$runtime_root/bin/vibe-vscode-server")
 	local backend_pid=
 	local exited_component
 	local gateway_pid=
 	local pid
+
+	# Only a previously healthy pre-launcher release may use this bounded rollback
+	# bridge. New candidates and selected snapshots must carry their own launcher.
+	if [[ ! -x "${server[0]}" || ! -f "$runtime_root/vibe-release.json" ]]; then
+		[[ "$allow_legacy_runtime" == true ]] || fail 'runtime is missing its shared launcher'
+		server=(env NODE_ENV=development VSCODE_DEV=1 "$runtime_root/node" "$runtime_root/out/server-main.js" --web-client-cache-version "$(basename -- "$runtime_root")")
+	fi
 
 	cleanup_stack() {
 		trap - EXIT HUP INT TERM
@@ -516,13 +522,11 @@ run_gateway_stack() {
 	trap 'cleanup_stack; exit 129' HUP
 	trap 'cleanup_stack; exit 130' INT
 	trap 'cleanup_stack; exit 143' TERM
-	env NODE_ENV=development VSCODE_DEV=1 \
-		"$runtime_node" out/server-main.js \
+	"${server[@]}" \
 		--socket-path "$SERVICE_BACKEND_SOCKET" \
 		--without-connection-token \
 		--server-data-dir "$SERVICE_STATE_ROOT/server" \
 		--default-workspace "$workspace_path" \
-		--web-client-cache-version "$(basename -- "$runtime_root")" \
 		--disable-telemetry \
 		--disable-experiments \
 		--accept-server-license-terms &
@@ -552,26 +556,26 @@ run_gateway_stack() {
 run_service() {
 	local runtime_root="$1"
 	local workspace_path="$2"
-	local allow_legacy_links="${3:-false}"
+	local allow_legacy_runtime="${3:-false}"
 
-	if [[ "$allow_legacy_links" == true ]]; then
+	if [[ "$allow_legacy_runtime" == true ]]; then
 		validate_caddy_runtime_root "$runtime_root" || fail "legacy rollback runtime cannot start without its pinned Caddy gateway: $runtime_root"
 	else
 		validate_candidate_runtime_root "$runtime_root" || fail "runtime cannot start without its pinned Caddy gateway: $runtime_root"
 	fi
-	run_gateway_stack "$runtime_root" "$workspace_path"
+	run_gateway_stack "$runtime_root" "$workspace_path" "$allow_legacy_runtime"
 }
 
 start_service() {
 	local runtime_root="$1"
 	local workspace_path="$2"
-	local allow_legacy_links="${3:-false}"
+	local allow_legacy_runtime="${3:-false}"
 	local internal_mode=--internal-run
 	local tmux_command
 
-	if [[ "$allow_legacy_links" == true ]]; then
+	if [[ "$allow_legacy_runtime" == true ]]; then
 		validate_caddy_runtime_root "$runtime_root" || return 1
-		internal_mode=--internal-run-legacy-links
+		internal_mode=--internal-run-legacy-runtime
 	else
 		validate_candidate_runtime_root "$runtime_root" || return 1
 	fi
@@ -635,7 +639,7 @@ prepare_active_runtime() {
 	is_recognized_service_session || fail "tmux session $SERVICE_SESSION is not owned by this deployment entry point"
 
 	running_runtime="$(service_runtime_root)"
-	ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS=false
+	ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=false
 	if [[ "$running_runtime" == "$SOURCE_ROOT" ]]; then
 		validate_runtime_root "$running_runtime" || fail "running legacy service uses an incomplete source runtime: $running_runtime"
 	else
@@ -649,14 +653,14 @@ prepare_active_runtime() {
 
 	if [[ "$running_runtime" != "$SOURCE_ROOT" ]]; then
 		ACTIVE_RUNTIME_ROOT="$running_runtime"
-		if validate_runtime_links "$running_runtime"; then
+		if validate_runtime_links "$running_runtime" && [[ -x "$running_runtime/bin/vibe-vscode-server" && -f "$running_runtime/vibe-release.json" ]]; then
 			set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
 		else
-			# A pre-invariant release may remain the rollback anchor only because this exact
+			# A pre-invariant or pre-launcher release is a rollback anchor only because this exact
 			# process passed both health boundaries. New candidates and snapshot restarts stay
 			# strict, and a successful promotion removes this compatibility path.
-			ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS=true
-			printf 'Running release has legacy runtime links; retaining it only as the verified rollback anchor.\n' >&2
+			ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=true
+			printf 'Running release predates the current runtime contract; retaining it only as the verified rollback anchor.\n' >&2
 		fi
 		return 0
 	fi
@@ -694,7 +698,7 @@ prepare_snapshot_restart() {
 	[[ -n "$selected_runtime" ]] || fail 'snapshot mode has no selected release; rerun with --update-snapshot'
 	is_release_runtime "$selected_runtime" || fail "selected snapshot is not an immutable release: $selected_runtime"
 	ACTIVE_RUNTIME_ROOT=
-	ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS=false
+	ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=false
 	if tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
 		is_recognized_service_session || fail "tmux session $SERVICE_SESSION is not owned by this deployment entry point"
 		running_runtime="$(service_runtime_root)"
@@ -744,8 +748,8 @@ activate_candidate_runtime() {
 	print_log_tail
 	printf 'Candidate runtime failed; restoring last-known-good runtime...\n' >&2
 	stop_service
-	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]] && start_service "$ACTIVE_RUNTIME_ROOT" "$workspace_path" "$ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS" && wait_until_ready 'restored last-known-good runtime' "$ACTIVE_RUNTIME_ROOT"; then
-		if [[ "$ACTIVE_RUNTIME_ALLOW_LEGACY_LINKS" != true ]]; then
+	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]] && start_service "$ACTIVE_RUNTIME_ROOT" "$workspace_path" "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME" && wait_until_ready 'restored last-known-good runtime' "$ACTIVE_RUNTIME_ROOT"; then
+		if [[ "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME" != true ]]; then
 			set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
 		fi
 		fail 'candidate runtime failed health checks; restored last-known-good runtime'
@@ -766,7 +770,7 @@ require_common_commands() {
 
 require_update_commands() {
 	local command
-	local -a commands=(cp rsync sha256sum sha512sum tar tee uname)
+	local -a commands=(cp git rsync sha256sum sha512sum tar tee uname)
 
 	for command in "${commands[@]}"; do
 		require_command "$command"
@@ -812,7 +816,7 @@ main() {
 		run_service "$2" "$3" false
 		return $?
 	fi
-	if [[ "${1:-}" == '--internal-run-legacy-links' ]]; then
+	if [[ "${1:-}" == '--internal-run-legacy-runtime' ]]; then
 		[[ "$#" -eq 3 ]] || fail 'invalid internal legacy service arguments'
 		run_service "$2" "$3" true
 		return $?

@@ -119,6 +119,7 @@ const webEntryPoints = [
 	'vs/workbench/workbench.web.main.internal',
 	'vs/code/browser/workbench/workbench',
 	'vs/code/browser/workbench/workbenchCache',
+	'vs/code/browser/workbench/workbenchStartup',
 ];
 
 // Additional web-only entry points (CDN build only, not in server-web)
@@ -339,6 +340,7 @@ const serverWebResourcePatterns = [
 	'vs/code/browser/workbench/workbench.html',
 	'vs/code/browser/workbench/workbench-dev.html',
 	'vs/code/browser/workbench/workbench-startup.html',
+	'vs/platform/remote/common/workbench-startup.nls.*.json',
 	'vs/code/browser/workbench/callback.html',
 	'vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html',
 	'vs/workbench/contrib/webview/browser/pre/*.html',
@@ -368,6 +370,7 @@ const webResourcePatterns = [
 	'vs/code/browser/workbench/workbench.html',
 	'vs/code/browser/workbench/workbench-dev.html',
 	'vs/code/browser/workbench/workbench-startup.html',
+	'vs/platform/remote/common/workbench-startup.nls.*.json',
 	'vs/code/browser/workbench/callback.html',
 	'vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html',
 	'vs/workbench/contrib/webview/browser/pre/*.html',

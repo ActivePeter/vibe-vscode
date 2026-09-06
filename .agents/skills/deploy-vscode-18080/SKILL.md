@@ -33,9 +33,8 @@ The script must remain the single automation entry for this skill. It:
 - keeps the active service on a self-contained, versioned last-known-good runtime while compiling the canonical checkout;
 - holds one stable fail-fast `flock` across build, staging, stop, activation, health checks, rollback, and cleanup;
 - stages and validates a complete runtime snapshot before stopping the active service;
-- versions web client static URLs from the selected immutable release and serves those assets with a long-lived browser cache;
-- prepares Brotli and gzip copies of web assets inside staging, preserving independently cacheable module URLs; Caddy compresses other eligible responses;
-- bundles startup code and styles into verified gzip chunks; the browser explicitly saves these in CacheStorage, resumes missing chunks after interruption, and does not infer persistence from a successful startup marker;
+- prepares staged browser assets and metadata with the shared `build/web-release.ts prepare` command, then starts `bin/vibe-vscode-server` in the metadata-selected development profile;
+- validates the shared launcher's `--version` before stopping the old service; the launcher, CSS entry, browser caching, and production archive contracts are canonical in [Releases and installation](../../../docs/release.md);
 - downloads a pinned standalone Caddy release with fixed checksums, then copies Caddy, Node, runtime dependency trees, and server helpers into that snapshot, reusing unchanged files only from the previous versioned release rather than linking to mutable source;
 - switches to the candidate only after the build succeeds, and automatically restores the last-known-good runtime when startup or health checks fail;
 - resolves and builds the source checkout relative to this skill, without invoking another project's control code;
@@ -43,6 +42,10 @@ The script must remain the single automation entry for this skill. It:
 - terminates public HTTPS and WebSocket traffic in Caddy on `0.0.0.0:18080`, while the upstream VS Code Server uses its original HTTP implementation over a private Unix socket;
 - starts the development service without a connection token, waits for an anonymous HTTPS `200` response, verifies the public listener and private backend health, and confirms the tmux session is running from the expected candidate root before succeeding;
 - fails instead of killing an unrecognized process when the port or backend socket is not owned by the canonical tmux session.
+
+A running pre-launcher or source-linked release may remain only the verified rollback anchor after
+passing both health boundaries. New candidates and selected snapshot restarts must satisfy the
+shared launcher and self-contained release contract. Do not use the legacy bridge for a new build.
 
 On failure, report the relevant service log tail and leave the error visible. Do not invoke or fall back to another checkout, do not start an ad-hoc server, and do not touch port `18081` unless the user explicitly expands the deployment scope.
 

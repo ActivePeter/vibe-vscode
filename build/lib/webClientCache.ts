@@ -18,6 +18,8 @@ const hash = (data: Uint8Array) => createHash('sha256').update(data).digest('hex
 export async function prepareWebClientCache(outDirectory: string): Promise<IWebClientCacheManifest> {
 	const root = path.resolve(outDirectory);
 	const cacheDirectory = path.join(root, webClientCacheDirectory);
+	// Reject an incomplete producer before starting concurrent bundlers.
+	await fs.access(path.join(root, 'vs/code/browser/workbench/workbench.css'));
 	const preserveModuleLocations: esbuild.Plugin = {
 		name: 'preserve-module-locations',
 		setup(build) {
@@ -49,30 +51,21 @@ export async function prepareWebClientCache(outDirectory: string): Promise<IWebC
 		metafile: true,
 		loader: { '.ttf': 'dataurl', '.woff': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl', '.sh': 'dataurl' },
 	};
-	const [workbench, loader] = await Promise.all([
+	const [workbench, loader, stylesheet] = await Promise.all([
 		esbuild.build({
 			...options,
+			loader: { ...options.loader, '.css': 'empty' },
 			entryPoints: ['vs/code/browser/workbench/workbench.js'],
 			outdir: cacheDirectory,
 			plugins: [preserveModuleLocations],
 		}),
 		esbuild.build({ ...options, entryPoints: ['vs/code/browser/workbench/workbenchCache.js'], outfile: path.join(cacheDirectory, 'loader.js') }),
+		esbuild.build({ ...options, entryPoints: ['vs/code/browser/workbench/workbench.css'], outfile: path.join(cacheDirectory, 'workbench.css') }),
 	]);
-	// Production bundlers extract CSS and remove its import from the JavaScript.
-	// Include that sibling stylesheet as well as the CSS imported by source builds.
-	let style = workbench.outputFiles!.find(file => file.path.endsWith('.css'));
-	const stylesheetPath = path.join(root, 'vs/code/browser/workbench/workbench.css');
-	let stylesheet: esbuild.BuildResult | undefined;
-	if (!style && await fs.stat(stylesheetPath).then(stat => stat.isFile(), error => {
-		if (error.code === 'ENOENT') {
-			return false;
-		}
-		throw error;
-	})) {
-		stylesheet = await esbuild.build({ ...options, entryPoints: [stylesheetPath], outfile: path.join(cacheDirectory, 'workbench.css') });
-		style = stylesheet.outputFiles!.find(file => file.path.endsWith('.css'));
-	}
-	for (const output of [...Object.values(workbench.metafile!.outputs), ...Object.values(stylesheet?.metafile?.outputs ?? {})]) {
+	// Every producer supplies the same stylesheet entry. JavaScript CSS imports never
+	// select a competing stylesheet or silently replace a missing production asset.
+	const style = stylesheet.outputFiles!.find(file => file.path.endsWith('.css'))!;
+	for (const output of [...Object.values(workbench.metafile!.outputs), ...Object.values(stylesheet.metafile!.outputs)]) {
 		if (output.imports.some(entry => entry.kind !== 'dynamic-import' && !entry.path.startsWith('data:'))) {
 			throw new Error('Prepared workbench resources must not have external static dependencies.');
 		}
@@ -95,7 +88,7 @@ export async function prepareWebClientCache(outDirectory: string): Promise<IWebC
 		}
 		return { size: contents.byteLength, chunks };
 	};
-	const [preparedScript, preparedStyle] = await Promise.all([prepareFile(script.contents), prepareFile(style?.contents ?? new Uint8Array())]);
+	const [preparedScript, preparedStyle] = await Promise.all([prepareFile(script.contents), prepareFile(style.contents)]);
 	const content = { version: 1 as const, script: preparedScript, style: preparedStyle };
 	const manifest = { ...content, hash: hash(Buffer.from(JSON.stringify(content))) };
 	await Promise.all([
@@ -105,8 +98,34 @@ export async function prepareWebClientCache(outDirectory: string): Promise<IWebC
 	return manifest;
 }
 
-/** Finalizes the same cache and compressed representations for every packaged Web target. */
-export async function prepareWebClientAssets(outDirectory: string): Promise<void> {
+/** Normalizes a copied source tree to the stylesheet/startup entry contract already supplied by bundlers. */
+async function prepareSourceEntries(outDirectory: string): Promise<void> {
+	const root = path.resolve(outDirectory);
+	const directory = path.join(root, 'vs/code/browser/workbench');
+	const options: esbuild.BuildOptions = {
+		absWorkingDir: root, bundle: true, format: 'esm', platform: 'browser',
+		target: 'es2024', minify: true, write: false, allowOverwrite: true,
+		loader: { '.ttf': 'dataurl', '.woff': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl', '.sh': 'dataurl' },
+	};
+	const [workbench, startup] = await Promise.all([
+		esbuild.build({ ...options, entryPoints: ['vs/code/browser/workbench/workbench.js'], outdir: directory }),
+		esbuild.build({ ...options, entryPoints: ['vs/code/browser/workbench/workbenchStartup.js'], outfile: path.join(directory, 'workbenchStartup.js'), allowOverwrite: true }),
+	]);
+	const stylesheet = workbench.outputFiles!.find(file => file.path.endsWith('.css'));
+	if (!stylesheet) {
+		throw new Error('The source workbench did not produce its required stylesheet.');
+	}
+	await Promise.all([
+		fs.writeFile(path.join(directory, 'workbench.css'), stylesheet.contents),
+		fs.writeFile(path.join(directory, 'workbenchStartup.js'), startup.outputFiles![0].contents),
+	]);
+}
+
+/** Finalizes the same cache and compressed representations; source normalization only runs in staging. */
+export async function prepareWebClientAssets(outDirectory: string, options: { source?: boolean } = {}): Promise<void> {
+	if (options.source) {
+		await prepareSourceEntries(outDirectory);
+	}
 	await prepareWebClientCache(outDirectory);
 	await precompressWebAssets(outDirectory);
 }
@@ -122,8 +141,10 @@ export async function validateWebClientCache(outDirectory: string): Promise<IWeb
 	if (hash(Buffer.from(JSON.stringify({ version, script, style }))) !== manifest.hash) {
 		throw new Error('The packaged Web cache manifest hash does not match its content.');
 	}
-	if (!(await fs.stat(path.join(directory, 'loader.js'))).isFile()) {
-		throw new Error('The packaged Web cache loader is missing.');
+	for (const resource of [`${webClientCacheDirectory}/loader.js`, 'vs/code/browser/workbench/workbenchStartup.js', 'vs/platform/remote/common/workbench-startup.nls.en.json']) {
+		if (!(await fs.stat(path.join(outDirectory, resource))).isFile()) {
+			throw new Error(`The packaged startup resource ${resource} is missing.`);
+		}
 	}
 	const verified = new Set<string>();
 	for (const file of [script, style]) {

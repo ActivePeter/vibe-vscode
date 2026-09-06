@@ -10,7 +10,7 @@ import { toDisposable } from '../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import type { IWebClientStartupMessages } from '../../../platform/remote/common/webClientStartup.js';
-import { assertWorkbenchCacheSupported, WorkbenchCacheUnsupportedError, type IPreparedWorkbenchCache, type IWebClientCacheProgress } from '../../browser/workbench/workbenchCache.js';
+import * as workbenchCache from '../../browser/workbench/workbenchCache.js';
 import { IWorkbenchStartupHost, IWorkbenchStartupState, WorkbenchStartupController, WorkbenchStartupMetrics } from '../../browser/workbench/workbenchStartupController.js';
 import { WorkbenchStartupView } from '../../browser/workbench/workbenchStartupView.js';
 
@@ -19,7 +19,7 @@ declare const __readFileInTests: (path: string) => Promise<string>;
 suite('Workbench startup', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 	const manifest = 'https://example.test/static/version/out/cache/manifest.json';
-	const progress: IWebClientCacheProgress = { totalBytes: 100, completedBytes: 50, cachedBytes: 0, transferredBytes: 25, completedChunks: 1, totalChunks: 2, storage: 'available' };
+	const progress: workbenchCache.IWebClientCacheProgress = { totalBytes: 100, completedBytes: 50, cachedBytes: 0, transferredBytes: 25, completedChunks: 1, totalChunks: 2, storage: 'available' };
 
 	function fixture(resourceCache: string | undefined = manifest) {
 		const states: IWorkbenchStartupState[] = [];
@@ -28,13 +28,13 @@ suite('Workbench startup', () => {
 		const intervals = new Set<() => void>();
 		const preparing = new DeferredPromise<void>();
 		const executing = new DeferredPromise<void>();
-		let report: (value: IWebClientCacheProgress) => void = () => { };
-		const prepared: IPreparedWorkbenchCache = { script: new Blob(['']), style: new Blob(['']), commit: async () => { calls.commit++; } };
-		const hooks: { capabilities: NonNullable<Parameters<typeof assertWorkbenchCacheSupported>[0]>; load?: Promise<Awaited<ReturnType<IWorkbenchStartupHost['loadCache']>>>; prepare?: Promise<IPreparedWorkbenchCache>; execute?: Promise<void> } = { capabilities: { secureContext: true, decompression: true, digest: true } };
-		const loader = {
-			WorkbenchCacheUnsupportedError,
-			assertWorkbenchCacheSupported: () => assertWorkbenchCacheSupported(hooks.capabilities),
-			prepareWorkbenchCache: async (_url: string, onProgress: (value: IWebClientCacheProgress) => void) => {
+		let report: (value: workbenchCache.IWebClientCacheProgress) => void = () => { };
+		const prepared: workbenchCache.IPreparedWorkbenchCache = { script: new Blob(['']), style: new Blob(['']), commit: async () => { calls.commit++; } };
+		const hooks: { capabilities: NonNullable<Parameters<typeof workbenchCache.assertWorkbenchCacheSupported>[0]>; load?: Promise<typeof workbenchCache>; prepare?: Promise<workbenchCache.IPreparedWorkbenchCache>; execute?: Promise<void> } = { capabilities: { secureContext: true, decompression: true, digest: true } };
+		const loader: typeof workbenchCache = {
+			WorkbenchCacheUnsupportedError: workbenchCache.WorkbenchCacheUnsupportedError,
+			assertWorkbenchCacheSupported: () => workbenchCache.assertWorkbenchCacheSupported(hooks.capabilities),
+			prepareWorkbenchCache: async (_url: string, onProgress: (value: workbenchCache.IWebClientCacheProgress) => void) => {
 				calls.prepare++;
 				report = onProgress;
 				void preparing.complete();
@@ -51,7 +51,7 @@ suite('Workbench startup', () => {
 			logError: () => { calls.errors++; },
 		};
 		const controller = store.add(new WorkbenchStartupController(resourceCache, host));
-		return { controller, states, calls, hooks, loader, prepared, preparing, executing, timeouts, intervals, report: (value: IWebClientCacheProgress) => report(value) };
+		return { controller, states, calls, hooks, loader, prepared, preparing, executing, timeouts, intervals, report: (value: workbenchCache.IWebClientCacheProgress) => report(value) };
 	}
 
 	test('native document startup is not duplicated and failure remains a reload state', async () => {
@@ -93,7 +93,7 @@ suite('Workbench startup', () => {
 
 	test('reports first, reuse, repair and unavailable from real chunk progress, not a saved readiness marker', async () => {
 		const value = fixture();
-		const preparation = new DeferredPromise<IPreparedWorkbenchCache>();
+		const preparation = new DeferredPromise<workbenchCache.IPreparedWorkbenchCache>();
 		value.hooks.prepare = preparation.p;
 		const pending = value.controller.start();
 		await value.preparing.p;
@@ -128,7 +128,7 @@ suite('Workbench startup', () => {
 
 	test('a preparation failure stops timers and ignores late progress without committing', async () => {
 		const value = fixture();
-		const preparation = new DeferredPromise<IPreparedWorkbenchCache>();
+		const preparation = new DeferredPromise<workbenchCache.IPreparedWorkbenchCache>();
 		value.hooks.prepare = preparation.p;
 		const pending = value.controller.start();
 		await value.preparing.p;
@@ -152,7 +152,7 @@ suite('Workbench startup', () => {
 
 	test('disposal during preparation rejects late projection and readiness', async () => {
 		const value = fixture();
-		const preparation = new DeferredPromise<IPreparedWorkbenchCache>();
+		const preparation = new DeferredPromise<workbenchCache.IPreparedWorkbenchCache>();
 		value.hooks.prepare = preparation.p;
 		const pending = value.controller.start();
 		await value.preparing.p;
@@ -166,7 +166,7 @@ suite('Workbench startup', () => {
 
 	test('slow loading is recoverable when progress resumes and preparation alone is not readiness', async () => {
 		const value = fixture();
-		const preparation = new DeferredPromise<IPreparedWorkbenchCache>();
+		const preparation = new DeferredPromise<workbenchCache.IPreparedWorkbenchCache>();
 		value.hooks.prepare = preparation.p;
 		const pending = value.controller.start();
 		await value.preparing.p;

@@ -34,6 +34,8 @@ flowchart LR
 
 ### 3.1 登录校验一页纸:传什么、怎么传、谁校验
 
+**Better Auth 是什么。** [Better Auth](https://better-auth.com) 是一个 MIT 许可的 TypeScript 认证库(本 PR 固定 1.7.2),不是独立服务:它以普通依赖的形式在你的 Node 进程里运行,对外只暴露一个 `handler(Request) → Response`,把 `/sign-up/email`、`/sign-in/username`、`/get-session`、`/sign-out` 这类路由的实现打包好。它自带密码哈希(scrypt)、随机会话 token 与用 secret 签名的 cookie、按 IP 与路由的限速、`Origin` 校验,以及按需装配的插件(本 PR 只用 `username` 插件让用户名登录)。数据通过适配器落库,本 PR 用它内置的 Kysely 适配器接 Node 自带的 `node:sqlite`,表结构由它的迁移脚本创建。选它而不是自研,是为了不自己维护密码哈希、会话与限速这三件最容易做错的事;选它而不是 Keycloak 一类的独立身份服务,是为了不多一个进程、一个端口和一套部署。本设计把它当作进程内实现细节:浏览器永远只和 Remote Server 的 `/auth/*` 页面与 `/auth/verify` 打交道,Better Auth 的原始 API 不对公网暴露。
+
 网络上只传两样东西:密码只在注册和登录时各出现一次,之后一切靠会话 cookie。
 
 | | 是什么 | 什么时候出现在网络上 | 谁校验,拿什么校验 |

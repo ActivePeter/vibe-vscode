@@ -93,7 +93,6 @@ sequenceDiagram
     participant Web as webClientServer<br/>Workbench
     participant Browser as 浏览器
 
-    rect rgb(235,240,248)
     Note over Deploy,Web: 阶段 0 · 部署启动与健康门
     Deploy->>Deploy: 校验 base path 与 TTL,创建 state/auth(0700)与 socket 目录,umask 0077
     Deploy->>Remote: 启动 bin/vibe-vscode-server,环境 VIBE_VSCODE_AUTH_STATE_DIR 与 TTL,参数 --without-connection-token --socket-path
@@ -105,9 +104,7 @@ sequenceDiagram
     Deploy->>Remote: 私有 socket GET /auth/health 期望 204,GET / 期望 200
     Deploy->>Caddy: 公开 GET /auth/api/status 期望 200,GET /(无 cookie)期望 303,authority 探针
     Deploy->>Deploy: 健康门全部通过后原子提升 last-known-good
-    end
 
-    rect rgb(255,246,230)
     Note over Browser,DB: 阶段 1 · 首次访问,尚无管理员
     Browser->>Caddy: GET /?folder=…(无 cookie)
     Caddy->>Remote: forward_auth GET /auth/verify,带 X-Forwarded-Method,X-Forwarded-Uri,X-Original-Host
@@ -122,9 +119,7 @@ sequenceDiagram
     Caddy->>Remote: @authentication 直通
     Remote->>AuthSrv: handleRegisterPage,resolveLocale,renderPage 带 CSP nonce
     AuthSrv-->>Browser: 200 自包含 HTML
-    end
 
-    rect rgb(232,247,236)
     Note over Browser,DB: 阶段 2 · 创建唯一管理员
     Browser->>Caddy: POST /auth/register(表单)
     Caddy->>Remote: @authentication 直通
@@ -134,9 +129,7 @@ sequenceDiagram
     Auth->>DB: INSERT user(instanceOwner 唯一约束)与 session
     Auth-->>AuthSrv: 200 与 Set-Cookie __Secure-vibe.session_token
     AuthSrv-->>Browser: 303 到 return_to,附 Set-Cookie
-    end
 
-    rect rgb(235,240,248)
     Note over Browser,Web: 阶段 3 · 已登录访问 Workbench,每个 HTTP 与 WebSocket 请求都走一遍
     Browser->>Caddy: GET /(带 cookie)
     Caddy->>Caddy: 删除客户端可能带来的 X-Vibe-Auth-Set-Cookie
@@ -154,16 +147,13 @@ sequenceDiagram
     Browser->>Caddy: WebSocket 升级(带 cookie)
     Caddy->>Remote: forward_auth /auth/verify,无 cookie 时 401 且不跳转
     Caddy->>Remote: 代理升级到扩展宿主
-    end
 
-    rect rgb(253,236,236)
     Note over Browser,DB: 阶段 4 · 退出
     Browser->>Caddy: GET /auth/logout 得到确认页,然后 POST /auth/logout
     Caddy->>Remote: @authentication 直通
     Remote->>AuthSrv: handleLogout,readForm,invokeBetterAuth POST /sign-out
     Auth->>DB: 删除当前会话
     AuthSrv-->>Browser: 303 /auth/login,附过期 cookie
-    end
 ```
 
 ### 阶段 0 · 部署启动与健康门

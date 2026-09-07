@@ -28,9 +28,10 @@ import { asJson, asText, IRequestService, isClientError, isSuccess, readHeader, 
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
+import { getAuthenticationProviderActivationEvent } from '../../authentication/browser/authenticationService.js';
 import { AuthenticationSession, AuthenticationSessionAccount, IAuthenticationExtensionsService, IAuthenticationService } from '../../authentication/common/authentication.js';
 import { IWorkbenchEnvironmentService } from '../../environment/common/environmentService.js';
-import { IExtensionService } from '../../extensions/common/extensions.js';
+import { ActivationKind, IExtensionService } from '../../extensions/common/extensions.js';
 import { IHostService } from '../../host/browser/host.js';
 import { adaptManagedSettings, appendManagedSettingsClientIdentity, IManagedSettingsResponse, parseManagedSettingsCompatibilityError } from './managedSettings.js';
 
@@ -477,7 +478,11 @@ export class DefaultAccountProvider extends Disposable implements IDefaultAccoun
 				// registered after the connection is established, so without this the provider
 				// would never become available.
 				if (this.environmentService.remoteAuthority) {
-					void this.authenticationService.getSessions(provider.id, undefined, {}, true);
+					// Immediate activation may defer the remote host. Request activation without
+					// starting a session query (and its registration timeout) before availability.
+					void this.extensionService.activateByEvent(getAuthenticationProviderActivationEvent(provider.id), ActivationKind.Immediate).catch(error => {
+						this.logService.debug('[DefaultAccount] Early authentication provider activation failed; waiting for provider availability.', getErrorMessage(error));
+					});
 				}
 
 				this.extensionService.whenInstalledExtensionsRegistered().then(() => {

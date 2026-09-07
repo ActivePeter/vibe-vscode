@@ -41,7 +41,10 @@ export class SignService extends AbstractSignService implements ISignService {
 	constructor(@IProductService private readonly productService: IProductService) {
 		super();
 	}
-	protected override getValidator(): Promise<IVsdaValidator> {
+	protected override getValidator(): Promise<IVsdaValidator | undefined> {
+		if (this.productService.remoteConnectionSigning === false) {
+			return Promise.resolve(undefined);
+		}
 		return this.vsda().then(vsda => {
 			const v = new vsda.validator();
 			return {
@@ -53,6 +56,9 @@ export class SignService extends AbstractSignService implements ISignService {
 	}
 
 	protected override signValue(arg: string): Promise<string> {
+		if (this.productService.remoteConnectionSigning === false) {
+			return Promise.resolve(arg);
+		}
 		return this.vsda().then(vsda => vsda.sign(arg));
 	}
 

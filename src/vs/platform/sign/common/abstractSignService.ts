@@ -21,7 +21,7 @@ export abstract class AbstractSignService implements ISignService {
 	private static _nextId = 1;
 	private readonly validators = new Map<string, IVsdaValidator>();
 
-	protected abstract getValidator(): Promise<IVsdaValidator>;
+	protected abstract getValidator(): Promise<IVsdaValidator | undefined>;
 	protected abstract signValue(arg: string): Promise<string>;
 
 	public async createNewMessage(value: string): Promise<IMessage> {

@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { createReadStream, promises } from 'fs';
+import { createReadStream, promises, statSync } from 'fs';
 import type * as http from 'http';
 import * as cookie from 'cookie';
 import * as crypto from 'crypto';
@@ -28,6 +28,8 @@ import { CharCode } from '../../base/common/charCode.js';
 import { IExtensionManifest } from '../../platform/extensions/common/extensions.js';
 import { ITranslations, localizeManifest } from '../../platform/extensionManagement/common/extensionNls.js';
 import { ICSSDevelopmentService } from '../../platform/cssDev/node/cssDevService.js';
+import { webClientCacheDirectory } from '../../platform/remote/common/webClientCache.js';
+import { IWebClientStartupConfiguration, IWebClientStartupMessages } from '../../platform/remote/common/webClientStartup.js';
 
 const textMimeType: { [ext: string]: string | undefined } = {
 	'.html': 'text/html',
@@ -49,24 +51,59 @@ export const enum CacheControl {
 	NO_CACHING, ETAG, NO_EXPIRY
 }
 
+/** Orders supported compressed representations, respecting explicit refusals and quality values. */
+export function getWebClientPreferredEncodings(acceptEncoding: string | undefined): readonly ('br' | 'gzip')[] {
+	const qualities = new Map<string, number>();
+	for (const part of acceptEncoding?.split(',') ?? []) {
+		const [encoding, ...parameters] = part.trim().toLowerCase().split(';');
+		const qualityParameter = parameters.map(parameter => parameter.trim()).find(parameter => parameter.startsWith('q='));
+		const quality = qualityParameter ? Number(qualityParameter.substring(2)) : 1;
+		qualities.set(encoding.trim(), Number.isFinite(quality) && quality >= 0 && quality <= 1 ? quality : 0);
+	}
+	const quality = (encoding: string) => qualities.get(encoding) ?? qualities.get('*') ?? 0;
+	return (['br', 'gzip'] as const).filter(encoding => quality(encoding) > 0).sort((first, second) => quality(second) - quality(first));
+}
+
 /**
  * Serve a file at a given path or 404 if the file is missing.
  */
-export async function serveFile(filePath: string, cacheControl: CacheControl, logService: ILogService, req: http.IncomingMessage, res: http.ServerResponse, responseHeaders: Record<string, string>): Promise<void> {
+export async function serveFile(filePath: string, cacheControl: CacheControl, logService: ILogService, req: http.IncomingMessage, res: http.ServerResponse, responseHeaders: Record<string, string>, precompressed = false): Promise<void> {
 	try {
-		const stat = await promises.stat(filePath); // throws an error if file doesn't exist
+		let stat = await promises.stat(filePath); // throws an error if the original doesn't exist
+		let representationPath = filePath;
+		// Only immutable releases have build-time representations. A developer editing a source file
+		// must never receive an older sidecar, nor may mutable workspace files opt into this path.
+		if (precompressed) {
+			responseHeaders['Vary'] = responseHeaders['Vary'] ? `${responseHeaders['Vary']}, Accept-Encoding` : 'Accept-Encoding';
+			for (const encoding of getWebClientPreferredEncodings(req.headers['accept-encoding'])) {
+				const candidate = `${filePath}.${encoding === 'br' ? 'br' : 'gz'}`;
+				try {
+					const candidateStat = await promises.stat(candidate);
+					if (candidateStat.isFile()) {
+						representationPath = candidate;
+						stat = candidateStat;
+						responseHeaders['Content-Encoding'] = encoding;
+						break;
+					}
+				} catch (error) {
+					if (error.code !== 'ENOENT') {
+						throw error;
+					}
+				}
+			}
+			responseHeaders['Content-Length'] = String(stat.size);
+		}
 		if (cacheControl === CacheControl.ETAG) {
 
 			// Check if file modified since
 			const etag = `W/"${[stat.ino, stat.size, stat.mtime.getTime()].join('-')}"`; // weak validator (https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag)
+			responseHeaders['Etag'] = etag;
 			if (req.headers['if-none-match'] === etag) {
-				res.writeHead(304);
+				res.writeHead(304, responseHeaders);
 				return void res.end();
 			}
-
-			responseHeaders['Etag'] = etag;
 		} else if (cacheControl === CacheControl.NO_EXPIRY) {
-			responseHeaders['Cache-Control'] = 'public, max-age=31536000';
+			responseHeaders['Cache-Control'] = 'public, max-age=31536000, immutable';
 		} else if (cacheControl === CacheControl.NO_CACHING) {
 			responseHeaders['Cache-Control'] = 'no-store';
 		}
@@ -76,7 +113,7 @@ export async function serveFile(filePath: string, cacheControl: CacheControl, lo
 		// Create the stream first and wait for it to open before sending
 		// headers so that errors (e.g. ENOENT race) can still produce a
 		// proper 404 response instead of aborting a half-sent 200.
-		const fileStream = createReadStream(filePath);
+		const fileStream = createReadStream(representationPath);
 		await new Promise<void>((resolve, reject) => {
 			fileStream.on('error', reject);
 			fileStream.on('open', () => {
@@ -116,6 +153,143 @@ const CALLBACK_PATH = `/callback`;
 const WEB_EXTENSION_PATH = `/web-extension-resource`;
 const VIBE_VSCODE_BUILTIN_WEB_EXTENSION_PATH = 'vibe-vscode';
 
+export function getWebClientStaticAssetRoute(cacheVersion: string | undefined): string {
+	if (!cacheVersion) {
+		return STATIC_PATH;
+	}
+
+	const cacheKey = crypto.createHash('sha256').update(cacheVersion).digest('hex');
+	return `${STATIC_PATH}/${cacheKey}`;
+}
+
+export function getWebClientStaticAssetCacheControl(isBuilt: boolean, cacheVersion: string | undefined): CacheControl {
+	return isBuilt || !!cacheVersion ? CacheControl.NO_EXPIRY : CacheControl.ETAG;
+}
+
+export interface IWebClientStartupTemplate {
+	readonly style: string;
+	readonly body: string;
+	readonly script: string;
+}
+
+const WORKBENCH_STARTUP_STYLE_MARKER = '<!-- WORKBENCH_STARTUP_STYLE -->';
+const WORKBENCH_STARTUP_BODY_MARKER = '<!-- WORKBENCH_STARTUP_BODY -->';
+const WORKBENCH_STARTUP_SCRIPT_MARKER = '<!-- WORKBENCH_STARTUP_SCRIPT -->';
+
+/**
+ * Splits the shared startup fragment into the three locations required by the workbench document.
+ */
+export function parseWebClientStartupTemplate(content: string): IWebClientStartupTemplate {
+	const styleMarkerIndex = content.indexOf(WORKBENCH_STARTUP_STYLE_MARKER);
+	const bodyMarkerIndex = content.indexOf(WORKBENCH_STARTUP_BODY_MARKER);
+	const scriptMarkerIndex = content.indexOf(WORKBENCH_STARTUP_SCRIPT_MARKER);
+	if (styleMarkerIndex === -1 || bodyMarkerIndex <= styleMarkerIndex || scriptMarkerIndex <= bodyMarkerIndex) {
+		throw new Error('Invalid workbench startup template.');
+	}
+
+	const getSection = (start: number, marker: string, end: number): string => {
+		let section = content.substring(start + marker.length, end);
+		if (section.startsWith('\r\n')) {
+			section = section.substring(2);
+		} else if (section.startsWith('\n')) {
+			section = section.substring(1);
+		}
+		return section.trimEnd();
+	};
+
+	return {
+		style: getSection(styleMarkerIndex, WORKBENCH_STARTUP_STYLE_MARKER, bodyMarkerIndex),
+		body: getSection(bodyMarkerIndex, WORKBENCH_STARTUP_BODY_MARKER, scriptMarkerIndex),
+		script: getSection(scriptMarkerIndex, WORKBENCH_STARTUP_SCRIPT_MARKER, content.length),
+	};
+}
+
+/** Returns safe startup locales in priority order, including Chinese script and English fallbacks. */
+export function getWebClientStartupLocaleCandidates(locale: string): readonly string[] {
+	const requested = locale.split(';', 1)[0].trim().toLowerCase();
+	const normalized = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(requested) ? requested : 'en';
+	const locales = new Set<string>();
+	for (let candidate = normalized; candidate;) {
+		if (candidate === 'zh') {
+			locales.add(/^zh-(?:hant|tw|hk|mo)(?:-|$)/.test(normalized) ? 'zh-hant' : 'zh-hans');
+		}
+		locales.add(candidate);
+		const separator = candidate.lastIndexOf('-');
+		candidate = separator === -1 ? '' : candidate.substring(0, separator);
+	}
+	locales.add('en');
+	return [...locales];
+}
+
+const startupMessagesDirectory = 'vs/platform/remote/common';
+
+/** Owns localized startup data for one immutable Web resource root, not request-specific configuration. */
+export class WebClientStartupMessages {
+	private availableLocales: Promise<ReadonlySet<string>> | undefined;
+	private readonly messages = new Map<string, Promise<IWebClientStartupMessages>>();
+
+	constructor(
+		private readonly resolveWebResource: (relative: string) => string,
+		private readonly fileSystem = {
+			readDirectory: (path: string) => promises.readdir(path),
+			readFile: (path: string) => promises.readFile(path, 'utf8'),
+		},
+	) { }
+
+	private async readAvailableLocales(): Promise<ReadonlySet<string>> {
+		const files = await this.fileSystem.readDirectory(this.resolveWebResource(startupMessagesDirectory));
+		const locales = new Set<string>();
+		for (const file of files) {
+			const locale = /^workbench-startup\.nls\.(?<locale>[a-z0-9]+(?:-[a-z0-9]+)*)\.json$/.exec(file)?.groups?.locale;
+			if (locale) {
+				locales.add(locale);
+			}
+		}
+		return locales;
+	}
+
+	private async readMessages(locale: string): Promise<IWebClientStartupMessages> {
+		const file = this.resolveWebResource(`${startupMessagesDirectory}/workbench-startup.nls.${locale}.json`);
+		return JSON.parse(await this.fileSystem.readFile(file));
+	}
+
+	/** Coalesces concurrent reads by shipped locale; failed reads can be retried on the next request. */
+	async get(locale: string): Promise<IWebClientStartupMessages> {
+		const pendingLocales = this.availableLocales ??= this.readAvailableLocales();
+		let availableLocales: ReadonlySet<string>;
+		try {
+			availableLocales = await pendingLocales;
+		} catch (error) {
+			if (this.availableLocales === pendingLocales) {
+				this.availableLocales = undefined;
+			}
+			throw error;
+		}
+		for (const candidate of getWebClientStartupLocaleCandidates(locale)) {
+			// Enumerate shipped bundles once instead of probing missing files or caching arbitrary request locales.
+			if (candidate !== 'en' && !availableLocales.has(candidate)) {
+				continue;
+			}
+			let messages = this.messages.get(candidate);
+			if (!messages) {
+				messages = this.readMessages(candidate);
+				this.messages.set(candidate, messages);
+			}
+			try {
+				return await messages;
+			} catch (error) {
+				if (this.messages.get(candidate) === messages) {
+					this.messages.delete(candidate);
+				}
+				if (error.code !== 'ENOENT' || candidate === 'en') {
+					throw error;
+				}
+			}
+		}
+		throw new Error('The default workbench startup messages are missing.');
+	}
+}
+
 /** Returns package NLS bundles from the most specific safe locale to the default bundle. */
 export function getBuiltinExtensionPackageNLSCandidates(locale: string): readonly string[] {
 	const requestedLocale = locale.split(';', 1)[0].trim().toLowerCase();
@@ -153,11 +327,16 @@ async function readBuiltinExtensionPackageNLS(extensionPath: string, locale: str
 export class WebClientServer {
 
 	private readonly _webExtensionResourceUrlTemplate: URI | undefined;
+	private readonly _cacheVersion: string | undefined;
+	private readonly _staticAssetRoute: string;
+	private readonly _staticAssetCacheControl: CacheControl;
+	private readonly _startupMessages: WebClientStartupMessages;
 
 	constructor(
 		private readonly _connectionToken: ServerConnectionToken,
 		private readonly _basePath: string,
 		private readonly _productPath: string,
+		private readonly _remoteConnectionSigning: boolean,
 		@IServerEnvironmentService private readonly _environmentService: IServerEnvironmentService,
 		@ILogService private readonly _logService: ILogService,
 		@IRequestService private readonly _requestService: IRequestService,
@@ -165,6 +344,21 @@ export class WebClientServer {
 		@ICSSDevelopmentService private readonly _cssDevService: ICSSDevelopmentService
 	) {
 		this._webExtensionResourceUrlTemplate = this._productService.extensionsGallery?.resourceUrlTemplate ? URI.parse(this._productService.extensionsGallery.resourceUrlTemplate) : undefined;
+		this._cacheVersion = this._environmentService.args['web-client-cache-version'];
+		this._staticAssetRoute = getWebClientStaticAssetRoute(this._cacheVersion);
+		this._staticAssetCacheControl = getWebClientStaticAssetCacheControl(this._environmentService.isBuilt, this._cacheVersion);
+		if (this._cacheVersion) {
+			const manifest = this._resolveWebResource(`${webClientCacheDirectory}/manifest.json`);
+			if (!statSync(manifest, { throwIfNoEntry: false })?.isFile()) {
+				throw new Error(`Missing workbench cache manifest file: ${manifest}. Build the chunk cache before using --web-client-cache-version.`);
+			}
+		}
+		this._startupMessages = new WebClientStartupMessages(relative => this._resolveWebResource(relative));
+	}
+
+	/** Uses the injectable app root so Web startup resources and server tests do not depend on this module's location. */
+	private _resolveWebResource(relative: string): string {
+		return join(this._environmentService.appRoot, 'out', relative);
 	}
 
 	/**
@@ -176,8 +370,8 @@ export class WebClientServer {
 	 */
 	async handle(req: http.IncomingMessage, res: http.ServerResponse, parsedUrl: URL, pathname: string): Promise<void> {
 		try {
-			if (pathname.startsWith(STATIC_PATH) && pathname.charCodeAt(STATIC_PATH.length) === CharCode.Slash) {
-				return this._handleStatic(req, res, pathname.substring(STATIC_PATH.length));
+			if (pathname.startsWith(this._staticAssetRoute) && pathname.charCodeAt(this._staticAssetRoute.length) === CharCode.Slash) {
+				return this._handleStatic(req, res, pathname.substring(this._staticAssetRoute.length));
 			}
 			if (pathname === '/') {
 				return this._handleRoot(req, res, parsedUrl);
@@ -206,7 +400,6 @@ export class WebClientServer {
 	private async _handleStatic(req: http.IncomingMessage, res: http.ServerResponse, resourcePath: string): Promise<void> {
 		const headers: Record<string, string> = Object.create(null);
 
-		// Strip the this._staticRoute from the path
 		const normalizedPathname = decodeURIComponent(resourcePath); // support paths that are uri-encoded (e.g. spaces => %20)
 
 		const filePath = join(APP_ROOT, normalizedPathname); // join also normalizes the path
@@ -214,7 +407,7 @@ export class WebClientServer {
 			return serveError(req, res, 400, `Bad request.`);
 		}
 
-		return serveFile(filePath, this._environmentService.isBuilt ? CacheControl.NO_EXPIRY : CacheControl.ETAG, this._logService, req, res, headers);
+		return serveFile(filePath, this._staticAssetCacheControl, this._logService, req, res, headers, !!this._cacheVersion);
 	}
 
 	private _getResourceURLTemplateAuthority(uri: URI): string | undefined {
@@ -351,7 +544,12 @@ export class WebClientServer {
 		}
 
 		function asJSON(value: unknown): string {
-			return JSON.stringify(value).replace(/"/g, '&quot;');
+			return JSON.stringify(value)
+				.replace(/&/g, '&amp;')
+				.replace(/</g, '&lt;')
+				.replace(/>/g, '&gt;')
+				.replace(/"/g, '&quot;')
+				.replace(/'/g, '&#39;');
 		}
 
 		let _wrapWebWorkerExtHostInIframe: undefined | false = undefined;
@@ -371,13 +569,14 @@ export class WebClientServer {
 			this._logService.trace(`[WebClientServer] Request URL: ${req.url}, basePath: ${basePath}, remoteAuthority: ${remoteAuthority}`);
 		}
 
-		const staticRoute = posix.join(basePath, this._productPath, STATIC_PATH);
+		const staticRoute = posix.join(basePath, this._productPath, this._staticAssetRoute);
 		const callbackRoute = posix.join(basePath, this._productPath, CALLBACK_PATH);
 		const webExtensionRoute = posix.join(basePath, this._productPath, WEB_EXTENSION_PATH);
 
 		const resolveWorkspaceURI = (defaultLocation?: string) => defaultLocation && URI.file(resolve(defaultLocation)).with({ scheme: Schemas.vscodeRemote, authority: remoteAuthority });
 
-		const filePath = FileAccess.asFileUri(`vs/code/browser/workbench/workbench${this._environmentService.isBuilt ? '' : '-dev'}.html`).fsPath;
+		const filePath = this._resolveWebResource(`vs/code/browser/workbench/workbench${this._environmentService.isBuilt ? '' : '-dev'}.html`);
+		const startupFilePath = this._resolveWebResource('vs/code/browser/workbench/workbench-startup.html');
 		const authSessionInfo = !this._environmentService.isBuilt && this._environmentService.args['github-auth'] ? {
 			id: generateUuid(),
 			providerId: 'github',
@@ -387,6 +586,7 @@ export class WebClientServer {
 
 		const productConfiguration: Partial<Mutable<IProductConfiguration>> = {
 			embedderIdentifier: 'server-distro',
+			remoteConnectionSigning: this._remoteConnectionSigning,
 			voiceWsUrl: this._productService.voiceWsUrl,
 			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
 				...this._productService.extensionsGallery,
@@ -429,11 +629,17 @@ export class WebClientServer {
 		} else {
 			WORKBENCH_NLS_URL = ''; // fallback will apply
 		}
+		const startupConfiguration: IWebClientStartupConfiguration = {
+			resourceCache: this._cacheVersion ? posix.join(staticRoute, 'out', webClientCacheDirectory, 'manifest.json') : undefined,
+			messages: await this._startupMessages.get(locale),
+		};
 
 		const values: { [key: string]: string } = {
 			WORKBENCH_WEB_CONFIGURATION: asJSON(workbenchWebConfiguration),
 			WORKBENCH_AUTH_SESSION: authSessionInfo ? asJSON(authSessionInfo) : '',
+			WORKBENCH_STARTUP_CONFIGURATION: asJSON(startupConfiguration),
 			WORKBENCH_WEB_BASE_URL: staticRoute,
+			WORKBENCH_MAIN_SCRIPT_TYPE: this._cacheVersion ? 'application/json' : 'module',
 			WORKBENCH_NLS_URL,
 			WORKBENCH_NLS_FALLBACK_URL: `${staticRoute}/out/nls.messages.js`
 		};
@@ -463,10 +669,18 @@ export class WebClientServer {
 			values['WORKBENCH_BUILTIN_EXTENSIONS'] = asJSON(bundledExtensions);
 		}
 
-		let data;
+		let data: string;
 		try {
-			const workbenchTemplate = (await promises.readFile(filePath)).toString();
-			data = workbenchTemplate.replace(/\{\{([^}]+)\}\}/g, (_, key) => values[key] ?? 'undefined');
+			const [workbenchTemplate, startupTemplate] = await Promise.all([
+				promises.readFile(filePath, 'utf8'),
+				promises.readFile(startupFilePath, 'utf8')
+			]);
+			const renderTemplate = (template: string) => template.replace(/\{\{([^}]+)\}\}/g, (_, key) => values[key] ?? 'undefined');
+			const startup = parseWebClientStartupTemplate(startupTemplate);
+			values['WORKBENCH_STARTUP_STYLE'] = renderTemplate(startup.style);
+			values['WORKBENCH_STARTUP_BODY'] = renderTemplate(startup.body);
+			values['WORKBENCH_STARTUP_SCRIPT'] = renderTemplate(startup.script);
+			data = renderTemplate(workbenchTemplate);
 		} catch (e) {
 			res.writeHead(404, { 'Content-Type': 'text/plain' });
 			return void res.end('Not found');
@@ -484,11 +698,12 @@ export class WebClientServer {
 			'worker-src \'self\' data: blob:;',
 			'style-src \'self\' \'unsafe-inline\';',
 			'connect-src \'self\' ws: wss: https:;',
-			'font-src \'self\' blob:;',
+			`font-src 'self' blob:${startupConfiguration.resourceCache ? ' data:' : ''};`,
 			'manifest-src \'self\';'
 		].join(' ');
 
 		const headers: http.OutgoingHttpHeaders = {
+			'Cache-Control': 'no-store',
 			'Content-Type': 'text/html',
 			'Content-Security-Policy': cspDirectives
 		};
@@ -533,7 +748,7 @@ export class WebClientServer {
 	 * Handle HTTP requests for /callback
 	 */
 	private async _handleCallback(res: http.ServerResponse): Promise<void> {
-		const filePath = FileAccess.asFileUri('vs/code/browser/workbench/callback.html').fsPath;
+		const filePath = this._resolveWebResource('vs/code/browser/workbench/callback.html');
 		const data = (await promises.readFile(filePath)).toString();
 		const cspDirectives = [
 			'default-src \'self\';',

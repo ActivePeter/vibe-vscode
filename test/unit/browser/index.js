@@ -279,7 +279,10 @@ async function runTestsInBrowser(testModules, browserType, browserChannel) {
 	}
 
 	page.on('console', async msg => {
-		consoleLogFn(msg)(msg.text(), await Promise.all(msg.args().map(async arg => await arg.jsonValue())));
+		// A test may dispose its iframe before Playwright reads the console arguments.
+		// Keep the original message and handle text without turning logging into an unhandled rejection.
+		const values = await Promise.all(msg.args().map(arg => arg.jsonValue().catch(() => arg.toString())));
+		consoleLogFn(msg)(msg.text(), values);
 	});
 
 	withReporter(browserType, new EchoRunner(emitter, browserChannel ? `${browserType.toUpperCase()}-${browserChannel.toUpperCase()}` : browserType.toUpperCase()));

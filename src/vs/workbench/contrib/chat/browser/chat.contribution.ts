@@ -9,6 +9,7 @@ import { ExportAgentHostDebugLogsAction } from './actions/exportAgentHostDebugLo
 import { ForkConversationAction } from './actions/chatForkActions.js';
 import { IChatResponseFileChangesService } from './chatResponseFileChangesService.js';
 import { EditorChatResponseFileChangesService } from './editorChatResponseFileChangesService.js';
+import './sessionRouter/chatSessionRoutingProviderService.js';
 
 registerAction2(ForkConversationAction);
 registerAction2(ExportAgentHostDebugLogsAction);

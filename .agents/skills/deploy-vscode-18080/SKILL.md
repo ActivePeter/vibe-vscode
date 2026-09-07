@@ -28,6 +28,9 @@ existing `VIBE_VSCODE_SERVICE_STATE_ROOT`, `VIBE_VSCODE_SERVICE_LOG`,
 `VIBE_VSCODE_TLS_CERT_PATH`, and `VIBE_VSCODE_TLS_KEY_PATH` environment inputs without editing
 tracked files. `VIBE_VSCODE_SERVER_BASE_PATH` selects an optional simple URL base path, and
 `VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS` selects a 60-second to 7-day session lifetime.
+`VIBE_VSCODE_PUBLIC_ORIGIN` is required and must be the browser-visible HTTPS origin, without
+a URL path. Confirm that address from operator configuration or the user; never infer it from
+client-supplied proxy headers or substitute a localhost probe address for a remote browser.
 
 The account, session, and request authorization contract is canonical in
 [Full-screen login and instance authentication](../../../vibe_vscode_doc/design/login_authentication.md).
@@ -44,17 +47,21 @@ The script must remain the single automation entry for this skill. It:
 - resolves and builds the source checkout relative to this skill, without invoking another project's control code;
 - keeps mutable state and TLS material outside the checkout at operator-supplied or XDG-standard locations;
 - terminates public HTTPS and WebSocket traffic in Caddy on `0.0.0.0:18080`, while the upstream VS Code Server uses its original HTTP implementation over a private Unix socket;
-- starts exactly two candidate processes: Caddy and the VS Code Remote Server, with Better Auth initialized inside the Remote Server and persistent authentication state outside immutable releases;
+- starts exactly two candidate processes: Caddy and the VS Code Remote Server, with Better Auth and Node's built-in SQLite initialized inside the Remote Server and persistent authentication state outside immutable releases;
+- enables authentication with the same `--auth-state-dir`, `--public-origin`, and `--auth-session-ttl-seconds` CLI contract used by the production systemd unit;
+- validates the configured origin, session lifetime, and database initialization against disposable state before stopping the active service; it never opens the user's authentication database during candidate preflight;
 - lets Caddy expose only the Remote Server's authentication routes without `forward_auth`, and sends all other HTTP and WebSocket traffic through the same Remote Server's `/auth/verify` contract;
+- strips protocol-upgrade headers from authentication routes and verification subrequests, so they cannot enter Node's separate upgrade handler; only an authorized original request may upgrade;
 - returns any sliding-session `Set-Cookie` emitted by `/auth/verify` to the browser before proxying the authorized request;
 - starts VS Code without its connection token only behind the mandatory Caddy authorization boundary and a private Unix socket;
-- preserves an outer proxy's browser-visible `X-Forwarded-Host` as `X-Original-Host` before Caddy normalizes forwarded headers, so authentication and Workbench `remoteAuthority` use one public identity;
-- requires the public authentication status to return `200`, an unauthenticated Workbench request to return `303`, the Remote Server's private authentication health check to return `204`, the private Workbench endpoint to return `200`, and simulated proxy authority probes to pass before succeeding;
-- fails instead of killing an unrecognized process when the port, authentication socket, or backend socket is not owned by the canonical tmux session.
+- pins Better Auth's trusted origin and Workbench's `remoteAuthority` to the configured public identity, independently of request headers;
+- requires the public authentication status to return `200`, an unauthenticated Workbench request to return `303`, the Remote Server's private authentication health check to return `204`, and the private Workbench endpoint to return `200` before succeeding;
+- fails instead of killing an unrecognized process when the port or backend socket is not owned by the canonical tmux session.
 
-The entry point may start a legacy authentication sidecar only while restoring the exact verified
-release that predates embedded Better Auth after a failed first migration. Such a release is never
-promoted as the selected snapshot; every newly built candidate must carry the embedded-auth marker.
+The entry point never starts an authentication sidecar. New candidates declare the shared
+`authentication: "embedded-cli-v1"` contract in `vibe-release.json`. While restoring the exact
+healthy embedded release that predates that CLI, the existing rollback bridge supplies its old
+authentication environment inputs. Such a release cannot become a newly selected snapshot.
 
 A running pre-launcher or source-linked release may remain only the verified rollback anchor after
 passing both health boundaries. New candidates and selected snapshot restarts must satisfy the
@@ -63,3 +70,4 @@ shared launcher and self-contained release contract. Do not use the legacy bridg
 On failure, report the relevant service log tail and leave the error visible. Do not invoke or fall back to another checkout, do not start an ad-hoc server, and do not touch port `18081` unless the user explicitly expands the deployment scope.
 
 When changing the deployment entry point, run `./tests/deploy-18080.test.sh` before any live deployment.
+When changing authentication or Caddy routing, also run `node ./tests/authentication-gateway.test.ts <pinned-caddy-binary>` against freshly compiled source. This test uses disposable state and a loopback-only port, verifies real HTTP/WebSocket denial and renewal, and runs in Vibe CI.

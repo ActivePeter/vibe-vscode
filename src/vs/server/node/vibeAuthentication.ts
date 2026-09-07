@@ -5,7 +5,7 @@
 
 import * as crypto from 'crypto';
 import { promises as fs } from 'fs';
-import BetterSqlite3 from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import { getMigrations } from 'better-auth/db/migration';
 import { username } from 'better-auth/plugins';
@@ -16,10 +16,9 @@ const authenticationSecretFileName = 'better-auth.secret';
 const authenticationSecretPattern = /^[0-9A-Za-z_-]{43}$/;
 const instanceOwnerValue = 'administrator';
 
-export const vibeAuthenticationPublicOriginHeaderName = 'x-vibe-public-origin';
-
 export interface VibeAuthenticationServiceOptions {
 	readonly stateDirectory: string;
+	readonly publicOrigin: string;
 	readonly basePath?: string;
 	readonly sessionTtlSeconds?: number;
 	readonly sessionUpdateAgeSeconds?: number;
@@ -30,15 +29,20 @@ export interface VibeAuthenticationServiceOptions {
  */
 export class VibeAuthenticationService {
 	private readonly authenticationHandler: (request: Request) => Promise<Response>;
-	private readonly database: BetterSqlite3.Database;
+	private readonly database: DatabaseSync;
 	private disposed = false;
 
-	private constructor(authenticationHandler: (request: Request) => Promise<Response>, database: BetterSqlite3.Database) {
+	private constructor(authenticationHandler: (request: Request) => Promise<Response>, database: DatabaseSync, public readonly publicOrigin: string) {
 		this.authenticationHandler = authenticationHandler;
 		this.database = database;
 	}
 
 	public static async create(options: VibeAuthenticationServiceOptions): Promise<VibeAuthenticationService> {
+		const publicUrl = new URL(options.publicOrigin);
+		if (publicUrl.protocol !== 'https:' || publicUrl.username || publicUrl.password || publicUrl.pathname !== '/' || publicUrl.search || publicUrl.hash) {
+			throw new Error('The public origin must be an HTTPS origin without credentials, a path, query, or fragment.');
+		}
+		const publicOrigin = publicUrl.origin;
 		const basePath = options.basePath ?? '';
 		const sessionTtlSeconds = options.sessionTtlSeconds ?? 12 * 60 * 60;
 		const sessionUpdateAgeSeconds = options.sessionUpdateAgeSeconds ?? Math.min(5 * 60, Math.max(1, Math.floor(sessionTtlSeconds / 2)));
@@ -57,15 +61,15 @@ export class VibeAuthenticationService {
 		await databaseFile.close();
 		await fs.chmod(databasePath, 0o600);
 
-		const database = new BetterSqlite3(databasePath);
+		const database = new DatabaseSync(databasePath);
 		try {
-			database.pragma('busy_timeout = 5000');
-			database.pragma('foreign_keys = ON');
-			database.pragma('journal_mode = WAL');
+			database.exec('PRAGMA busy_timeout = 5000');
+			database.exec('PRAGMA foreign_keys = ON');
+			database.exec('PRAGMA journal_mode = WAL');
 			const cookiePath = `${basePath}/`;
 			const authenticationOptions = {
 				appName: 'Vibe VS Code',
-				baseURL: 'https://vibe-authentication.invalid',
+				baseURL: publicOrigin,
 				basePath: `${basePath}/auth/api`,
 				secret,
 				database,
@@ -89,6 +93,9 @@ export class VibeAuthenticationService {
 				session: {
 					expiresIn: sessionTtlSeconds,
 					updateAge: sessionUpdateAgeSeconds,
+					// Caddy's forward_auth renewal bridge carries one session_token cookie.
+					// Enabling cookieCache would add session_data and require a multi-cookie bridge.
+					cookieCache: { enabled: false },
 				},
 				rateLimit: {
 					enabled: true,
@@ -103,10 +110,7 @@ export class VibeAuthenticationService {
 						'/sign-up/email': { window: 60, max: 5 },
 					},
 				},
-				trustedOrigins: request => {
-					const publicOrigin = request?.headers.get(vibeAuthenticationPublicOriginHeaderName);
-					return publicOrigin ? [publicOrigin] : [];
-				},
+				trustedOrigins: [publicOrigin],
 				advanced: {
 					cookiePrefix: 'vibe',
 					useSecureCookies: true,
@@ -138,7 +142,7 @@ export class VibeAuthenticationService {
 			const migrations = await getMigrations(authentication.options);
 			await migrations.runMigrations();
 			await fs.chmod(databasePath, 0o600);
-			return new VibeAuthenticationService(authentication.handler, database);
+			return new VibeAuthenticationService(authentication.handler, database, publicOrigin);
 		} catch (error) {
 			database.close();
 			throw error;

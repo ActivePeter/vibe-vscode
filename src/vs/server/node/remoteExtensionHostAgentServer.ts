@@ -38,7 +38,7 @@ import { determineServerConnectionToken, requestHasValidConnectionToken as httpR
 import { IServerEnvironmentService, ServerParsedArgs } from './serverEnvironmentService.js';
 import { IServerLifetimeService } from './serverLifetimeService.js';
 import { setupServerServices, SocketServer } from './serverServices.js';
-import { createVibeAuthenticationServerFromEnvironment, VibeAuthenticationServer } from './vibeEmbeddedAuthentication.js';
+import { createVibeAuthenticationServer, VibeAuthenticationServer } from './vibeAuthenticationServer.js';
 import { CacheControl, serveError, serveFile, WebClientServer } from './webClientServer.js';
 const require = createRequire(import.meta.url);
 
@@ -109,7 +109,7 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
 		this._allReconnectionTokens = new Set<string>();
 		this._webClientServer = (
 			hasWebClient
-				? this._instantiationService.createInstance(WebClientServer, this._connectionToken, serverBasePath ?? '/', this._serverProductPath, this._vsdaMod !== null)
+				? this._instantiationService.createInstance(WebClientServer, this._connectionToken, serverBasePath ?? '/', this._serverProductPath, this._vsdaMod !== null, this._authenticationServer?.publicOrigin)
 				: null
 		);
 		this._logService.info(`Extension host agent started.`);
@@ -737,11 +737,10 @@ export async function createServer(address: string | net.AddressInfo | null, arg
 	if (serverBasePath && !serverBasePath.startsWith('/')) {
 		serverBasePath = `/${serverBasePath}`;
 	}
-	const authenticationServer = await createVibeAuthenticationServerFromEnvironment(serverBasePath ?? '');
-	if (authenticationServer && connectionToken.type !== ServerConnectionTokenType.None) {
-		authenticationServer.dispose();
-		throw new Error('Vibe authentication requires --without-connection-token behind its private Caddy gateway.');
+	if (args['auth-state-dir'] && (connectionToken.type !== ServerConnectionTokenType.None || !args['socket-path'])) {
+		throw new Error('Vibe authentication requires --socket-path and --without-connection-token behind its private Caddy gateway.');
 	}
+	const authenticationServer = await createVibeAuthenticationServer(args, serverBasePath ?? '');
 
 	const hasWebClient = fs.existsSync(FileAccess.asFileUri(`vs/code/browser/workbench/workbench.html`).fsPath);
 

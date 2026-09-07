@@ -144,7 +144,6 @@
     "@xterm/headless": "^6.1.0-beta.292",
     "@xterm/xterm": "^6.1.0-beta.292",
     "better-auth": "1.7.2",
-    "better-sqlite3": "12.11.1",
     "chrome-remote-interface": "^0.33.0",
     "detect-libc": "^2.1.2",
     "foundry-local-sdk": "1.2.3",
@@ -179,7 +178,6 @@
     "@playwright/cli": "^0.1.9",
     "@playwright/test": "^1.61.1",
     "@stylistic/eslint-plugin": "^5.10.0",
-    "@types/better-sqlite3": "^9.6.0",
     "@types/chrome-remote-interface": "^0.33.0",
     "@types/cookie": "^0.3.3",
     "@types/debug": "^4.1.5",
@@ -301,7 +299,6 @@
   },
   "allowScripts": {
     "bufferutil@4.1.0": true,
-    "better-sqlite3@12.11.1": true,
     "cpu-features": false,
     "foundry-local-sdk@1.2.3": true,
     "kerberos@2.1.1": true,

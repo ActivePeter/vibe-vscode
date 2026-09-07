@@ -310,9 +310,12 @@ export function getWebClientResourceScheme(forwardedProto: string | undefined): 
 	return publicScheme === Schemas.https ? Schemas.https : Schemas.http;
 }
 
-/** Returns the browser-visible authority preserved by the nearest trusted reverse proxy. */
-export function getWebClientRemoteAuthority(originalHost: string | undefined, forwardedHost: string | undefined, host: string | undefined): string | undefined {
-	for (const candidate of [originalHost, forwardedHost, host]) {
+/** Authentication pins the public identity; token-based servers retain their proxy host contract. */
+export function getWebClientRemoteAuthority(publicOrigin: string | undefined, forwardedHost: string | undefined, host: string | undefined): string | undefined {
+	if (publicOrigin) {
+		return new URL(publicOrigin).host;
+	}
+	for (const candidate of [forwardedHost, host]) {
 		const authority = candidate?.split(',', 1)[0].trim();
 		if (authority) {
 			return authority;
@@ -348,6 +351,7 @@ export class WebClientServer {
 		private readonly _basePath: string,
 		private readonly _productPath: string,
 		private readonly _remoteConnectionSigning: boolean,
+		private readonly _publicOrigin: string | undefined,
 		@IServerEnvironmentService private readonly _environmentService: IServerEnvironmentService,
 		@ILogService private readonly _logService: ILogService,
 		@IRequestService private readonly _requestService: IRequestService,
@@ -544,13 +548,13 @@ export class WebClientServer {
 		let remoteAuthority = (
 			useTestResolver
 				? 'test+test'
-				: getWebClientRemoteAuthority(getFirstHeader('x-original-host'), getFirstHeader('x-forwarded-host'), req.headers.host)
+				: getWebClientRemoteAuthority(this._publicOrigin, getFirstHeader('x-forwarded-host'), req.headers.host)
 		);
 		if (!remoteAuthority) {
 			return serveError(req, res, 400, `Bad request.`);
 		}
 		const forwardedPort = getFirstHeader('x-forwarded-port');
-		if (forwardedPort) {
+		if (forwardedPort && !this._publicOrigin) {
 			remoteAuthority = replacePort(remoteAuthority, forwardedPort);
 		}
 
@@ -571,7 +575,7 @@ export class WebClientServer {
 		}
 
 		if (this._logService.getLevel() === LogLevel.Trace) {
-			['x-original-host', 'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-proto', 'host'].forEach(header => {
+			['x-forwarded-host', 'x-forwarded-port', 'x-forwarded-proto', 'host'].forEach(header => {
 				const value = getFirstHeader(header);
 				if (value) {
 					this._logService.trace(`[WebClientServer] ${header}: ${value}`);
@@ -602,7 +606,7 @@ export class WebClientServer {
 			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
 				...this._productService.extensionsGallery,
 				resourceUrlTemplate: this._webExtensionResourceUrlTemplate.with({
-					scheme: getWebClientResourceScheme(getFirstHeader('x-forwarded-proto')),
+					scheme: this._publicOrigin ? Schemas.https : getWebClientResourceScheme(getFirstHeader('x-forwarded-proto')),
 					authority: remoteAuthority,
 					path: `${webExtensionRoute}/${this._webExtensionResourceUrlTemplate.authority}${this._webExtensionResourceUrlTemplate.path}`
 				}).toString(true)

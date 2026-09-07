@@ -1551,7 +1551,7 @@ export default defineConfig(
 						'better-auth',
 						'better-auth/*',
 						'better-auth/db/migration',
-						'better-sqlite3',
+						'node:sqlite',
 						'assert',
 						'child_process',
 						'console',

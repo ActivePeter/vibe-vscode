@@ -11,26 +11,31 @@
 	@authentication path {$VIBE_VSCODE_AUTH_PATH} {$VIBE_VSCODE_AUTH_PATH}/*
 	handle @authentication {
 		reverse_proxy {$VIBE_VSCODE_AUTH_ADDRESS} {
-			header_up X-Original-Host {http.request.header.X-Forwarded-Host}
+			# Authentication routes are HTTP-only, never a VS Code upgrade entry point.
+			header_up -Connection
+			header_up -Upgrade
 			header_up X-Forwarded-Proto https
 		}
 	}
 
 	handle {
 		route {
-			# The auth check may renew Better Auth's sliding session. Carry its cookie to the
-			# browser without accepting a client-supplied renewal header.
+			# Successful verification renews at most one session_token (cookieCache is off).
+			# The server enforces this; denials bypass the bridge and may clear multiple cookies.
 			request_header -X-Vibe-Auth-Set-Cookie
 			forward_auth {$VIBE_VSCODE_AUTH_ADDRESS} {
 				uri {$VIBE_VSCODE_AUTH_PATH}/verify
-				header_up X-Original-Host {http.request.header.X-Forwarded-Host}
+				# The authorization subrequest must reach the HTTP handler, not Node's
+				# upgrade event. Preserve only the original request kind for 401 vs 303.
+				header_up X-Forwarded-Upgrade {http.request.header.Upgrade}
+				header_up -Connection
+				header_up -Upgrade
 				copy_headers Set-Cookie>X-Vibe-Auth-Set-Cookie
 			}
 			@renewedSession header X-Vibe-Auth-Set-Cookie *
 			header @renewedSession +Set-Cookie {http.request.header.X-Vibe-Auth-Set-Cookie}
 
 			reverse_proxy {$VIBE_VSCODE_BACKEND_ADDRESS} {
-				header_up X-Original-Host {http.request.header.X-Forwarded-Host}
 				header_up X-Forwarded-Proto https
 				header_up -X-Vibe-Auth-Set-Cookie
 			}

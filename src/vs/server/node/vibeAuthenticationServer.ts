@@ -4,102 +4,24 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as crypto from 'crypto';
+import { readFileSync } from 'fs';
 import type * as http from 'http';
 import { fromNodeHeaders } from 'better-auth/node';
+import { FileAccess } from '../../base/common/network.js';
 import { isAbsolute } from '../../base/common/path.js';
-import { VibeAuthenticationService, vibeAuthenticationPublicOriginHeaderName } from './vibeAuthentication.js';
+import type { ServerParsedArgs } from './serverEnvironmentService.js';
+import { VibeAuthenticationService } from './vibeAuthentication.js';
 
 const requestBodyMaximumBytes = 16 * 1024;
 const administratorEmail = 'administrator@vibe.invalid';
 
 type Locale = 'en' | 'zh-cn';
 
-interface Messages {
-	readonly brand: string;
-	readonly setupLabel: string;
-	readonly registerTitle: string;
-	readonly registerDescription: string;
-	readonly loginLabel: string;
-	readonly loginTitle: string;
-	readonly loginDescription: string;
-	readonly logoutLabel: string;
-	readonly logoutTitle: string;
-	readonly logoutDescription: string;
-	readonly usernameLabel: string;
-	readonly passwordLabel: string;
-	readonly confirmPasswordLabel: string;
-	readonly passwordHint: string;
-	readonly registerAction: string;
-	readonly loginAction: string;
-	readonly logoutAction: string;
-	readonly invalidUsername: string;
-	readonly invalidPassword: string;
-	readonly passwordMismatch: string;
-	readonly invalidCredentials: string;
-	readonly registrationClosed: string;
-	readonly invalidRequest: string;
-	readonly invalidOrigin: string;
-	readonly rateLimited: string;
-	readonly signedInAs: string;
-}
-
+// Authentication runs before Workbench NLS is available. Load the packaged bundles once.
+type Messages = typeof import('./vibe-authentication.nls.en.json');
 const messages: Record<Locale, Messages> = {
-	en: {
-		brand: 'vibe vscode',
-		setupLabel: 'First-time setup',
-		registerTitle: 'Create the administrator account',
-		registerDescription: 'This first account will be the only account allowed to access this instance. Public registration closes after it is created.',
-		loginLabel: 'Secure workspace',
-		loginTitle: 'Sign in to continue',
-		loginDescription: 'Your browser must be authenticated before any VS Code resource or remote connection is available.',
-		logoutLabel: 'Account',
-		logoutTitle: 'Sign out of this browser',
-		logoutDescription: 'Signing out immediately revokes this browser session.',
-		usernameLabel: 'Username',
-		passwordLabel: 'Password',
-		confirmPasswordLabel: 'Confirm password',
-		passwordHint: 'Use at least 12 characters.',
-		registerAction: 'Create Account',
-		loginAction: 'Sign In',
-		logoutAction: 'Sign Out',
-		invalidUsername: 'Use 1–64 characters, start with a letter or number, and use only letters, numbers, periods, underscores, hyphens, or @ characters.',
-		invalidPassword: 'Use a password between 12 and 256 characters.',
-		passwordMismatch: 'The passwords do not match.',
-		invalidCredentials: 'The username or password is incorrect.',
-		registrationClosed: 'The administrator account was created in another request. Sign in with that account.',
-		invalidRequest: 'This request could not be verified. Reload the page and try again.',
-		invalidOrigin: 'The browser address could not be verified. Reopen this page from the same VS Code address and try again.',
-		rateLimited: 'Too many unsuccessful attempts. Wait a moment and try again.',
-		signedInAs: 'Signed in as',
-	},
-	'zh-cn': {
-		brand: 'vibe vscode',
-		setupLabel: '首次设置',
-		registerTitle: '创建管理员账号',
-		registerDescription: '首个账号将成为此实例唯一可登录的管理员。创建成功后，公开注册会立即关闭。',
-		loginLabel: '安全工作区',
-		loginTitle: '登录后继续',
-		loginDescription: '浏览器通过身份验证前，任何 VS Code 资源和远程连接都不会开放。',
-		logoutLabel: '账号',
-		logoutTitle: '退出当前浏览器',
-		logoutDescription: '退出后，当前浏览器会话将立即失效。',
-		usernameLabel: '用户名',
-		passwordLabel: '密码',
-		confirmPasswordLabel: '确认密码',
-		passwordHint: '请使用至少 12 个字符。',
-		registerAction: '创建账号',
-		loginAction: '登录',
-		logoutAction: '退出登录',
-		invalidUsername: '请使用 1–64 个字符，以字母或数字开头，并且只使用字母、数字、句点、下划线、连字符或 @ 字符。',
-		invalidPassword: '密码长度必须为 12–256 个字符。',
-		passwordMismatch: '两次输入的密码不一致。',
-		invalidCredentials: '用户名或密码不正确。',
-		registrationClosed: '另一个请求已完成管理员注册，请使用该账号登录。',
-		invalidRequest: '无法验证此请求，请刷新页面后重试。',
-		invalidOrigin: '无法验证当前浏览器地址，请从同一个 VS Code 地址重新打开此页面后重试。',
-		rateLimited: '失败次数过多，请稍后再试。',
-		signedInAs: '当前账号',
-	},
+	en: JSON.parse(readFileSync(FileAccess.asFileUri('vs/server/node/vibe-authentication.nls.en.json').fsPath, 'utf8')),
+	'zh-cn': JSON.parse(readFileSync(FileAccess.asFileUri('vs/server/node/vibe-authentication.nls.zh-cn.json').fsPath, 'utf8')),
 };
 
 interface AuthenticationPageOptions {
@@ -148,6 +70,10 @@ export class VibeAuthenticationServer {
 		this.apiPath = `${this.authPath}/api`;
 	}
 
+	public get publicOrigin(): string {
+		return this.authenticationService.publicOrigin;
+	}
+
 	public async handle(request: http.IncomingMessage, response: http.ServerResponse): Promise<boolean> {
 		const requestUrl = new URL(request.url ?? '/', 'http://authentication.invalid');
 		const pathname = requestUrl.pathname;
@@ -181,11 +107,6 @@ export class VibeAuthenticationServer {
 		}
 		if (request.method === 'GET' && route === '/api/status') {
 			await this.handleStatus(request, response);
-			return;
-		}
-		if (request.method === 'POST' && route === '/api/origin-check') {
-			const authenticationResponse = await this.invokeBetterAuth(request, 'POST', '/sign-out', {}, false);
-			this.sendEmpty(response, authenticationResponse.ok ? 204 : authenticationResponse.status);
 			return;
 		}
 		if ((request.method === 'GET' || request.method === 'HEAD') && route === '/verify') {
@@ -233,6 +154,12 @@ export class VibeAuthenticationServer {
 	private async handleVerify(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
 		const session = await this.readSession(request, response);
 		if (session.authenticated) {
+			// Only 2xx responses use Caddy's single-cookie renewal bridge. Denials
+			// pass through directly and can clear multiple stale Better Auth cookies.
+			const cookies = response.getHeader('Set-Cookie');
+			if (Array.isArray(cookies) && cookies.length > 1) {
+				throw new Error('Successful session verification must emit at most one cookie for the Caddy renewal bridge.');
+			}
 			this.sendEmpty(response, 204);
 			return;
 		}
@@ -427,18 +354,11 @@ export class VibeAuthenticationServer {
 		return { authenticated: true, username: value.user.name };
 	}
 
-	private async invokeBetterAuth(request: http.IncomingMessage, method: 'GET' | 'POST', route: string, body?: object, forwardCredentials = true): Promise<Response> {
-		const publicOrigin = resolvePublicOrigin(request);
+	private async invokeBetterAuth(request: http.IncomingMessage, method: 'GET' | 'POST', route: string, body?: object): Promise<Response> {
+		const publicOrigin = this.publicOrigin;
 		const headers = fromNodeHeaders(request.headers);
 		headers.delete('content-length');
-		if (!forwardCredentials) {
-			// Better Auth only applies its sign-out origin check when a session cookie is
-			// present. Use a known-invalid internal value so the health probe exercises
-			// that check without forwarding or revoking the browser's real session.
-			headers.set('cookie', '__Secure-vibe.session_token=origin-check.invalid');
-		}
 		headers.set('host', new URL(publicOrigin).host);
-		headers.set(vibeAuthenticationPublicOriginHeaderName, publicOrigin);
 		headers.set('x-vibe-client-ip', (firstCommaSeparatedValue(firstHeader(request.headers['x-forwarded-for'])) ?? request.socket.remoteAddress ?? 'unknown').slice(0, 128));
 		if (body) {
 			headers.set('content-type', 'application/json');
@@ -485,7 +405,7 @@ export class VibeAuthenticationServer {
 	}
 
 	private isNavigationRequest(request: http.IncomingMessage): boolean {
-		if (firstHeader(request.headers.upgrade)?.toLowerCase() === 'websocket') {
+		if (firstHeader(request.headers.upgrade)?.toLowerCase() === 'websocket' || firstHeader(request.headers['x-forwarded-upgrade'])?.toLowerCase() === 'websocket') {
 			return false;
 		}
 		const forwardedMethod = firstHeader(request.headers['x-forwarded-method']) ?? request.method;
@@ -535,20 +455,26 @@ export class VibeAuthenticationServer {
 	}
 }
 
-export async function createVibeAuthenticationServerFromEnvironment(basePath: string): Promise<VibeAuthenticationServer | undefined> {
-	const stateDirectory = process.env['VIBE_VSCODE_AUTH_STATE_DIR'];
+export async function createVibeAuthenticationServer(args: Pick<ServerParsedArgs, 'auth-state-dir' | 'public-origin' | 'auth-session-ttl-seconds'>, basePath: string): Promise<VibeAuthenticationServer | undefined> {
+	const stateDirectory = args['auth-state-dir'];
 	if (!stateDirectory) {
+		if (args['public-origin'] !== undefined || args['auth-session-ttl-seconds'] !== undefined) {
+			throw new Error('Authentication options require --auth-state-dir.');
+		}
 		return undefined;
 	}
 	if (!isAbsolute(stateDirectory)) {
-		throw new Error('VIBE_VSCODE_AUTH_STATE_DIR must be an absolute path.');
+		throw new Error('--auth-state-dir must be an absolute path.');
+	}
+	if (!args['public-origin']) {
+		throw new Error('Authentication requires --public-origin with the browser-visible HTTPS origin.');
 	}
 	const normalizedBasePath = normalizeVibeAuthenticationBasePath(basePath);
-	const sessionTtlSeconds = readSessionTtlSeconds(process.env['VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS']);
 	const authenticationService = await VibeAuthenticationService.create({
 		stateDirectory,
+		publicOrigin: args['public-origin'],
 		basePath: normalizedBasePath,
-		sessionTtlSeconds,
+		sessionTtlSeconds: args['auth-session-ttl-seconds'] === undefined ? undefined : Number(args['auth-session-ttl-seconds']),
 	});
 	return new VibeAuthenticationServer({ authenticationService, basePath: normalizedBasePath });
 }
@@ -563,26 +489,12 @@ export function normalizeVibeAuthenticationBasePath(value: string): string {
 	return value;
 }
 
-function readSessionTtlSeconds(value: string | undefined): number {
-	if (value === undefined) {
-		return 12 * 60 * 60;
-	}
-	if (!/^[1-9][0-9]*$/.test(value)) {
-		throw new Error('VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS must be a positive integer.');
-	}
-	const seconds = Number(value);
-	if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > 7 * 24 * 60 * 60) {
-		throw new Error('VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS must be between 60 and 604800.');
-	}
-	return seconds;
-}
-
 function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedAuthenticationPage {
 	const text = messages[options.locale];
 	const styleNonce = crypto.randomBytes(18).toString('base64');
 	const authPath = `${options.basePath}/auth`;
 	const alternateLocale: Locale = options.locale === 'en' ? 'zh-cn' : 'en';
-	const alternateLabel = options.locale === 'en' ? '简体中文' : 'English';
+	const alternateLabel = text.alternateLanguage;
 	const localeTarget = `${authPath}/${options.kind}?lang=${alternateLocale}&return_to=${encodeURIComponent(options.returnTo)}`;
 	const title = options.kind === 'register' ? text.registerTitle : options.kind === 'login' ? text.loginTitle : text.logoutTitle;
 	const description = options.kind === 'register' ? text.registerDescription : options.kind === 'login' ? text.loginDescription : text.logoutDescription;
@@ -602,7 +514,7 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<meta name="color-scheme" content="dark light">
-	<title>${escapeHtml(title)} · ${escapeHtml(text.brand)}</title>
+	<title>${escapeHtml(title)} - ${escapeHtml(text.brand)}</title>
 	<style nonce="${styleNonce}">
 		:root { color-scheme: dark; --page: #0f1117; --surface: #181b22; --surface-raised: #20242d; --text: #f0f1f3; --muted: #a8adb7; --border: #343945; --accent: #8ab4f8; --accent-strong: #a8c7fa; --button-text: #101318; --danger-bg: #3a2024; --danger-border: #8c3943; --focus: #9cc2ff; }
 		* { box-sizing: border-box; }
@@ -647,7 +559,7 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 				${credentials}
 				<button type="submit">${escapeHtml(action)}</button>
 			</form>
-			<p class="footer"><a href="${escapeHtml(localeTarget)}" hreflang="${alternateLocale}">${alternateLabel}</a></p>
+			<p class="footer"><a href="${escapeHtml(localeTarget)}" hreflang="${alternateLocale}">${escapeHtml(alternateLabel)}</a></p>
 		</section>
 	</main>
 </body>
@@ -706,21 +618,6 @@ async function readBetterAuthError(response: Response): Promise<BetterAuthError>
 	} catch {
 		return {};
 	}
-}
-
-function resolvePublicOrigin(request: http.IncomingMessage): string {
-	const protocol = firstCommaSeparatedValue(firstHeader(request.headers['x-forwarded-proto'])) ?? 'https';
-	const host = firstCommaSeparatedValue(firstHeader(request.headers['x-original-host']))
-		?? firstCommaSeparatedValue(firstHeader(request.headers['x-forwarded-host']))
-		?? firstHeader(request.headers.host);
-	if ((protocol !== 'http' && protocol !== 'https') || !host) {
-		throw new Error('The browser-visible request origin is unavailable.');
-	}
-	const parsed = new URL(`${protocol}://${host}`);
-	if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
-		throw new Error('The browser-visible request origin is invalid.');
-	}
-	return parsed.origin;
 }
 
 function getSingleFormValue(form: URLSearchParams, key: string): string | undefined {

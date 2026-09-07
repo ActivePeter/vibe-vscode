@@ -168,7 +168,9 @@ async function loadTestModules(opts) {
 	}
 
 	const pattern = opts.runGlob || _tests_glob;
-	let files = await globAsync(pattern, { cwd: loadFn._out });
+	// Better Auth and node:sqlite require Node's ESM loader, not the renderer import map.
+	// The Node runner discovers this suite under test/node in the standard Code OSS jobs.
+	let files = await globAsync(pattern, { cwd: loadFn._out, ignore: '**/vibeAuthentication.test.js' });
 	if (opts.excludeRunGlob) {
 		const excludedFiles = new Set(await globAsync(opts.excludeRunGlob, { cwd: loadFn._out }));
 		files = files.filter(file => !excludedFiles.has(file));

@@ -47,7 +47,7 @@ export async function installWebClientLauncher(root: string, version: string, co
 	await fs.mkdir(path.join(root, 'bin'), { recursive: true });
 	await fs.copyFile(path.join(resources, 'vibe-vscode-server.sh'), path.join(root, 'bin/vibe-vscode-server'));
 	await fs.chmod(path.join(root, 'bin/vibe-vscode-server'), 0o755);
-	await fs.writeFile(path.join(root, 'vibe-release.json'), `${JSON.stringify({ version, commit, platform: process.platform, arch: process.arch, mode }, null, '\t')}\n`);
+	await fs.writeFile(path.join(root, 'vibe-release.json'), `${JSON.stringify({ version, commit, platform: process.platform, arch: process.arch, mode, authentication: 'embedded-cli-v1' }, null, '\t')}\n`);
 }
 
 /** Stamps and archives a verified Linux package without modifying the Gulp output or an existing release. */
@@ -74,7 +74,7 @@ export async function packageWebClientRelease(packageRoot: string, outputDirecto
 	try {
 		await fs.cp(source, root, { recursive: true, verbatimSymlinks: true });
 		await validateRuntimeLinks(root);
-		for (const file of ['node', 'package.json', 'out/server-main.js', 'out/vs/code/browser/workbench/workbench.html', 'extensions/vibe-vscode/dist/browser/extension.js']) {
+		for (const file of ['node', 'package.json', 'out/server-main.js', 'out/vs/server/node/vibe-authentication.nls.en.json', 'out/vs/server/node/vibe-authentication.nls.zh-cn.json', 'out/vs/code/browser/workbench/workbench.html', 'extensions/vibe-vscode/dist/browser/extension.js']) {
 			if (!(await fs.stat(path.join(root, file))).isFile()) {
 				throw new Error(`The release is missing ${file}.`);
 			}

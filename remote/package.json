@@ -34,7 +34,6 @@
     "@xterm/headless": "^6.1.0-beta.292",
     "@xterm/xterm": "^6.1.0-beta.292",
     "better-auth": "1.7.2",
-    "better-sqlite3": "12.11.1",
     "cookie": "^0.7.0",
     "detect-libc": "^2.1.2",
     "http-proxy-agent": "^7.0.0",
@@ -64,7 +63,6 @@
     "yauzl": "^3.3.1"
   },
   "allowScripts": {
-    "better-sqlite3@12.11.1": true,
     "kerberos@2.1.1": true,
     "koffi@3.1.2": false,
     "node-pty@1.2.0-beta.15": true,

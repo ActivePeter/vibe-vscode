@@ -7,14 +7,17 @@ import assert from 'assert';
 import * as fs from 'fs';
 import type * as http from 'http';
 import * as os from 'os';
+import { FileAccess } from '../../../base/common/network.js';
 import { join } from '../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import { getRandomTestPath } from '../../../base/test/node/testUtils.js';
 import { VibeAuthenticationService } from '../../node/vibeAuthentication.js';
-import { VibeAuthenticationServer } from '../../node/vibeAuthenticationServer.js';
+import { createVibeAuthenticationServer, VibeAuthenticationServer } from '../../node/vibeAuthenticationServer.js';
 
 const nodeHttp = await import('http');
 const validPassword = 'correct horse battery staple';
+const publicOrigin = 'https://vscode.example:8443';
+const administratorName = '管理员';
 
 suite('VibeAuthenticationServer', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -44,8 +47,8 @@ suite('VibeAuthenticationServer', () => {
 		});
 		const webSocket = await request(harness.port, '/code/auth/verify', {
 			headers: {
-				connection: 'upgrade',
-				upgrade: 'websocket',
+				accept: 'text/html',
+				'x-forwarded-upgrade': 'websocket',
 				'x-forwarded-method': 'GET',
 				'x-forwarded-uri': '/code/stable-id',
 			},
@@ -73,7 +76,7 @@ suite('VibeAuthenticationServer', () => {
 		});
 		const registration = await postForm(harness.port, '/code/auth/register?lang=zh-cn', {
 			return_to: '/code/',
-			username: '管理员',
+			username: administratorName,
 			password: validPassword,
 			confirm_password: validPassword,
 		});
@@ -88,10 +91,6 @@ suite('VibeAuthenticationServer', () => {
 			headers: { cookie: sessionCookie, 'x-forwarded-uri': '/code/' },
 		});
 		const renewedCookie = getSessionSetCookie(authorized.headers);
-		const originProbe = await postForm(harness.port, '/code/auth/api/origin-check', {}, sessionCookie);
-		const authorizedAfterOriginProbe = await request(harness.port, '/code/auth/verify', {
-			headers: { cookie: sessionCookie, 'x-forwarded-uri': '/code/' },
-		});
 		const status = await request(harness.port, '/code/auth/api/status', { headers: { cookie: sessionCookie } });
 		const closedRegistration = await request(harness.port, '/code/auth/register', { headers: { accept: 'text/html' } });
 		const logoutPage = await request(harness.port, '/code/auth/logout?lang=en', { headers: { accept: 'text/html', cookie: sessionCookie } });
@@ -118,7 +117,7 @@ suite('VibeAuthenticationServer', () => {
 			},
 			authorized: authorized.status,
 			renewed: Boolean(renewedCookie),
-			originProbe: { status: originProbe.status, sessionPreserved: authorizedAfterOriginProbe.status },
+			renewalCookieCount: setCookieValues(authorized.headers).length,
 			status: JSON.parse(status.body),
 			closedRegistration: { status: closedRegistration.status, location: closedRegistration.headers.location },
 			logoutPage: logoutPage.body.includes('Sign out of this browser'),
@@ -136,8 +135,8 @@ suite('VibeAuthenticationServer', () => {
 			sessionCookieAttributes: { httpOnly: true, secure: true, sameSite: true, path: true },
 			authorized: 204,
 			renewed: true,
-			originProbe: { status: 204, sessionPreserved: 204 },
-			status: { authenticated: true, registrationOpen: false, username: '管理员' },
+			renewalCookieCount: 1,
+			status: { authenticated: true, registrationOpen: false, username: administratorName },
 			closedRegistration: { status: 303, location: '/code/auth/login?return_to=%2Fcode%2F' },
 			logoutPage: true,
 			logout: { status: 303, location: '/code/auth/login' },
@@ -191,8 +190,6 @@ suite('VibeAuthenticationServer', () => {
 
 	test('uses Better Auth origin checks, rate limits, and bounded request bodies', async function () {
 		this.timeout(30_000);
-		const sameOriginProbe = await postForm(harness.port, '/code/auth/api/origin-check', {});
-		const crossOriginProbe = await postForm(harness.port, '/code/auth/api/origin-check', {}, undefined, 'https://attacker.invalid');
 		const crossOrigin = await postForm(harness.port, '/code/auth/register?lang=en', {
 			return_to: '/code/', username: 'admin', password: validPassword, confirm_password: validPassword,
 		}, undefined, 'https://attacker.invalid');
@@ -201,7 +198,7 @@ suite('VibeAuthenticationServer', () => {
 			body: `username=${'a'.repeat(17_000)}`,
 			headers: {
 				'content-type': 'application/x-www-form-urlencoded',
-				origin: `https://127.0.0.1:${harness.port}`,
+				origin: publicOrigin,
 				'x-forwarded-proto': 'https',
 			},
 		});
@@ -217,15 +214,59 @@ suite('VibeAuthenticationServer', () => {
 		}
 
 		assert.deepStrictEqual({
-			originProbe: { sameOrigin: sameOriginProbe.status, crossOrigin: crossOriginProbe.status },
 			crossOrigin: { status: crossOrigin.status, message: crossOrigin.body.includes('browser address could not be verified') },
 			oversized: { status: oversized.status, body: oversized.body },
 			attempts,
 		}, {
-			originProbe: { sameOrigin: 204, crossOrigin: 403 },
 			crossOrigin: { status: 403, message: true },
 			oversized: { status: 413, body: 'Payload Too Large' },
 			attempts: [401, 401, 401, 401, 401, 429],
+		});
+	});
+
+	test('pins the trusted origin even when host and proxy headers are forged', async () => {
+		const body = new URLSearchParams({ username: 'admin', password: validPassword, confirm_password: validPassword }).toString();
+		const forgedHeaders = {
+			host: 'attacker.invalid',
+			'x-original-host': 'attacker.invalid',
+			'x-forwarded-host': 'attacker.invalid',
+			'x-forwarded-proto': 'http',
+			'x-vibe-public-origin': 'https://attacker.invalid',
+			'content-type': 'application/x-www-form-urlencoded',
+		};
+		const denied = await request(harness.port, '/code/auth/register', {
+			method: 'POST', body, headers: { ...forgedHeaders, origin: 'https://attacker.invalid' },
+		});
+		const accepted = await request(harness.port, '/code/auth/register', {
+			method: 'POST', body, headers: { ...forgedHeaders, origin: publicOrigin },
+		});
+		const cookie = getSessionCookie(accepted.headers);
+		const rejectedLogout = await postForm(harness.port, '/code/auth/logout', {}, cookie, 'https://attacker.invalid');
+		const sessionAfterRejectedLogout = await request(harness.port, '/code/auth/verify', { headers: { cookie } });
+		assert.deepStrictEqual({ denied: denied.status, accepted: accepted.status, logout: rejectedLogout.status, session: sessionAfterRejectedLogout.status }, {
+			denied: 403, accepted: 303, logout: 403, session: 204,
+		});
+	});
+
+	test('validates CLI configuration before creating persistent state', async () => {
+		const stateDirectory = join(testDirectory, 'invalid-configuration');
+		const args = { 'auth-state-dir': stateDirectory, 'public-origin': publicOrigin };
+		await assert.rejects(createVibeAuthenticationServer({ 'auth-state-dir': stateDirectory }, ''), /--public-origin/);
+		for (const origin of ['http://vscode.example', 'https://user:password@vscode.example', 'https://vscode.example/path', 'https://vscode.example?query=1', 'https://vscode.example#fragment']) {
+			await assert.rejects(createVibeAuthenticationServer({ ...args, 'public-origin': origin }, ''), /HTTPS origin/);
+		}
+		for (const ttl of ['59', '604801', 'NaN', '1.5', '']) {
+			await assert.rejects(createVibeAuthenticationServer({ ...args, 'auth-session-ttl-seconds': ttl }, ''), /session lifetime/);
+		}
+		assert.strictEqual(fs.existsSync(stateDirectory), false);
+		assert.strictEqual(await createVibeAuthenticationServer({}, ''), undefined);
+	});
+
+	test('ships matching message keys and renders both packaged locales', async () => {
+		const bundles = ['en', 'zh-cn'].map(locale => JSON.parse(fs.readFileSync(FileAccess.asFileUri(`vs/server/node/vibe-authentication.nls.${locale}.json`).fsPath, 'utf8')));
+		const pages = await Promise.all(['en', 'zh-cn'].map(locale => request(harness.port, `/code/auth/register?lang=${locale}`)));
+		assert.deepStrictEqual({ keys: Object.keys(bundles[0]).sort(), rendered: pages.map((page, index) => page.status === 200 && page.body.includes(bundles[index].registerTitle) && page.body.includes(bundles[index].alternateLanguage)) }, {
+			keys: Object.keys(bundles[1]).sort(), rendered: [true, true],
 		});
 	});
 
@@ -247,6 +288,7 @@ interface AuthenticationTestHarness {
 async function createHarness(stateDirectory: string): Promise<AuthenticationTestHarness> {
 	const authenticationService = await VibeAuthenticationService.create({
 		stateDirectory,
+		publicOrigin,
 		basePath: '/code',
 		sessionTtlSeconds: 60,
 		sessionUpdateAgeSeconds: 1,
@@ -313,7 +355,7 @@ function postForm(port: number, path: string, values: Record<string, string>, co
 		headers: {
 			'content-type': 'application/x-www-form-urlencoded',
 			'content-length': Buffer.byteLength(body),
-			origin: origin ?? `https://127.0.0.1:${port}`,
+			origin: origin ?? publicOrigin,
 			'x-forwarded-proto': 'https',
 			...(cookie ? { cookie } : {}),
 		},

@@ -12,6 +12,7 @@ import { VSBuffer } from '../../base/common/buffer.js';
 import { toErrorMessage } from '../../base/common/errorMessage.js';
 import { Event } from '../../base/common/event.js';
 import { parse } from '../../base/common/jsonc.js';
+import { isNativeAgentSessionsUIEnabled } from '../../base/common/product.js';
 import { getPathLabel } from '../../base/common/labels.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../base/common/lifecycle.js';
 import { Schemas, VSCODE_AUTHORITY } from '../../base/common/network.js';
@@ -1469,7 +1470,7 @@ export class CodeApplication extends Disposable {
 		const args = this.environmentMainService.args;
 
 		// Handle agents window first based on context
-		if (args['agents']) {
+		if (args['agents'] && isNativeAgentSessionsUIEnabled(this.productService)) {
 			return windowsMainService.openAgentsWindow({
 				context,
 				cli: args,

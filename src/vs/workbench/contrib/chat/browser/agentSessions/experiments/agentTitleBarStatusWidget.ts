@@ -33,6 +33,8 @@ import { HiddenItemStrategy, WorkbenchToolBar } from '../../../../../../platform
 import { DropdownWithPrimaryActionViewItem } from '../../../../../../platform/actions/browser/dropdownWithPrimaryActionViewItem.js';
 import { createActionViewItem } from '../../../../../../platform/actions/browser/menuEntryActionViewItem.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../../platform/storage/common/storage.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../../../../base/common/product.js';
+import { IProductService } from '../../../../../../platform/product/common/productService.js';
 import { FocusAgentSessionsAction } from '../agentSessionsActions.js';
 import { IWorkbenchContribution } from '../../../../../common/contributions.js';
 import { WORKBENCH_MENU_MOTION_CLASS, workbenchMenuCloseAnimation } from '../../../../../browser/actions/menuMotion.js';
@@ -1413,8 +1415,12 @@ export class AgentTitleBarStatusRendering extends Disposable implements IWorkben
 		@IConfigurationService configurationService: IConfigurationService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@ITitleService titleService: ITitleService,
+		@IProductService productService: IProductService,
 	) {
 		super();
+		if (!isNativeAgentSessionsUIEnabled(productService)) {
+			return;
+		}
 
 		this._register(actionViewItemService.register(MenuId.CommandCenter, MenuId.AgentsTitleBarControlMenu, (action, options) => {
 			if (!(action instanceof SubmenuItemAction)) {

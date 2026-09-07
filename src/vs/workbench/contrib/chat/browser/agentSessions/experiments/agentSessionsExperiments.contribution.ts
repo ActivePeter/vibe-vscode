@@ -12,7 +12,7 @@ import { AgentTitleBarStatusRendering } from './agentTitleBarStatusWidget.js';
 import { AgentTitleBarStatusService, IAgentTitleBarStatusService } from './agentTitleBarStatusService.js';
 import { Codicon } from '../../../../../../base/common/codicons.js';
 import { localize } from '../../../../../../nls.js';
-import { ContextKeyExpr } from '../../../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, IContextKeyService, RawContextKey } from '../../../../../../platform/contextkey/common/contextkey.js';
 import { ProductQualityContext } from '../../../../../../platform/contextkey/common/contextkeys.js';
 import { InEditorZenModeContext } from '../../../../../common/contextkeys.js';
 import { ChatAgentLocation, ChatConfiguration } from '../../../common/constants.js';
@@ -26,6 +26,9 @@ import { IChatEditingService, ModifiedFileEntryState } from '../../../common/edi
 import { isSessionInProgressStatus } from '../agentSessionsModel.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { autorun } from '../../../../../../base/common/observable.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../../../../base/common/product.js';
+import product from '../../../../../../platform/product/common/product.js';
+import { IProductService } from '../../../../../../platform/product/common/productService.js';
 
 import './unifiedQuickAccessActions.js'; // Register unified quick access actions
 
@@ -240,15 +243,31 @@ class AgentSessionReadyContribution extends Disposable implements IWorkbenchCont
 
 // #region Agent Session Projection & Status
 
-registerAction2(EnterAgentSessionProjectionAction);
-registerAction2(ExitAgentSessionProjectionAction);
-registerAction2(ToggleUnifiedAgentsBarAction);
+const NativeAgentSessionsUIEnabledContext = new RawContextKey<boolean>('nativeAgentSessionsUIEnabled', true);
+
+class NativeAgentSessionsUIContextContribution implements IWorkbenchContribution {
+	static readonly ID = 'chat.nativeAgentSessionsUIContext';
+
+	constructor(
+		@IContextKeyService contextKeyService: IContextKeyService,
+		@IProductService productService: IProductService,
+	) {
+		NativeAgentSessionsUIEnabledContext.bindTo(contextKeyService).set(isNativeAgentSessionsUIEnabled(productService));
+	}
+}
+
+registerWorkbenchContribution2(NativeAgentSessionsUIContextContribution.ID, NativeAgentSessionsUIContextContribution, WorkbenchPhase.BlockStartup);
 
 registerSingleton(IAgentSessionProjectionService, AgentSessionProjectionService, InstantiationType.Delayed);
 registerSingleton(IAgentTitleBarStatusService, AgentTitleBarStatusService, InstantiationType.Delayed);
 
-registerWorkbenchContribution2(AgentTitleBarStatusRendering.ID, AgentTitleBarStatusRendering, WorkbenchPhase.AfterRestored);
-registerWorkbenchContribution2(AgentSessionReadyContribution.ID, AgentSessionReadyContribution, WorkbenchPhase.AfterRestored);
+if (isNativeAgentSessionsUIEnabled(product)) {
+	registerAction2(EnterAgentSessionProjectionAction);
+	registerAction2(ExitAgentSessionProjectionAction);
+	registerAction2(ToggleUnifiedAgentsBarAction);
+
+	registerWorkbenchContribution2(AgentTitleBarStatusRendering.ID, AgentTitleBarStatusRendering, WorkbenchPhase.AfterRestored);
+	registerWorkbenchContribution2(AgentSessionReadyContribution.ID, AgentSessionReadyContribution, WorkbenchPhase.AfterRestored);
 
 // Register Agent Status as a menu item in the command center (alongside the search box, not replacing it)
 MenuRegistry.appendMenuItem(MenuId.CommandCenter, {
@@ -256,6 +275,7 @@ MenuRegistry.appendMenuItem(MenuId.CommandCenter, {
 	title: localize('agentsControl', "Agents"),
 	icon: Codicon.chatSparkle,
 	when: ContextKeyExpr.and(
+		NativeAgentSessionsUIEnabledContext,
 		ChatContextKeys.enabled,
 		ContextKeyExpr.notEquals(`config.${ChatConfiguration.AgentStatusEnabled}`, 'hidden'),
 		ContextKeyExpr.notEquals(`config.${ChatConfiguration.AgentStatusEnabled}`, false),
@@ -305,5 +325,7 @@ MenuRegistry.appendMenuItem(MenuId.AgentsTitleBarControlMenu, {
 	group: 'z_experimental',
 	order: 10
 });
+
+}
 
 //#endregion

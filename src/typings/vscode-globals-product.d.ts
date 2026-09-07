@@ -28,6 +28,12 @@ declare global {
 	var _VSCODE_PACKAGE_JSON: Record<string, any>;
 
 	/**
+	 * Product overrides embedded into the server-hosted web workbench before
+	 * workbench modules are evaluated.
+	 */
+	var _VSCODE_WEB_PRODUCT_CONFIGURATION: Record<string, unknown> | undefined;
+
+	/**
 	 * Used to disable CSS import map loading during development. Needed
 	 * when a bundler is used that loads the css directly.
 	 * @deprecated Avoid using this variable.

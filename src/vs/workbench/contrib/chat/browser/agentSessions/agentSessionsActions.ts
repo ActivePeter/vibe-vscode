@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { localize, localize2 } from '../../../../../nls.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../../../base/common/product.js';
 import { AgentSessionSection, IAgentSession, IAgentSessionSection, IMarshalledAgentSessionContext, isAgentHostAgentSessionItem, isAgentSessionSection, isLocalAgentSessionItem, isMarshalledAgentSessionContext } from './agentSessionsModel.js';
 import { Action2, MenuId, MenuRegistry } from '../../../../../platform/actions/common/actions.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
@@ -38,6 +39,7 @@ import { toErrorMessage } from '../../../../../base/common/errorMessage.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IPaneCompositePartService } from '../../../../services/panecomposite/browser/panecomposite.js';
 import { ChatSessionArchiveActionWording, getChatSessionArchiveActionPresentation } from '../../../../../platform/chat/common/sessionArchiveActions.js';
+import product from '../../../../../platform/product/common/product.js';
 
 const AGENT_SESSIONS_CATEGORY = localize2('chatSessions', "Chat Agent Sessions");
 
@@ -67,13 +69,15 @@ export class ToggleShowAgentSessionsAction extends Action2 {
 }
 
 const agentSessionsOrientationSubmenu = new MenuId('chatAgentSessionsOrientationSubmenu');
-MenuRegistry.appendMenuItem(MenuId.ChatWelcomeContext, {
-	submenu: agentSessionsOrientationSubmenu,
-	title: localize2('chat.sessionsOrientation', "Sessions Orientation"),
-	group: '0_sessions',
-	order: 1,
-	when: ChatContextKeys.inChatEditor.negate()
-});
+if (isNativeAgentSessionsUIEnabled(product)) {
+	MenuRegistry.appendMenuItem(MenuId.ChatWelcomeContext, {
+		submenu: agentSessionsOrientationSubmenu,
+		title: localize2('chat.sessionsOrientation', "Sessions Orientation"),
+		group: '0_sessions',
+		order: 1,
+		when: ChatContextKeys.inChatEditor.negate()
+	});
+}
 
 export class SetAgentSessionsOrientationStackedAction extends Action2 {
 

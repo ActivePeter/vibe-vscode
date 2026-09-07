@@ -9,6 +9,7 @@ import { alert } from '../../base/browser/ui/aria/aria.js';
 import { EventType, addDisposableListener, getClientArea, size, IDimension, isAncestorUsingFlowTo, computeScreenAwareSize, getActiveDocument, getWindows, getActiveWindow, isActiveDocument, getWindow, getWindowId, getActiveElement, Dimension } from '../../base/browser/dom.js';
 import { onDidChangeFullscreen, isFullscreen, isWCOEnabled } from '../../base/browser/browser.js';
 import { isWindows, isLinux, isMacintosh, isWeb, isIOS } from '../../base/common/platform.js';
+import { isNativeAgentSessionsUIEnabled } from '../../base/common/product.js';
 import { EditorInputCapabilities, GroupIdentifier, isResourceEditorInput, IUntypedEditorInput, pathsToEditors } from '../common/editor.js';
 import { SidebarPart } from './parts/sidebar/sidebarPart.js';
 import { PanelPart } from './parts/panel/panelPart.js';
@@ -52,6 +53,7 @@ import { IAuxiliaryWindowService } from '../services/auxiliaryWindow/browser/aux
 import { CodeWindow, mainWindow } from '../../base/browser/window.js';
 import { localize } from '../../nls.js';
 import { ILogicalWorkspaceEditorProjectionService } from '../services/logicalWorkspace/common/logicalWorkspace.js';
+import product from '../../platform/product/common/product.js';
 
 //#region Layout Implementation
 
@@ -3102,7 +3104,7 @@ class LayoutStateModel extends Disposable {
 		if (this.isNew[StorageScope.WORKSPACE]) {
 			const defaultAuxiliaryBarVisibility = this.configurationService.getValue(WorkbenchLayoutSettings.AUXILIARYBAR_DEFAULT_VISIBILITY);
 			const startupEditor = this.configurationService.getValue<'none' | 'welcomePage' | 'readme' | 'newUntitledFile' | 'welcomePageInEmptyWorkbench' | 'terminal' | 'agentSessionsWelcomePage'>('workbench.startupEditor');
-			if (startupEditor === 'agentSessionsWelcomePage') {
+			if (startupEditor === 'agentSessionsWelcomePage' && isNativeAgentSessionsUIEnabled(product)) {
 				this.applyAuxiliaryBarHiddenOverride(true);
 			} else if (
 				defaultAuxiliaryBarVisibility === 'maximized' ||

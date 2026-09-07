@@ -9,6 +9,7 @@ import { Schemas } from '../../../../base/common/network.js';
 import { autorun, observableFromEvent } from '../../../../base/common/observable.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { PolicyCategory } from '../../../../base/common/policy.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../../base/common/product.js';
 import { registerEditorFeature } from '../../../../editor/common/editorFeatures.js';
 import * as nls from '../../../../nls.js';
 import { AccessibleViewRegistry } from '../../../../platform/accessibility/browser/accessibleViewRegistry.js';
@@ -379,19 +380,22 @@ configurationRegistry.registerConfiguration({
 				nls.localize('chat.agentsControl.compact', "Replaces the command center search box with a compact agent status indicator and unified chat widget."),
 			],
 			markdownDescription: nls.localize('chat.agentsControl.enabled', "Controls how the 'Agent Status' indicator appears in the title bar command center. When set to `hidden`, the indicator is not shown. Other values show the indicator and automatically enable {0}. The unread and in-progress session indicators require {1} to be enabled.", '`#window.commandCenter#`', '`#chat.viewSessions.enabled#`'),
-			default: 'compact',
+			default: isNativeAgentSessionsUIEnabled(product) ? 'compact' : 'hidden',
+			included: isNativeAgentSessionsUIEnabled(product),
 			tags: ['experimental']
 		},
 		[ChatConfiguration.UnifiedAgentsBar]: {
 			type: 'boolean',
 			markdownDescription: nls.localize('chat.unifiedAgentsBar.enabled', "Replaces the command center search box with a unified chat and search widget."),
 			default: false,
+			included: isNativeAgentSessionsUIEnabled(product),
 			tags: ['experimental']
 		},
 		[ChatConfiguration.AgentSessionProjectionEnabled]: {
 			type: 'boolean',
 			markdownDescription: nls.localize('chat.agentSessionProjection.enabled', "Controls whether Agent Session Projection mode is enabled for reviewing agent sessions in a focused workspace."),
 			default: false,
+			included: isNativeAgentSessionsUIEnabled(product),
 			tags: ['experimental'],
 		},
 		[ChatConfiguration.MigrateLegacyCopilotCliSessions]: {
@@ -415,6 +419,7 @@ configurationRegistry.registerConfiguration({
 				nls.localize('chat.agentSessions.showExternal.all', "Shows all sessions discovered from supported external agent applications."),
 			],
 			default: AgentHostExternalSessionsMode.None,
+			included: isNativeAgentSessionsUIEnabled(product),
 			markdownDescription: nls.localize('chat.agentSessions.showExternal', "Controls which external agent sessions, created outside VS Code's Agent Host, are shown."),
 			agentHost: { key: AgentHostShowExternalSessionsConfigKey },
 		},
@@ -885,7 +890,8 @@ configurationRegistry.registerConfiguration({
 		},
 		[ChatConfiguration.ChatViewSessionsEnabled]: {
 			type: 'boolean',
-			default: true,
+			default: isNativeAgentSessionsUIEnabled(product),
+			included: isNativeAgentSessionsUIEnabled(product),
 			description: nls.localize('chat.viewSessions.enabled', "Show chat agent sessions when chat is empty or to the side when chat view is wide enough."),
 			agentsWindow: { default: false },
 		},
@@ -897,11 +903,13 @@ configurationRegistry.registerConfiguration({
 				nls.localize('chat.viewSessions.orientation.sideBySide', "Display chat sessions side by side if space is sufficient, otherwise fallback to stacked above the chat input unless a chat session is visible.")
 			],
 			default: 'sideBySide',
+			included: isNativeAgentSessionsUIEnabled(product),
 			description: nls.localize('chat.viewSessions.orientation', "Controls the orientation of the chat agent sessions view when it is shown alongside the chat."),
 		},
 		[ChatConfiguration.ChatViewProgressBadgeEnabled]: {
 			type: 'boolean',
 			default: false,
+			included: isNativeAgentSessionsUIEnabled(product),
 			description: nls.localize('chat.viewProgressBadge.enabled', "Show a progress badge on the chat view when an agent session is in progress that is opened in that view."),
 		},
 		[ChatSessionArchiveActionWordingSettingId]: {
@@ -912,6 +920,7 @@ configurationRegistry.registerConfiguration({
 				nls.localize('chat.experimental.sessionArchiveActionWording.done', "Use Mark as Done, Mark All as Done, Restore, and Restore All."),
 			],
 			default: 'archive',
+			included: isNativeAgentSessionsUIEnabled(product),
 			tags: ['experimental'],
 			experiment: { mode: 'startup' },
 			description: nls.localize('chat.experimental.sessionArchiveActionWording', "Controls the wording and icons used by actions that archive and unarchive chat sessions, as well as the label of the archived sessions section."),
@@ -925,6 +934,7 @@ configurationRegistry.registerConfiguration({
 				nls.localize('chat.agentsHandoffTip.mode.custom', "Show the handoff tip with an alternate description."),
 			],
 			default: 'hidden',
+			included: isNativeAgentSessionsUIEnabled(product),
 			tags: ['experimental'],
 			experiment: { mode: 'startup' },
 			description: nls.localize('chat.agentsHandoffTip.mode', "Controls the tip shown above the chat input offering to continue eligible agent sessions in the Agents Window."),

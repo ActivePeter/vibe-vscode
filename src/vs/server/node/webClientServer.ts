@@ -136,6 +136,15 @@ export function getWebClientResourceScheme(forwardedProto: string | undefined): 
 	return publicScheme === Schemas.https ? Schemas.https : Schemas.http;
 }
 
+/** Returns the product settings that the server must preserve for web clients. */
+export function getWebClientProductConfiguration(product: Pick<IProductConfiguration, 'voiceWsUrl' | 'nativeAgentSessionsUIEnabled'>): Partial<Mutable<IProductConfiguration>> {
+	return {
+		embedderIdentifier: 'server-distro',
+		voiceWsUrl: product.voiceWsUrl,
+		nativeAgentSessionsUIEnabled: product.nativeAgentSessionsUIEnabled,
+	};
+}
+
 async function readBuiltinExtensionPackageNLS(extensionPath: string, locale: string): Promise<ITranslations> {
 	for (const candidate of getBuiltinExtensionPackageNLSCandidates(locale)) {
 		try {
@@ -386,8 +395,7 @@ export class WebClientServer {
 		} : undefined;
 
 		const productConfiguration: Partial<Mutable<IProductConfiguration>> = {
-			embedderIdentifier: 'server-distro',
-			voiceWsUrl: this._productService.voiceWsUrl,
+			...getWebClientProductConfiguration(this._productService),
 			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
 				...this._productService.extensionsGallery,
 				resourceUrlTemplate: this._webExtensionResourceUrlTemplate.with({

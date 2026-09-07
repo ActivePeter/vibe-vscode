@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { getBuiltinExtensionPackageNLSCandidates, getWebClientResourceScheme } from '../../node/webClientServer.js';
+import { getBuiltinExtensionPackageNLSCandidates, getWebClientProductConfiguration, getWebClientResourceScheme } from '../../node/webClientServer.js';
 
 suite('WebClientServer', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -40,6 +40,17 @@ suite('WebClientServer', () => {
 			forwardedHttps: 'https',
 			forwardedChain: 'https',
 			invalid: 'http',
+		});
+	});
+
+	test('forwards product configuration required by the web client', () => {
+		assert.deepStrictEqual(getWebClientProductConfiguration({
+			voiceWsUrl: 'wss://example.com/voice',
+			nativeAgentSessionsUIEnabled: false,
+		}), {
+			embedderIdentifier: 'server-distro',
+			voiceWsUrl: 'wss://example.com/voice',
+			nativeAgentSessionsUIEnabled: false,
 		});
 	});
 });

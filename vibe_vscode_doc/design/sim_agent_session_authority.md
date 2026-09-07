@@ -2,7 +2,7 @@
 
 > 适用范围：Sim 宿主、上下文桥接，以及 Agent Session 的最终收束方向
 >
-> 当前实现：PR #11 只交付宿主与桥接；Session authority 的产品入口切换尚未执行
+> 当前实现：宿主与桥接已接入；Vibe 产品已关闭 VS Code 原生 Agent Sessions 的用户界面，运行态 authority 与数据迁移仍按后续阶段推进
 
 ## 结论
 
@@ -89,6 +89,15 @@ sequenceDiagram
 - 发送语言、当前文件和选区，并提供受控 VS Code capability。
 - 保持现有 VS Code Session 实现不变，不增加 adapter、mirror 或双写。
 
+### 当前增量：会话界面收束
+
+- `product.json` 通过单一产品开关关闭 VS Code 原生 Agent Sessions UI；未声明该开关的上游产品仍保持默认启用。
+- Web Server 在加载 Workbench 模块前把运行时产品配置合并进产品对象，确保命令、菜单和贡献点从一开始就不注册，而不是只在首次渲染时隐藏。
+- 普通 Chat 不再展示 Sessions catalog、会话选择标题栏、Agent 状态栏、Sessions Quick Access、Agent Sessions Welcome 或 Agents Window 推广入口。
+- Electron 的命令、`--agents`、最近项目和程序化窗口路径使用同一开关；`--agents` 在关闭时按普通窗口启动，底层窗口服务也拒绝创建 Agents Window。
+- 底层 Session service、provider 和历史实现暂时保留，避免把 UI 收束扩大为上游基础设施删除；它们不接收 Sim Session 的镜像或双写。
+- 本增量只建立“用户只看到 Sim 一套会话界面”的边界，不代表原生 Session 数据已经导入 Sim，也不提前实现 Workspace authority 映射。
+
 ### 后续 PR：Sim 消费上下文
 
 - 由 [#12](https://github.com/ActivePeter/vibe-vscode/issues/12) 提供 authority-ready、可更新的 Physical/Logical Workspace 与 Project context。
@@ -108,6 +117,7 @@ sequenceDiagram
 - 配置的 Sim URL 代表用户信任的服务；URL 不接受凭证、query 或 fragment。
 - route 必须始终解析在已配置的 origin 和 base path 内；frame 消息还必须匹配当前 iframe、origin 和一次性 token。
 - Caddy 只提供传输与同源入口，不成为 Session authority。
+- 浏览器需要 Local Network Access 权限时，Webview 保持首次授权请求，并监听浏览器的授权结果；`prompt` 状态不会再被超时逻辑重置成同一个授权入口。
 
 ## 主要代码
 
@@ -124,3 +134,4 @@ sequenceDiagram
 - 旧 iframe、错误 origin 或错误 token 不能调用宿主 capability。
 - 已接入的文件与选区变化会更新 Sim projection，但不会修改已确认 Session 的 identity；未来 Workspace context 必须遵守同一约束。
 - Vibe 仓库中不存在 Sim Session catalog、transcript、run-state mirror 或 Logical Workspace Session owner。
+- Vibe 产品中无法通过设置、命令、启动参数、最近项目或程序化窗口调用重新打开 VS Code 原生 Agent Sessions UI。

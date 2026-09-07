@@ -247,6 +247,22 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			}
 		}
 
+		async function watchLocalNetworkPermission(generation) {
+			if (configuredBaseUrl || !navigator.permissions || typeof navigator.permissions.query !== 'function') return;
+			try {
+				const permission = await navigator.permissions.query({ name: 'local-network-access' });
+				permission.addEventListener('change', () => {
+					if (generation !== navigationGeneration) return;
+					if (permission.state === 'granted' && !frameReady) {
+						load(currentPath, true);
+					} else if (permission.state === 'denied') {
+						frame.src = 'about:blank';
+						showLocalNetworkFailure(true);
+					}
+				}, { once: true });
+			} catch {}
+		}
+
 		function sendToSim(type, payload) {
 			if (!frameReady || !frame.contentWindow || !simOrigin || !currentFrameToken) return;
 			frame.contentWindow.postMessage({ source: 'vibe-vscode', token: currentFrameToken, type, payload }, simOrigin);
@@ -267,15 +283,19 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			}
 
 			if (generation !== navigationGeneration) return;
+			if (!configuredBaseUrl && requestLocalNetworkAccess) void watchLocalNetworkPermission(generation);
 			simOrigin = new URL(url).origin;
 			frame.src = url;
 			loadTimer = setTimeout(() => {
 				if (generation !== navigationGeneration) return;
 				void localNetworkPermissionState().then(permissionState => {
 					if (generation !== navigationGeneration) return;
-					if (permissionState === 'denied' || permissionState === 'prompt') {
+					if (permissionState === 'prompt') {
+						return; // Keep the browser permission request alive until the user decides.
+					}
+					if (permissionState === 'denied') {
 						frame.src = 'about:blank';
-						showLocalNetworkFailure(permissionState === 'denied');
+						showLocalNetworkFailure(true);
 					} else {
 						showServiceFailure();
 					}

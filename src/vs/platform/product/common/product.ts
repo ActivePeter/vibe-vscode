@@ -104,6 +104,12 @@ else {
 			}
 		});
 	}
+
+	// The server can provide product overrides at runtime. Apply the copy that
+	// its HTML bootstrap exposes before workbench contribution modules register.
+	if (globalThis._VSCODE_WEB_PRODUCT_CONFIGURATION) {
+		Object.assign(product, globalThis._VSCODE_WEB_PRODUCT_CONFIGURATION);
+	}
 }
 
 export default product;

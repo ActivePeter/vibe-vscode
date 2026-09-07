@@ -11,6 +11,7 @@ import { normalizeDriveLetter, splitRecentLabel } from '../../../base/common/lab
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { Schemas } from '../../../base/common/network.js';
 import { isMacintosh, isWindows } from '../../../base/common/platform.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../base/common/product.js';
 import { basename, dirname, extUriBiasedIgnorePathCase, isEqual, originalFSPath } from '../../../base/common/resources.js';
 import { URI } from '../../../base/common/uri.js';
 import { Promises } from '../../../base/node/pfs.js';
@@ -27,6 +28,7 @@ import { IWorkspacesManagementMainService } from './workspacesManagementMainServ
 import { ResourceMap } from '../../../base/common/map.js';
 import { IDialogMainService } from '../../dialogs/electron-main/dialogMainService.js';
 import { IEnvironmentMainService } from '../../environment/electron-main/environmentMainService.js';
+import product from '../../product/common/product.js';
 
 export const IWorkspacesHistoryMainService = createDecorator<IWorkspacesHistoryMainService>('workspacesHistoryMainService');
 
@@ -207,10 +209,11 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 	private canonicalizeAgentSessionsWorkspaces(workspaces: Array<IRecentWorkspace | IRecentFolder>): Array<IRecentWorkspace | IRecentFolder> {
 		const result: Array<IRecentWorkspace | IRecentFolder> = [];
 		let agentsWindowAdded = false;
+		const nativeAgentSessionsUIEnabled = isNativeAgentSessionsUIEnabled(product);
 
 		for (const recent of workspaces) {
 			if (isRecentWorkspace(recent) && this.isAgentSessionsWorkspace(recent.workspace)) {
-				if (!agentsWindowAdded) {
+				if (nativeAgentSessionsUIEnabled && !agentsWindowAdded) {
 					agentsWindowAdded = true;
 					result.push({
 						workspace: getWorkspaceIdentifier(this.environmentMainService.agentSessionsWorkspace),

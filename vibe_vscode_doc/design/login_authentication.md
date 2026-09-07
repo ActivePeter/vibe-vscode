@@ -45,21 +45,31 @@ flowchart LR
 
 上表里的密码哈希、随机 token、HMAC 签名、`session` 表、`Origin` 校验和限速都是 Better Auth 自带的能力,本 PR 只写配置并在进程内调用它。本 PR 自己写的代码是:`/auth/*` 的注册、登录、退出页面,`/auth/verify` 的判定与 204 / 303 / 401 出口,`Caddyfile` 的转发规则,以及 Workbench 里的退出入口。
 
+本系统调用 Better Auth 的接口只有下面这些;图里一律把它画成黑盒,不展开它内部的验签、查表、哈希与限速。
+
+| 调用 | 谁调、何时 | 传入 | 拿回 |
+|---|---|---|---|
+| `handler(GET /get-session)` | `/auth/verify`、`/auth/api/status`、登录页与退出页的守卫,每个请求一次 | 原请求头(含 Cookie),host 固定为公开 Origin,`x-vibe-client-ip` | 会话与用户名,或无会话;到期需续期时附新的 `Set-Cookie` |
+| `handler(POST /sign-up/email)` | `handleRegister` | 固定 email、`username`、`password` | 200 与 `Set-Cookie`,或错误码 |
+| `handler(POST /sign-in/username)` | `handleLogin` | `username`、`password`、`rememberMe` | 200 与 `Set-Cookie`,或 401 / 403 / 429 |
+| `handler(POST /sign-out)` | `handleLogout` | Cookie | 200 与过期 cookie |
+| `betterAuth(配置)` 与 `runMigrations()` | 启动时 `VibeAuthenticationService.create` 一次 | secret、`node:sqlite` 数据库、TTL 与 `updateAge`、`trustedOrigins`、限速规则、`username` 插件 | `handler` |
+| 直接读 SQLite `user` 表,不经 Better Auth | `registrationOpen`、`checkHealth` | 无 | 用户表是否为空 |
+
 每个请求的校验路径只有一条:
 
 ```mermaid
 sequenceDiagram
     participant B as 浏览器
     participant C as Caddy
-    participant V as /auth/verify<br/>Remote Server 内嵌 Better Auth
-    participant DB as SQLite
+    participant V as /auth/verify<br/>Remote Server
+    participant BA as Better Auth(黑盒)
     participant W as Workbench 路由<br/>同一 Remote Server
 
-    B->>C: 任意请求,Cookie: __Secure-vibe.session_token=token.签名
+    B->>C: 任意请求,Cookie: __Secure-vibe.session_token=…
     C->>V: forward_auth 子请求,原样带 Cookie
-    V->>V: 用 better-auth.secret 验签
-    V->>DB: session 表里 token 存在且未过期?
-    DB-->>V: 是 / 否
+    V->>BA: handler(GET /get-session)
+    BA-->>V: 有效会话(可能附续期 Set-Cookie),或无会话
     V-->>C: 204 放行,或 303 登录页,或 401
     C->>W: 只有 204 才把原请求转发过去
 ```
@@ -134,7 +144,7 @@ flowchart LR
 
 ## 6. 全流程时序
 
-本节分多个角度。6.1 是用户操作流程,只看用户在浏览器里做了什么、看到了什么,Caddy 与 Remote Server 合并为"服务"。6.2 是内部运行流程,把服务拆成 Caddy、Remote Server 请求分发、鉴权 adapter、Better Auth、SQLite、Workbench 服务端,图中的箭头直接标注函数名与传递的头。两个视角都按首次注册、后续登录、退出三个场景组织;部署启动只出现在内部视角,作为三个场景的前置。6.3 把 `/auth/verify` 的出口按条件画成决策树,6.4 用状态图看实例与会话的组合;每一步的失败出口见第 9 节。
+本节分多个角度。6.1 是用户操作流程,只看用户在浏览器里做了什么、看到了什么,Caddy 与 Remote Server 合并为"服务"。6.2 是内部运行流程,把服务拆成 Caddy、Remote Server 请求分发、鉴权 adapter、Workbench 服务端,Better Auth 作为黑盒只画本系统调用它的接口,图中的箭头直接标注函数名与传递的头。两个视角都按首次注册、后续登录、退出三个场景组织;部署启动只出现在内部视角,作为三个场景的前置。6.3 把 `/auth/verify` 的出口按条件画成决策树,6.4 用状态图看实例与会话的组合;每一步的失败出口见第 9 节。
 
 ### 6.1 用户操作流程
 
@@ -187,15 +197,16 @@ sequenceDiagram
     participant Deploy as deploy-18080.sh
     participant Caddy as Caddy
     participant Remote as Remote Server<br/>remoteExtensionHostAgentServer
-    participant Auth as Better Auth<br/>vibeAuthentication
-    participant DB as SQLite
+    participant Auth as 认证服务<br/>vibeAuthentication
+    participant BA as Better Auth(黑盒)
 
     Deploy->>Deploy: 停旧服务前用临时状态预检 Origin、TTL 与数据库初始化,创建 state/auth 与代际 socket 目录
     Deploy->>Remote: 启动共享 launcher,传 --auth-state-dir、--public-origin、TTL、--without-connection-token 与 --socket-path
     Remote->>Remote: 打开认证状态前拒绝连接 token 冲突或缺少私有 socket
     Remote->>Auth: createVibeAuthenticationServer(args, basePath)
-    Auth->>Auth: 校验 Origin、basePath 与 TTL,读取或以 wx 创建 secret(0600)
-    Auth->>DB: 打开 node:sqlite 数据库(0600,WAL),runMigrations
+    Auth->>Auth: 校验 Origin、basePath 与 TTL,读取或以 wx 创建 secret,打开 node:sqlite
+    Auth->>BA: betterAuth(配置),runMigrations()
+    BA-->>Auth: handler
     Auth-->>Remote: HTTP adapter 与已验证的 publicOrigin
     Deploy->>Caddy: 启动,注入 AUTH_ADDRESS,AUTH_PATH,BACKEND_ADDRESS
     Deploy->>Remote: 私有 socket GET /auth/health 期望 204,GET / 期望 200
@@ -213,36 +224,29 @@ sequenceDiagram
     participant Caddy as Caddy
     participant Remote as Remote Server<br/>remoteExtensionHostAgentServer
     participant AuthSrv as vibeAuthenticationServer
-    participant Auth as Better Auth<br/>vibeAuthentication
-    participant DB as SQLite
+    participant BA as Better Auth(黑盒)
 
-    Note over Browser,DB: 首次访问,尚无管理员
+    Note over Browser,BA: 首次访问,尚无管理员
     Browser->>Caddy: GET /?folder=…(无 cookie)
-    Caddy->>Remote: forward_auth GET /auth/verify,剥除升级头,保留原始请求类别与 URI
+    Caddy->>Remote: forward_auth GET /auth/verify,剥除升级头,带 X-Forwarded-Method 与 X-Forwarded-Uri
     Remote->>AuthSrv: handleRequest 首先调用 handle(),命中 /auth/*
-    AuthSrv->>Auth: invokeBetterAuth GET /get-session,使用配置的 Origin 与归一化 client IP
-    Auth->>DB: 查会话
-    Auth-->>AuthSrv: 无会话
-    AuthSrv->>Auth: registrationOpen
-    Auth->>DB: SELECT 1 FROM user LIMIT 1
-    Auth-->>AuthSrv: 用户表为空
-    AuthSrv-->>Caddy: 303 /auth/register?return_to=/?folder=…
-    Caddy-->>Browser: 303
+    AuthSrv->>BA: handler(GET /get-session)
+    BA-->>AuthSrv: 无会话
+    AuthSrv->>AuthSrv: registrationOpen,用户表为空
+    AuthSrv-->>Browser: 303 /auth/register?return_to=/?folder=…(经 Caddy)
     Browser->>Caddy: GET /auth/register
     Caddy->>Remote: @authentication 直通
-    Remote->>AuthSrv: handleRegisterPage,resolveLocale,renderPage 带 CSP nonce
-    AuthSrv-->>Browser: 200 自包含 HTML
+    Remote->>AuthSrv: handleRegisterPage,renderPage 带 CSP nonce
+    AuthSrv-->>Browser: 200 自包含注册页
 
-    Note over Browser,DB: 提交注册,创建唯一管理员
+    Note over Browser,BA: 提交注册,创建唯一管理员
     Browser->>Caddy: POST /auth/register(表单)
     Caddy->>Remote: @authentication 直通
-    Remote->>AuthSrv: handleRegister,readForm 上限 16 KiB 且单值,校验确认密码,registrationOpen
-    AuthSrv->>Auth: invokeBetterAuth POST /sign-up/email,email 固定,username,password
-    Auth->>Auth: origin 校验(固定 trustedOrigins 列表),限速,密码哈希
-    Auth->>DB: INSERT user(instanceOwner 唯一约束)与 session
-    Auth-->>AuthSrv: 200 与 Set-Cookie __Secure-vibe.session_token
-    AuthSrv-->>Browser: 303 到 return_to,附 Set-Cookie
-    Note over Browser,DB: 浏览器带 cookie 重新请求 return_to,进入场景二的"已登录请求"
+    Remote->>AuthSrv: handleRegister,readForm 上限 16 KiB,校验确认密码,registrationOpen
+    AuthSrv->>BA: handler(POST /sign-up/email,{email 固定,username,password})
+    BA-->>AuthSrv: 200 与 Set-Cookie,或错误码
+    AuthSrv-->>Browser: 303 到 return_to 附 Set-Cookie,失败则重渲染注册页
+    Note over Browser,BA: 浏览器带 cookie 重新请求 return_to,进入"已登录请求与续期"
 ```
 
 
@@ -255,34 +259,28 @@ sequenceDiagram
     participant Caddy as Caddy
     participant Remote as Remote Server<br/>remoteExtensionHostAgentServer
     participant AuthSrv as vibeAuthenticationServer
-    participant Auth as Better Auth<br/>vibeAuthentication
-    participant DB as SQLite
+    participant BA as Better Auth(黑盒)
 
-    Note over Browser,DB: 访问,无会话,管理员已存在
+    Note over Browser,BA: 访问,无会话,管理员已存在
     Browser->>Caddy: GET /?folder=…(无 cookie 或已过期)
     Caddy->>Remote: forward_auth GET /auth/verify
-    Remote->>AuthSrv: handleVerify,readSession
-    AuthSrv->>Auth: GET /get-session
-    Auth->>DB: 查会话,不存在或已过期
-    Auth-->>AuthSrv: 无会话
-    AuthSrv->>Auth: registrationOpen
-    Auth->>DB: SELECT 1 FROM user LIMIT 1
-    Auth-->>AuthSrv: 用户表非空
+    Remote->>AuthSrv: handleVerify
+    AuthSrv->>BA: handler(GET /get-session)
+    BA-->>AuthSrv: 无会话
+    AuthSrv->>AuthSrv: registrationOpen,用户表非空
     AuthSrv-->>Browser: 303 /auth/login?return_to=…(经 Caddy)
     Browser->>Caddy: GET /auth/login
     Caddy->>Remote: @authentication 直通
-    Remote->>AuthSrv: handleLoginPage,registrationOpen 为 false,readSession 无会话,renderPage
+    Remote->>AuthSrv: handleLoginPage,renderPage
     AuthSrv-->>Browser: 200 登录页
 
-    Note over Browser,DB: 提交凭据
+    Note over Browser,BA: 提交凭据
     Browser->>Caddy: POST /auth/login(表单)
     Caddy->>Remote: @authentication 直通
-    Remote->>AuthSrv: handleLogin,readForm,username NFC 归一化,sanitizeReturnTo
-    AuthSrv->>Auth: invokeBetterAuth POST /sign-in/username,rememberMe true
-    Auth->>Auth: origin 校验,/sign-in/username 每分钟 5 次限速,比对密码哈希
-    Auth->>DB: 查用户,INSERT session
-    Auth-->>AuthSrv: 200 与 Set-Cookie,或 401 / 403 / 429
-    AuthSrv-->>Browser: 303 到 return_to,附 Set-Cookie,失败则以原状态码重渲染登录页
+    Remote->>AuthSrv: handleLogin,readForm,sanitizeReturnTo
+    AuthSrv->>BA: handler(POST /sign-in/username,{username,password,rememberMe})
+    BA-->>AuthSrv: 200 与 Set-Cookie,或 401 / 403 / 429
+    AuthSrv-->>Browser: 303 到 return_to 附 Set-Cookie,失败则以原状态码重渲染登录页
 ```
 
 
@@ -295,23 +293,20 @@ sequenceDiagram
     participant Caddy as Caddy
     participant Remote as Remote Server<br/>remoteExtensionHostAgentServer
     participant AuthSrv as vibeAuthenticationServer
-    participant Auth as Better Auth<br/>vibeAuthentication
-    participant DB as SQLite
+    participant BA as Better Auth(黑盒)
     participant Web as webClientServer<br/>Workbench
 
     Browser->>Caddy: GET /(带 cookie)
     Caddy->>Caddy: 删除客户端可能带来的 X-Vibe-Auth-Set-Cookie
     Caddy->>Remote: forward_auth GET /auth/verify
-    Remote->>AuthSrv: handleVerify,readSession
-    AuthSrv->>Auth: GET /get-session
-    Auth->>DB: 查会话,距上次续期超过 updateAge 则刷新过期时间
-    Auth-->>AuthSrv: 会话有效,可能附续期 Set-Cookie
-    AuthSrv-->>Caddy: 204,可能附 Set-Cookie
-    Caddy->>Caddy: copy_headers 把 Set-Cookie 存为 X-Vibe-Auth-Set-Cookie,有值则以 +Set-Cookie 回传
-    Caddy->>Remote: reverse_proxy 已授权的原请求,上游剥掉 X-Vibe-Auth-Set-Cookie
+    Remote->>AuthSrv: handleVerify
+    AuthSrv->>BA: handler(GET /get-session)
+    BA-->>AuthSrv: 会话有效,可能附续期 Set-Cookie
+    AuthSrv-->>Caddy: 204,原样透传 Set-Cookie
+    Caddy->>Caddy: copy_headers 暂存为 X-Vibe-Auth-Set-Cookie,有值则以 +Set-Cookie 回传浏览器
+    Caddy->>Remote: reverse_proxy 已授权的原请求,上游剥掉该头
     Remote->>Web: 原有路由,仅 GET,无连接 token
-    Web->>Web: remoteAuthority 取配置的 publicOrigin,不信任请求头覆盖
-    Web-->>Browser: workbench.html,再走 PR #14 的分块缓存启动
+    Web-->>Browser: workbench.html,remoteAuthority 取配置的 publicOrigin,再走 PR #14 的分块缓存启动
     Browser->>Caddy: WebSocket 升级(带 cookie)
     Caddy->>Remote: forward_auth /auth/verify,无 cookie 时 401 且不跳转
     Caddy->>Remote: 代理升级到扩展宿主
@@ -328,13 +323,14 @@ sequenceDiagram
     participant Caddy as Caddy
     participant Remote as Remote Server<br/>remoteExtensionHostAgentServer
     participant AuthSrv as vibeAuthenticationServer
-    participant Auth as Better Auth<br/>vibeAuthentication
-    participant DB as SQLite
+    participant BA as Better Auth(黑盒)
 
     Account->>Caddy: AfterRestored,同源 GET /auth/api/status
     Caddy->>Remote: @authentication 直通
-    Remote->>AuthSrv: handleStatus,readSession
-    AuthSrv-->>Account: authenticated 与已登录 username
+    Remote->>AuthSrv: handleStatus
+    AuthSrv->>BA: handler(GET /get-session)
+    BA-->>AuthSrv: 会话与用户名,或无会话
+    AuthSrv-->>Account: authenticated 与 username
     alt authenticated 为 true 且当前页面仍有效
         Account->>Account: 注册 Accounts 子菜单与命令面板 Action2
     else 未认证、404、网络失败或页面已销毁
@@ -344,12 +340,13 @@ sequenceDiagram
     Account->>Browser: location.assign 到现有 /auth/logout
     Browser->>Caddy: GET /auth/logout
     Caddy->>Remote: @authentication 直通
-    Remote->>AuthSrv: handleLogoutPage,readSession,无会话则 303 /auth/login
+    Remote->>AuthSrv: handleLogoutPage,无会话则 303 /auth/login
     AuthSrv-->>Browser: 200 确认页,显示用户名
     Browser->>Caddy: POST /auth/logout
     Caddy->>Remote: @authentication 直通
-    Remote->>AuthSrv: handleLogout,readForm,invokeBetterAuth POST /sign-out
-    Auth->>DB: 删除当前会话
+    Remote->>AuthSrv: handleLogout,readForm
+    AuthSrv->>BA: handler(POST /sign-out)
+    BA-->>AuthSrv: 200 与过期 cookie
     AuthSrv-->>Browser: 303 /auth/login,附过期 cookie
 ```
 

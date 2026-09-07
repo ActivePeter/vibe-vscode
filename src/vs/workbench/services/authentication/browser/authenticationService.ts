@@ -446,7 +446,14 @@ export class AuthenticationService extends Disposable implements IAuthentication
 			const activationPromise = this._extensionService.activateByEvent(
 				getAuthenticationProviderActivationEvent(providerId),
 				activateImmediate ? ActivationKind.Immediate : ActivationKind.Normal
-			);
+			).then(async () => {
+				// Immediate activation can finish while an unready remote host is deferred.
+				// Wait for normal activation before starting the registration timeout, while
+				// still allowing providerRegistered below to unblock a stalled host.
+				if (activateImmediate && !this._authenticationProviders.has(providerId) && !this._disposedSource.token.isCancellationRequested) {
+					await this._extensionService.activateByEvent(getAuthenticationProviderActivationEvent(providerId), ActivationKind.Normal);
+				}
+			});
 
 			let provider = this._authenticationProviders.get(providerId);
 			if (provider) {

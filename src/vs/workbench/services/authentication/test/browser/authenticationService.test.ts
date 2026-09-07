@@ -4,8 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/index.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { AuthenticationAccessService } from '../../browser/authenticationAccessService.js';
 import { AuthenticationService } from '../../browser/authenticationService.js';
@@ -472,10 +474,14 @@ suite('AuthenticationService - tryActivateProvider', () => {
 
 	let authenticationService: AuthenticationService;
 
-	setup(() => {
+	function createAuthenticationService(extensionService: TestExtensionService = new TestExtensionService()): AuthenticationService {
 		const storageService = disposables.add(new TestStorageService());
 		const authenticationAccessService = disposables.add(new AuthenticationAccessService(storageService, TestProductService));
-		authenticationService = disposables.add(new AuthenticationService(new TestExtensionService(), authenticationAccessService, TestEnvironmentService, new NullLogService()));
+		return disposables.add(new AuthenticationService(extensionService, authenticationAccessService, TestEnvironmentService, new NullLogService()));
+	}
+
+	setup(() => {
+		authenticationService = createAuthenticationService();
 	});
 
 	teardown(() => {
@@ -487,15 +493,13 @@ suite('AuthenticationService - tryActivateProvider', () => {
 		// so we can create a new one with a hanging activateByEvent.
 		authenticationService.dispose();
 
-		const storageService = disposables.add(new TestStorageService());
-		const authAccessService = disposables.add(new AuthenticationAccessService(storageService, TestProductService));
 		// Simulate a deadlocked extension host: activateByEvent never resolves.
 		const hangingExtService = new class extends TestExtensionService {
 			override activateByEvent(_activationEvent: string, _activationKind?: ActivationKind): Promise<void> {
 				return new Promise<void>(() => { /* never resolves */ });
 			}
 		};
-		authenticationService = disposables.add(new AuthenticationService(hangingExtService, authAccessService, TestEnvironmentService, new NullLogService()));
+		authenticationService = createAuthenticationService(hangingExtService);
 
 		const provider = createProvider({ getSessions: async () => [createSession()] });
 
@@ -511,6 +515,48 @@ suite('AuthenticationService - tryActivateProvider', () => {
 		const sessions = await sessionsPromise;
 		assert.strictEqual(sessions.length, 1);
 	});
+
+	for (const request of ['sessions', 'authorization server'] as const) {
+		test(`waits for deferred remote activation when requesting ${request}`, () => runWithFakedTimers({}, async () => {
+			authenticationService.dispose();
+			const activationCalls: { event: string; kind: ActivationKind | undefined }[] = [];
+			authenticationService = createAuthenticationService(new class extends TestExtensionService {
+				override activateByEvent(event: string, kind?: ActivationKind): Promise<void> {
+					activationCalls.push({ event, kind });
+					// Immediate activation skips an unready remote host. Normal activation
+					// includes that host, but another blocked host can keep it pending.
+					return kind === ActivationKind.Immediate ? Promise.resolve() : new Promise<void>(() => { });
+				}
+			});
+			const authorizationServer = URI.parse('https://example.com/login');
+			const session = createSession();
+			const provider = createProvider({ authorizationServers: [authorizationServer], getSessions: async () => [session] });
+			authenticationService.registerDeclaredAuthenticationProvider({
+				id: provider.id, label: provider.label, authorizationServerGlobs: [authorizationServer.toString()],
+			});
+			let settled = false;
+			const result = request === 'sessions'
+				? authenticationService.getSessions(provider.id, undefined, {}, true)
+				: authenticationService.getOrActivateProviderIdForServer(authorizationServer);
+			void result.then(() => { settled = true; }, () => { settled = true; });
+
+			// Startup must not consume the post-activation registration timeout.
+			await timeout(6000);
+			assert.deepStrictEqual({ settled, activationCalls }, {
+				settled: false,
+				activationCalls: [
+					{ event: 'onAuthenticationRequest:test', kind: ActivationKind.Immediate },
+					{ event: 'onAuthenticationRequest:test', kind: ActivationKind.Normal },
+				],
+			});
+			authenticationService.registerAuthenticationProvider(provider.id, provider);
+			assert.deepStrictEqual(await result, request === 'sessions' ? [session] : provider.id);
+		}));
+	}
+
+	test('still times out if completed activation never registers the provider', () => runWithFakedTimers({}, async () => {
+		await assert.rejects(authenticationService.getSessions('missing', undefined, {}, true), /Timed out waiting for authentication provider 'missing' to register/);
+	}));
 
 	test('should resolve when activateByEvent completes and provider is already registered', async () => {
 		const provider = createProvider({ getSessions: async () => [createSession()] });

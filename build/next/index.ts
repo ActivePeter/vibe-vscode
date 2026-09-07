@@ -118,6 +118,8 @@ const codeEntryPoints = [
 const webEntryPoints = [
 	'vs/workbench/workbench.web.main.internal',
 	'vs/code/browser/workbench/workbench',
+	'vs/code/browser/workbench/workbenchCache',
+	'vs/code/browser/workbench/workbenchStartup',
 ];
 
 // Additional web-only entry points (CDN build only, not in server-web)
@@ -180,7 +182,7 @@ function getEntryPointsForTarget(target: BuildTarget): string[] {
 			return [
 				...workerEntryPoints,
 				...webOnlyEntryPoints,
-				'vs/workbench/workbench.web.main.internal', // web workbench only (no browser shell)
+				...webEntryPoints,
 				...keyboardMapEntryPoints,
 			];
 		default:
@@ -227,6 +229,7 @@ function getCssBundleEntryPointsForTarget(target: BuildTarget): Set<string> {
 		case 'web':
 			return new Set([
 				'vs/workbench/workbench.web.main.internal',
+				'vs/code/browser/workbench/workbench',
 				'vs/sessions/sessions.web.main.internal',
 			]);
 		default:
@@ -336,6 +339,8 @@ const serverWebResourcePatterns = [
 	// Web HTML
 	'vs/code/browser/workbench/workbench.html',
 	'vs/code/browser/workbench/workbench-dev.html',
+	'vs/code/browser/workbench/workbench-startup.html',
+	'vs/platform/remote/common/workbench-startup.nls.*.json',
 	'vs/code/browser/workbench/callback.html',
 	'vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html',
 	'vs/workbench/contrib/webview/browser/pre/*.html',
@@ -364,6 +369,8 @@ const webResourcePatterns = [
 	// Web HTML
 	'vs/code/browser/workbench/workbench.html',
 	'vs/code/browser/workbench/workbench-dev.html',
+	'vs/code/browser/workbench/workbench-startup.html',
+	'vs/platform/remote/common/workbench-startup.nls.*.json',
 	'vs/code/browser/workbench/callback.html',
 	'vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html',
 	'vs/workbench/contrib/webview/browser/pre/*.html',

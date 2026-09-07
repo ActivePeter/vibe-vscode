@@ -77,57 +77,86 @@ flowchart LR
 
 读图顺序:D 在网关拦截 → B 决定是放行、跳转还是 401 → A 在进程内完成凭据与会话 → C 保证鉴权先于原有路由并共享公开身份 → E 把这些接进部署与健康门。
 
-## 6. 全流程时序:从部署到退出
+## 6. 全流程时序
 
-本节分两层。6.1 是粗粒度总览,把 Remote Server 内部的鉴权与 Workbench 合并成一个参与方,只看请求在部署脚本、浏览器、Caddy、Remote Server、SQLite 之间怎么流转。6.2 按阶段展开,把 Remote Server 拆成请求分发、鉴权 adapter、Better Auth、Workbench 服务端四个参与方,每张图后列出由哪个文件的哪个函数完成、传递了什么。
+本节分两个视角、三个场景。6.1 是用户操作流程,只看用户在浏览器里做了什么、看到了什么,Caddy 与 Remote Server 合并为"服务"。6.2 是内部运行流程,把服务拆成 Caddy、Remote Server 请求分发、鉴权 adapter、Better Auth、SQLite、Workbench 服务端,每张图后列出由哪个文件的哪个函数完成、传递了什么。两个视角都按首次注册、后续登录、退出三个场景组织;部署启动只出现在内部视角,作为三个场景的前置。
 
-### 6.1 粗粒度总览
+### 6.1 用户操作流程
+
+#### 首次注册
+
+实例刚部署完、还没有管理员时,第一个打开地址的人被带去注册,注册成功即登录并回到最初想打开的地址。
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Deploy as deploy-18080.sh
+    actor User as 用户
     participant Browser as 浏览器
-    participant Caddy as Caddy
-    participant Remote as Remote Server<br/>鉴权 + Workbench
-    participant DB as SQLite
+    participant Service as 服务<br/>Caddy + Remote Server
 
-    Note over Deploy,DB: 阶段 0 · 部署启动与健康门
-    Deploy->>Remote: 启动,带鉴权状态目录与会话 TTL
-    Remote->>DB: 初始化 secret、数据库、迁移
-    Deploy->>Caddy: 启动网关
-    Deploy->>Caddy: 私有与公开健康探针通过后提升 last-known-good
-
-    Note over Browser,DB: 阶段 1 · 首次访问,尚无管理员
-    Browser->>Caddy: GET /(无 cookie)
-    Caddy->>Remote: forward_auth /auth/verify
-    Remote->>DB: 无会话,且用户表为空
-    Remote-->>Browser: 303 /auth/register?return_to=…
-
-    Note over Browser,DB: 阶段 2 · 创建唯一管理员
-    Browser->>Caddy: GET 与 POST /auth/register
-    Caddy->>Remote: /auth/* 直通
-    Remote->>DB: 写入唯一管理员与会话
-    Remote-->>Browser: 303 return_to,附 Set-Cookie
-
-    Note over Browser,DB: 阶段 3 · 已登录访问,每个 HTTP 与 WebSocket 请求
-    Browser->>Caddy: GET / 或 WebSocket 升级(带 cookie)
-    Caddy->>Remote: forward_auth /auth/verify
-    Remote->>DB: 校验会话,按需续期
-    Remote-->>Caddy: 204,可能附续期 Set-Cookie
-    Caddy->>Remote: reverse_proxy 原请求
-    Remote-->>Browser: Workbench 页面或扩展宿主连接
-
-    Note over Browser,DB: 阶段 4 · 退出
-    Browser->>Caddy: POST /auth/logout
-    Caddy->>Remote: /auth/* 直通
-    Remote->>DB: 删除当前会话
-    Remote-->>Browser: 303 /auth/login,附过期 cookie
+    User->>Browser: 打开 https://host/?folder=…
+    Browser->>Service: GET /?folder=…(无 cookie)
+    Service-->>Browser: 303 到注册页,return_to 记住原地址
+    Browser-->>User: 显示注册页(用户名、密码、确认密码,中英文自动选择)
+    User->>Browser: 填写并提交
+    Browser->>Service: POST /auth/register
+    Service-->>Browser: 303 回原地址,附会话 cookie
+    Browser->>Service: GET /?folder=…(带 cookie)
+    Service-->>Browser: Workbench 页面
+    Browser-->>User: 进入 Workbench,之后同一浏览器不再需要登录
 ```
 
-### 6.2 按阶段展开
+用户可见的失败:两次密码不一致或用户名不合法时留在注册页并提示;两个人同时注册时只有一个成功,另一个被转到登录页;提交过快时提示稍后再试。
 
-#### 阶段 0 · 部署启动与健康门
+#### 后续登录
+
+管理员已存在,换了浏览器、清了 cookie、或会话超过 TTL 未使用时,打开地址会被带到登录页。注册页此时不再可用,访问它会转到登录页。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 用户
+    participant Browser as 浏览器
+    participant Service as 服务<br/>Caddy + Remote Server
+
+    User->>Browser: 打开 https://host/?folder=…
+    Browser->>Service: GET /?folder=…(无 cookie 或会话已过期)
+    Service-->>Browser: 303 到登录页,return_to 记住原地址
+    Browser-->>User: 显示登录页
+    User->>Browser: 输入用户名、密码并提交
+    Browser->>Service: POST /auth/login
+    Service-->>Browser: 303 回原地址,附会话 cookie
+    Browser->>Service: GET /?folder=…(带 cookie)
+    Service-->>Browser: Workbench 页面
+    Browser-->>User: 进入 Workbench
+    Note over Browser,Service: 之后每个请求都带 cookie,持续使用时会话自动续期,不会中途被踢出
+```
+
+用户可见的失败:用户名或密码错误时留在登录页并提示;连续错误过多时提示稍后再试;从别的站点提交表单时提示来源不被信任。已登录状态下再打开登录页会直接回到 return_to。
+
+#### 退出
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 用户
+    participant Browser as 浏览器
+    participant Service as 服务<br/>Caddy + Remote Server
+
+    User->>Browser: 打开 https://host/auth/logout
+    Browser->>Service: GET /auth/logout(带 cookie)
+    Service-->>Browser: 确认页,显示当前用户名
+    User->>Browser: 点击确认退出
+    Browser->>Service: POST /auth/logout
+    Service-->>Browser: 303 到登录页,清除会话 cookie
+    Browser-->>User: 显示登录页
+```
+
+只有当前浏览器的会话被删除,其他设备上的登录不受影响。没有会话时访问退出页直接转到登录页。
+
+### 6.2 内部运行流程
+
+#### 前置:部署启动与健康门
 
 ```mermaid
 sequenceDiagram
@@ -156,7 +185,7 @@ sequenceDiagram
 4. 部署脚本启动 Caddy,注入 `VIBE_VSCODE_AUTH_ADDRESS`、`VIBE_VSCODE_AUTH_PATH`、`VIBE_VSCODE_BACKEND_ADDRESS`;[`Caddyfile`][caddyfile] 据此生成 `@authentication` 直通与 `forward_auth` 两条路径。
 5. `is_runtime_healthy` 依次探测:私有 socket `/auth/health` 204、私有 Workbench 200、公开 `/auth/api/status` 200、公开根路径无 cookie 303,以及两项 authority 探针。全部通过后 `promote_runtime` 原子切换 `last-known-good`。
 
-#### 阶段 1 与 2 · 首次访问并创建唯一管理员
+#### 场景一:首次注册
 
 ```mermaid
 sequenceDiagram
@@ -168,7 +197,7 @@ sequenceDiagram
     participant Auth as Better Auth<br/>vibeAuthentication
     participant DB as SQLite
 
-    Note over Browser,DB: 阶段 1 · 首次访问,尚无管理员
+    Note over Browser,DB: 首次访问,尚无管理员
     Browser->>Caddy: GET /?folder=…(无 cookie)
     Caddy->>Remote: forward_auth GET /auth/verify,带 X-Forwarded-Method,X-Forwarded-Uri,X-Original-Host
     Remote->>AuthSrv: handleRequest 首先调用 handle(),命中 /auth/*
@@ -183,7 +212,7 @@ sequenceDiagram
     Remote->>AuthSrv: handleRegisterPage,resolveLocale,renderPage 带 CSP nonce
     AuthSrv-->>Browser: 200 自包含 HTML
 
-    Note over Browser,DB: 阶段 2 · 创建唯一管理员
+    Note over Browser,DB: 提交注册,创建唯一管理员
     Browser->>Caddy: POST /auth/register(表单)
     Caddy->>Remote: @authentication 直通
     Remote->>AuthSrv: handleRegister,readForm 上限 16 KiB 且单值,校验确认密码,registrationOpen
@@ -192,6 +221,7 @@ sequenceDiagram
     Auth->>DB: INSERT user(instanceOwner 唯一约束)与 session
     Auth-->>AuthSrv: 200 与 Set-Cookie __Secure-vibe.session_token
     AuthSrv-->>Browser: 303 到 return_to,附 Set-Cookie
+    Note over Browser,DB: 浏览器带 cookie 重新请求 return_to,进入场景二的"已登录请求"
 ```
 
 6. 浏览器请求 Workbench 根路径。Caddy 对非 `/auth/*` 路径先发 `forward_auth` 子请求 `GET /auth/verify`,携带 `X-Forwarded-Method`、`X-Forwarded-Uri`、`X-Original-Host`。
@@ -203,9 +233,49 @@ sequenceDiagram
 12. `invokeBetterAuth POST /sign-up/email`,email 固定为 `administrator@vibe.invalid`,`name` 与 `username` 取表单值。Better Auth 依 `trustedOrigins` 回调校验 `Origin`,按 `/sign-up/email` 每分钟 5 次限速,哈希密码,插入用户与会话。`instanceOwner` 的唯一约束保证并发注册只有一条能提交。
 13. `copyBetterAuthHeaders` 把 `Set-Cookie` 与 `Retry-After` 原样带回,成功则 303 到 `return_to`;失败时 `readBetterAuthError` 取错误码映射为本地化文案,重渲染注册页。
 
-#### 阶段 3 · 已登录访问 Workbench
+#### 场景二:后续登录
 
-每个非 `/auth/*` 的 HTTP 请求、静态资源、manifest 分块与 WebSocket 升级都走一遍这张图。
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Browser as 浏览器
+    participant Caddy as Caddy
+    participant Remote as Remote Server<br/>remoteExtensionHostAgentServer
+    participant AuthSrv as vibeAuthenticationServer
+    participant Auth as Better Auth<br/>vibeAuthentication
+    participant DB as SQLite
+
+    Note over Browser,DB: 访问,无会话,管理员已存在
+    Browser->>Caddy: GET /?folder=…(无 cookie 或已过期)
+    Caddy->>Remote: forward_auth GET /auth/verify
+    Remote->>AuthSrv: handleVerify,readSession
+    AuthSrv->>Auth: GET /get-session
+    Auth->>DB: 查会话,不存在或已过期
+    Auth-->>AuthSrv: 无会话
+    AuthSrv->>DB: registrationOpen,用户表非空
+    AuthSrv-->>Browser: 303 /auth/login?return_to=…(经 Caddy)
+    Browser->>Caddy: GET /auth/login
+    Caddy->>Remote: @authentication 直通
+    Remote->>AuthSrv: handleLoginPage,registrationOpen 为 false,readSession 无会话,renderPage
+    AuthSrv-->>Browser: 200 登录页
+
+    Note over Browser,DB: 提交凭据
+    Browser->>Caddy: POST /auth/login(表单)
+    Caddy->>Remote: @authentication 直通
+    Remote->>AuthSrv: handleLogin,readForm,username NFC 归一化,sanitizeReturnTo
+    AuthSrv->>Auth: invokeBetterAuth POST /sign-in/username,rememberMe true
+    Auth->>Auth: origin 校验,/sign-in/username 每分钟 5 次限速,比对密码哈希
+    Auth->>DB: 查用户,INSERT session
+    Auth-->>AuthSrv: 200 与 Set-Cookie,或 401 / 403 / 429
+    AuthSrv-->>Browser: 303 到 return_to,附 Set-Cookie;失败则以原状态码重渲染登录页
+```
+
+14. 无会话且用户表非空时,`handleVerify` 对导航请求 303 到 `/auth/login`;非导航请求(fetch、WebSocket)返回 401 JSON,不跳转。
+15. `handleLoginPage` 先查 `registrationOpen`,为真则改去注册页;再 `readSession`,已登录则直接 303 到 `return_to`;否则渲染登录页。`handleRegisterPage` 反向对称:`registrationOpen` 为假时改去登录页。
+16. `handleLogin` 用 `readFormOrReply` 读表单,用户名做 NFC 归一化,`return_to` 从表单隐藏域取并经 `sanitizeReturnTo`。`invokeBetterAuth POST /sign-in/username` 带 `rememberMe: true`;Better Auth 校验 `Origin`、按 `/sign-in/username` 每分钟 5 次限速、比对密码哈希,成功则插入新会话。
+17. `copyBetterAuthHeaders` 带回 `Set-Cookie` 与 `Retry-After`。失败时按 429、403 或 `INVALID_ORIGIN`、其他分别映射为"稍后再试"、"来源不被信任"、"用户名或密码错误",以 Better Auth 的状态码重渲染登录页并回填用户名。
+
+登录成功后浏览器带 cookie 重新请求 `return_to`,进入下面的"已登录请求与续期"。每个非 `/auth/*` 的 HTTP 请求、静态资源、manifest 分块与 WebSocket 升级都走一遍这张图。
 
 ```mermaid
 sequenceDiagram
@@ -236,13 +306,13 @@ sequenceDiagram
     Caddy->>Remote: 代理升级到扩展宿主
 ```
 
-14. 每个非 `/auth/*` 请求(含 WebSocket 升级)都重复第 6 到 8 步。Caddy 先删除客户端可能伪造的 `X-Vibe-Auth-Set-Cookie`。
-15. Better Auth 的 `get-session` 在距上次续期超过 `updateAge` 时刷新过期时间并返回新的 `Set-Cookie`;`handleVerify` 返回 204 并附上它。
-16. Caddy 的 `forward_auth` 用 `copy_headers Set-Cookie>X-Vibe-Auth-Set-Cookie` 暂存,`@renewedSession` 匹配到时以 `+Set-Cookie` 加到响应,再 `reverse_proxy` 原请求到同一 socket,并在上游剥掉该头。
-17. Remote Server 进入原有路由。[`webClientServer.ts`][web-client] 用 `getWebClientRemoteAuthority` 从 `X-Original-Host` → `X-Forwarded-Host` → `Host` 取公开身份写入 `remoteAuthority`,渲染 `workbench.html`;之后走 PR #14 的分块缓存启动,静态资源与 manifest 同样逐个经过 `forward_auth`。
-18. WebSocket 升级无 cookie 时 `/auth/verify` 返回 401 而不是 303,浏览器不会被重定向,扩展宿主连接直接失败。
+18. 每个非 `/auth/*` 请求(含 WebSocket 升级)都重复第 6 到 8 步。Caddy 先删除客户端可能伪造的 `X-Vibe-Auth-Set-Cookie`。
+19. Better Auth 的 `get-session` 在距上次续期超过 `updateAge` 时刷新过期时间并返回新的 `Set-Cookie`;`handleVerify` 返回 204 并附上它。
+20. Caddy 的 `forward_auth` 用 `copy_headers Set-Cookie>X-Vibe-Auth-Set-Cookie` 暂存,`@renewedSession` 匹配到时以 `+Set-Cookie` 加到响应,再 `reverse_proxy` 原请求到同一 socket,并在上游剥掉该头。
+21. Remote Server 进入原有路由。[`webClientServer.ts`][web-client] 用 `getWebClientRemoteAuthority` 从 `X-Original-Host` → `X-Forwarded-Host` → `Host` 取公开身份写入 `remoteAuthority`,渲染 `workbench.html`;之后走 PR #14 的分块缓存启动,静态资源与 manifest 同样逐个经过 `forward_auth`。
+22. WebSocket 升级无 cookie 时 `/auth/verify` 返回 401 而不是 303,浏览器不会被重定向,扩展宿主连接直接失败。
 
-#### 阶段 4 · 退出
+#### 场景三:退出
 
 ```mermaid
 sequenceDiagram
@@ -265,12 +335,12 @@ sequenceDiagram
     AuthSrv-->>Browser: 303 /auth/login,附过期 cookie
 ```
 
-19. `GET /auth/logout` 需要有效会话,否则 303 到登录页;有会话时渲染确认页并显示用户名。
-20. `POST /auth/logout` 经 `invokeBetterAuth POST /sign-out` 删除当前会话,303 到 `/auth/login` 并附过期 cookie;其他浏览器的会话不受影响。
+23. `GET /auth/logout` 需要有效会话,否则 303 到登录页;有会话时渲染确认页并显示用户名。
+24. `POST /auth/logout` 经 `invokeBetterAuth POST /sign-out` 删除当前会话,303 到 `/auth/login` 并附过期 cookie;其他浏览器的会话不受影响。
 
 ### 6.3 失败分支
 
-每一步的失败出口见第 9 节的表:manifest 与 secret 损坏在阶段 0 失败关闭;并发注册在阶段 2 由唯一约束裁决;凭据错误、跨源、超限、限速在阶段 2 与登录时以 401 / 403 / 413 / 429 返回并重渲染页面;会话缺失在阶段 3 按导航与否分别 303 与 401。
+每一步的失败出口见第 9 节的表:manifest 与 secret 损坏在部署启动时失败关闭;并发注册由唯一约束裁决;凭据错误、跨源、超限、限速在注册与登录时以 401 / 403 / 413 / 429 返回并重渲染页面;会话缺失时按导航与否分别 303 与 401。
 
 所有注册请求都为用户写入同一个不可伪造的 `instanceOwner` 值,该字段在数据库中具有唯一约束。因此并发首次注册也只能提交一个管理员;胜出的请求建立账号和会话,其他请求看到注册已关闭。账号一旦存在,`/auth/register` 只会转向登录流程。数据库、secret 或 schema 无法安全读取时启动失败关闭,不会清空状态后重新开放注册。
 

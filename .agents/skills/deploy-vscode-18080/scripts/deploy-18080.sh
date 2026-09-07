@@ -171,6 +171,22 @@ is_backend_socket_listening() {
 	ss -H -xl | awk '$1 == "u_str" && $2 == "LISTEN" { print $5 }' | grep -Fxq "$SERVICE_BACKEND_SOCKET"
 }
 
+path_identity() {
+	stat --dereference --format='%d:%i' -- "$1" 2>/dev/null
+}
+
+remove_path_if_identity_matches() {
+	local expected_identity="$2"
+	local path="$1"
+	local current_identity
+
+	[[ -n "$expected_identity" ]] || return 0
+	current_identity="$(path_identity "$path" || true)"
+	if [[ "$current_identity" == "$expected_identity" ]]; then
+		rm -f -- "$path"
+	fi
+}
+
 listener_addresses() {
 	ss -H -ltn "sport = :$SERVICE_PORT" 2>/dev/null | awk '{ print $4 }'
 }
@@ -349,6 +365,7 @@ copy_runtime_tree() {
 	local target_path="$2"
 	local previous_path="${3:-}"
 	local resolved_previous_path=
+	local resolved_releases_root=
 	local -a rsync_arguments=(--archive)
 
 	# Reuse immutable files from the active release when possible. The first migration from a
@@ -357,10 +374,10 @@ copy_runtime_tree() {
 	if [[ -n "$previous_path" && -d "$previous_path" && ! -L "$previous_path" ]]; then
 		resolved_previous_path="$(realpath -e -- "$previous_path")"
 	fi
-	case "$resolved_previous_path" in
-	'' | "$SOURCE_ROOT" | "$SOURCE_ROOT"/*) ;;
-	*) rsync_arguments+=(--link-dest="$resolved_previous_path") ;;
-	esac
+	resolved_releases_root="$(realpath -e -- "$SERVICE_RELEASES_ROOT" 2>/dev/null || true)"
+	if [[ -n "$resolved_releases_root" && "$resolved_previous_path" == "$resolved_releases_root/"* ]]; then
+		rsync_arguments+=(--link-dest="$resolved_previous_path")
+	fi
 	mkdir -p -- "$target_path"
 	rsync "${rsync_arguments[@]}" "$source_path/" "$target_path/"
 }
@@ -433,9 +450,30 @@ is_recognized_service_session() {
 	[[ "$start_command" == *"$SCRIPT_PATH"*'--internal-run'* ]]
 }
 
+service_process_group() {
+	local pane_pid
+	local process_group
+
+	pane_pid="$(tmux display-message -p -t "$SERVICE_SESSION" '#{pane_pid}')"
+	[[ "$pane_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+	process_group="$(ps -o pgid= -p "$pane_pid" | tr -d '[:space:]')"
+	[[ "$process_group" == "$pane_pid" ]] || return 1
+	printf '%s\n' "$process_group"
+}
+
+is_process_group_alive() {
+	kill -0 -- "-$1" 2>/dev/null
+}
+
+force_stop_process_group() {
+	kill -KILL -- "-$1" 2>/dev/null || true
+}
+
 stop_service() {
 	local deadline=$((SECONDS + 10))
+	local force_deadline
 	local running_runtime_root
+	local running_process_group
 
 	if ! tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
 		is_port_listening && fail "port $SERVICE_PORT is owned by an unrecognized process"
@@ -446,11 +484,21 @@ stop_service() {
 	is_recognized_service_session || fail "tmux session $SERVICE_SESSION is not owned by this deployment entry point"
 	running_runtime_root="$(service_runtime_root)"
 	validate_runtime_root "$running_runtime_root" || fail "tmux session $SERVICE_SESSION uses an incomplete runtime: $running_runtime_root"
+	running_process_group="$(service_process_group)" || fail "tmux session $SERVICE_SESSION has an invalid service process group"
 
 	printf 'Stopping existing Vibe VS Code service on port %s...\n' "$SERVICE_PORT"
 	tmux kill-session -t "$SERVICE_SESSION"
-	while is_port_listening || is_backend_socket_listening; do
-		(( SECONDS < deadline )) || fail "service endpoint remained active after stopping tmux session: $SERVICE_PORT"
+	while is_port_listening || is_backend_socket_listening || is_process_group_alive "$running_process_group"; do
+		if (( SECONDS >= deadline )); then
+			printf 'Forcing lingering Vibe VS Code service process group %s to stop.\n' "$running_process_group" >&2
+			force_stop_process_group "$running_process_group"
+			break
+		fi
+		sleep 0.1
+	done
+	force_deadline=$((SECONDS + 5))
+	while is_port_listening || is_backend_socket_listening || is_process_group_alive "$running_process_group"; do
+		(( SECONDS < force_deadline )) || fail "service endpoint remained active after stopping tmux session: $SERVICE_PORT"
 		sleep 0.1
 	done
 	rm -f -- "$SERVICE_BACKEND_SOCKET"
@@ -477,6 +525,8 @@ run_gateway_stack() {
 	local workspace_path="$2"
 	local runtime_node="$runtime_root/node"
 	local backend_pid=
+	local backend_socket_identity=
+	local backend_socket_deadline
 	local exited_component
 	local gateway_pid=
 	local pid
@@ -489,7 +539,7 @@ run_gateway_stack() {
 		for pid in "$gateway_pid" "$backend_pid"; do
 			[[ -n "$pid" ]] && wait "$pid" 2>/dev/null || true
 		done
-		rm -f -- "$SERVICE_BACKEND_SOCKET"
+		remove_path_if_identity_matches "$SERVICE_BACKEND_SOCKET" "$backend_socket_identity"
 	}
 
 	mkdir -p -- "$SERVICE_STATE_ROOT/server" "$SERVICE_SOCKET_ROOT" "$(dirname -- "$SERVICE_LOG")"
@@ -513,6 +563,20 @@ run_gateway_stack() {
 		--disable-experiments \
 		--accept-server-license-terms &
 	backend_pid=$!
+	backend_socket_deadline=$((SECONDS + 10))
+	while (( SECONDS < backend_socket_deadline )); do
+		if [[ -S "$SERVICE_BACKEND_SOCKET" ]]; then
+			backend_socket_identity="$(path_identity "$SERVICE_BACKEND_SOCKET" || true)"
+			[[ -n "$backend_socket_identity" ]] && break
+		fi
+		kill -0 "$backend_pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	if [[ -z "$backend_socket_identity" ]]; then
+		log "VS Code backend did not create its private socket; stopping the service stack."
+		cleanup_stack
+		return 1
+	fi
 
 	env \
 		VIBE_VSCODE_PUBLIC_PORT="$SERVICE_PORT" \
@@ -741,7 +805,7 @@ activate_candidate_runtime() {
 
 require_common_commands() {
 	local command
-	local -a commands=(awk basename chmod curl dirname env find flock grep ln mkdir mv readlink realpath rm sleep ss tmux tr)
+	local -a commands=(awk basename chmod curl dirname env find flock grep ln mkdir mv ps readlink realpath rm sleep ss stat tmux tr)
 
 	for command in "${commands[@]}"; do
 		require_command "$command"

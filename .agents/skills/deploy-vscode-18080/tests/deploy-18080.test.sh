@@ -109,14 +109,30 @@ assert_equal 'require-update ensure-caddy require-source prepare-active:/test/wo
 
 temporary_root="$(mktemp -d)"
 holder_pid=
+runtime_copy_previous=
 cleanup() {
 	touch "$temporary_root/release" 2>/dev/null || true
 	if [[ -n "$holder_pid" ]]; then
 		wait "$holder_pid" 2>/dev/null || true
 	fi
+	if [[ -n "$runtime_copy_previous" ]]; then
+		rm -rf -- "$runtime_copy_previous"
+	fi
 	rm -rf -- "$temporary_root"
 }
 trap cleanup EXIT
+
+owned_path="$temporary_root/owned-socket-path"
+replacement_path="$temporary_root/replacement-socket-path"
+touch "$owned_path" "$replacement_path"
+owned_identity="$(path_identity "$owned_path")"
+mv -f -- "$replacement_path" "$owned_path"
+replacement_identity="$(path_identity "$owned_path")"
+[[ "$owned_identity" != "$replacement_identity" ]] || fail_test 'replacement path unexpectedly retained the previous identity'
+remove_path_if_identity_matches "$owned_path" "$owned_identity"
+[[ -e "$owned_path" ]] || fail_test 'delayed cleanup removed a replacement path owned by a newer service generation'
+remove_path_if_identity_matches "$owned_path" "$replacement_identity"
+[[ ! -e "$owned_path" ]] || fail_test 'cleanup did not remove the path owned by its service generation'
 
 if grep -Eq -- 'run_legacy_server|--tls-(key|cert)-path' "$DEPLOY_SCRIPT"; then
 	fail_test 'deployment script still contains a direct-TLS server path'
@@ -147,6 +163,17 @@ mkdir -p "$runtime_links_root/lib" "$external_links_root"
 touch "$runtime_links_root/lib/internal" "$external_links_root/external"
 ln -s lib/internal "$runtime_links_root/internal-link"
 validate_runtime_links "$runtime_links_root"
+
+runtime_copy_source="$temporary_root/runtime-copy-source"
+runtime_copy_target="$temporary_root/runtime-copy-target"
+runtime_copy_previous="$SERVICE_RELEASES_ROOT/test-$RANDOM-$$"
+mkdir -p "$runtime_copy_source" "$runtime_copy_previous"
+touch "$runtime_copy_source/unchanged" "$runtime_copy_previous/unchanged"
+rsync() { printf '%s\n' "$*" > "$temporary_root/runtime-copy.args"; }
+copy_runtime_tree "$runtime_copy_source" "$runtime_copy_target" "$runtime_copy_previous"
+grep -Fq -- "--link-dest=$runtime_copy_previous" "$temporary_root/runtime-copy.args" || fail_test 'immutable release dependency tree was not selected for hard-link reuse'
+rm -rf -- "$runtime_copy_previous"
+unset -f rsync
 ln -s "$external_links_root/external" "$runtime_links_root/external-link"
 if validate_runtime_links "$runtime_links_root" >/dev/null 2>&1; then
 	fail_test 'runtime accepted a symbolic link outside its immutable release'
@@ -265,6 +292,41 @@ assert_equal 1 "$(grep -c '^' "$temporary_root/actions")"
 touch "$temporary_root/release"
 wait "$holder_pid"
 holder_pid=
+
+graceful_shutdown_calls="$temporary_root/graceful-shutdown.calls"
+(
+	trap - EXIT
+	process_group_alive=true
+	tmux() {
+		case "$1" in
+		has-session)
+			return 0
+			;;
+		display-message)
+			printf 'exec %s --internal-run /test/runtime /test/workspace.code-workspace\n' "$SCRIPT_PATH"
+			;;
+		kill-session)
+			printf 'kill-session\n' >> "$graceful_shutdown_calls"
+			;;
+		esac
+	}
+	service_runtime_root() { printf '/test/runtime\n'; }
+	validate_runtime_root() { :; }
+	service_process_group() { printf '4242\n'; }
+	is_port_listening() { return 1; }
+	is_backend_socket_listening() { return 1; }
+	is_process_group_alive() { [[ "$process_group_alive" == true ]]; }
+	force_stop_process_group() { fail_test 'graceful shutdown unexpectedly forced the service process group'; }
+	sleep() {
+		printf 'sleep:%s\n' "$1" >> "$graceful_shutdown_calls"
+		process_group_alive=false
+	}
+	rm() { printf 'remove-socket\n' >> "$graceful_shutdown_calls"; }
+	stop_service
+) >"$temporary_root/graceful-shutdown.log" 2>&1
+grep -Fxq 'kill-session' "$graceful_shutdown_calls" || fail_test 'recognized service session was not stopped'
+grep -Fxq 'sleep:0.1' "$graceful_shutdown_calls" || fail_test 'deployment did not wait for the old service process group cleanup to finish'
+grep -Fxq 'remove-socket' "$graceful_shutdown_calls" || fail_test 'backend socket cleanup did not run after the old process group exited'
 
 ownership_calls="$temporary_root/ownership.calls"
 set +e

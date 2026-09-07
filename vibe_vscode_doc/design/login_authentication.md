@@ -95,7 +95,7 @@ sequenceDiagram
 | Remote Server HTTP adapter([`vibeAuthenticationServer.ts`][auth-server]) | 全屏表单、`/auth/*` contract、请求大小与 `return_to` 边界 | Better Auth | 密码 hash 算法、会话存储实现 |
 | Caddy Gateway([`Caddyfile`][caddyfile]) | 每个公开的非认证请求必须先得到 `/auth/verify` 的 2xx;续租 cookie 必须返回浏览器 | Remote Server 私有 socket | 账号、密码与会话生命周期 |
 | VS Code Server([`webClientServer.ts`][web-client]) | 已获准连接的 Workbench 与远端能力;从已验证的公开 Origin 投影 `remoteAuthority` | 认证服务提供的固定公开身份 | 浏览器登录状态与登录 UI |
-| Workbench 账号入口([`vibeAuthentication.contribution.ts`][auth-contribution]) | 当前页面内的实例账号菜单和退出命令,仅投影已认证的 status | 同源 `/auth/api/status`、`MenuId.AccountsContext` | 凭据、会话撤销、GitHub / Microsoft 等认证提供者账号 |
+| Workbench 账号入口([`vibeAuthenticationAccount.ts`][auth-contribution]) | 当前页面内的实例账号菜单和退出命令,仅投影已认证的 status | 同源 `/auth/api/status`、`MenuId.AccountsContext` | 凭据、会话撤销、GitHub / Microsoft 等认证提供者账号 |
 | Deployment Entry Point([`deploy-18080.sh`][deploy]) | 两进程生命周期、私有 socket、健康门、不可变 release 与回滚 | 环境 state、TLS material、构建产物 | 账号内容与会话 token |
 
 Better Auth 和 VS Code 路由处于同一个 Remote Server 进程,共享同一个私有 Unix socket;Caddy 是唯一另一个常驻进程。认证数据库的打开、迁移和关闭属于 Remote Server 生命周期。部署入口只创建父目录并传入位置,不读取账号或会话内容。
@@ -111,7 +111,7 @@ Better Auth 和 VS Code 路由处于同一个 Remote Server 进程,共享同一�
 | **C. 接入 Remote Server 生命周期** | 鉴权路由要在原有"仅 GET、连接 token"检查之前处理;资源随服务器一起释放 | [`remoteExtensionHostAgentServer.ts`][agent-server]:`handleRequest` 先交给鉴权,创建失败时释放,禁止与连接 token 同时启用;[`webClientServer.ts`][web-client]:`remoteAuthority` 从配置的公开 Origin 投影 | 登录表单是 POST,原有分支会以 405 截断;`remoteAuthority` 与 cookie 的 Origin 必须是同一个公开身份 |
 | **D. 网关强制授权** | 除鉴权路由外的一切请求先过 `/auth/verify` | [`Caddyfile`][caddyfile]:`@authentication` 直通、其余 `forward_auth`、续期 cookie 回传与 HTTP-only 鉴权子请求 | 只有网关能在请求到达 VS Code 路由前统一拦截 HTTP 与 WebSocket;后端私有 socket 不需要自己判断 |
 | **E. 部署编排、健康门与回滚** | 两进程启动、鉴权状态目录、健康检查、不可变 release 与回滚 | [`deploy-18080.sh`][deploy] 及其[测试][deploy-tests]、[`SKILL.md`][skill-doc] | 状态目录权限、socket 归属、"未登录根路径必须 303"等门禁只能在部署入口验证 |
-| **F. Workbench 账号与退出入口** | 登录后可在 Accounts 菜单或命令面板进入退出确认页 | [`vibeAuthentication.contribution.ts`][auth-contribution]:`AfterRestored` 读取 status,贡献 `MenuId.AccountsContext` 子菜单和独立 `Action2` | 使用既有菜单贡献点,不改 `globalCompositeBar.ts`,不让 Workbench 服务端读取用户名,不接管内置账号退出 |
+| **F. Workbench 账号与退出入口** | 登录后可在 Accounts 菜单或命令面板进入退出确认页 | [`vibeAuthenticationAccount.ts`][auth-contribution]:读取 status,贡献账号子菜单和退出命令;[contribution 注册入口][auth-registration] 只指定 `AfterRestored` 启动时机 | 使用既有菜单贡献点,不改 `globalCompositeBar.ts`,不让 Workbench 服务端读取用户名,不接管内置账号退出 |
 
 ```mermaid
 flowchart LR
@@ -458,10 +458,11 @@ stateDiagram-v2
 
 ### F. Workbench 账号入口
 
+- [`vibeAuthenticationAccount.ts`][auth-contribution] 拥有 `VibeAuthenticationContribution` 类及页面内的菜单生命周期;[`.contribution.ts`][auth-registration] 只注册 `AfterRestored` 启动时机。测试只导入类所在模块,加载测试不会向全局 Workbench contribution registry 注册。
 - 仅 Web Workbench 导入此 contribution,在 `AfterRestored` 发一次同源、`no-store` 的 status 请求,不把用户名注入 `workbench.html`,也不保存会话副本。注册门槛是 `authenticated === true` 且有非空用户名。
 - `MenuId.AccountsContext` 的既有 `otherCommands` 路径显示 `<username> (vibe-vscode)` 子菜单;`Action2` 同时提供子菜单内的 `Sign Out` 和命令面板的 `vibe-vscode: Sign Out`。它只导航到已有确认页,不发退出 POST,不调用 `_signOutOfAccount` 或认证提供者服务。
 - 页面销毁会中止请求并撤销菜单与命令;异步响应返回后再次检查生命周期。404、未认证、无效响应与网络失败均安静退出,不阻断其他 Web 启动方式。
-- 英文文案通过 `localize` / `localize2` 登记到标准 Workbench NLS。上游语言包尚无此下游 contribution 的键,因此附带简中 `vibeAuthentication.nls.zh-cn.json` 默认文案;仅简中且缺少语言包译文时读取这份随 Web 构建打包的资源,失败保留英文入口。命令始终保留英文搜索别名,翻译请求同样受页面生命周期约束。
+- 菜单文案只使用标准 Workbench `localize` / `localize2`,并保留 `i18n.resources.json` 的模块登记与命令的英文搜索别名。不额外请求客户端翻译资源;简中语言包收录此 fork 的键之前,`Sign Out` 暂时显示英文。服务端登录、注册和确认页的双语文案不受影响,由第 7 节 B 维护。
 
 ## 8. HTTP contract
 
@@ -518,7 +519,7 @@ Caddy 将认证路由直接转发到同一个 Remote Server socket;其他路径�
 | 验证层 | 关键场景 |
 | --- | --- |
 | [认证域与 HTTP 回归][auth-tests] | 未注册时的导航与 WebSocket 门禁;注册、持久化、续期、退出;并发单管理员与预先关闭注册;`/verify` 免限速;固定 Origin 与伪造请求头、空 state 与 basePath 校验、双语错误映射、两种传输下的流式限长;状态损坏时失败关闭 |
-| [Workbench contribution 回归][contribution-tests] | Accounts 子菜单、命令面板与 base path 导航;原菜单保留;英 / 简中文案;404、会话过期、网络失败与销毁后的迟到响应 |
+| [Workbench contribution 回归][contribution-tests] | Accounts 子菜单、命令面板与 base path 导航;原菜单保留;标准 NLS title 与英文搜索别名;404、会话过期、网络失败与销毁后的迟到响应;纳入 Vibe CI 的完整 focused runGlob,确认套件实际执行,不以单目录运行替代组合验证 |
 | 隔离 Web Workbench 界面验证 | 已验证 Accounts → 实例账号 → Sign Out → 确认页 → 登录页;GET 确认页不撤销会话,确认 POST 后 status 为未登录;重新登录后测试 provider 账号仍在,退出该 provider 后实例 status 仍为已登录;使用一次性认证扩展、账号与状态,不操作真实 GitHub / Microsoft 会话 |
 | [Web Client 服务端回归][web-client-tests] | 固定公开身份不被伪造 Host/端口覆盖,原 token server 回退,以及缓存与启动路径 |
 | [部署 transaction 回归][deploy-tests] | latest / snapshot 模式、单写锁、配置校验、真实 CLI 参数传递、健康门调用顺序、代际 socket 分配、构建失败保留旧服务与健康失败回滚 |
@@ -529,7 +530,8 @@ Caddy 将认证路由直接转发到同一个 Remote Server socket;其他路径�
 [skill-doc]: ../../.agents/skills/deploy-vscode-18080/SKILL.md
 [auth]: ../../src/vs/server/node/vibeAuthentication.ts
 [auth-server]: ../../src/vs/server/node/vibeAuthenticationServer.ts
-[auth-contribution]: ../../src/vs/workbench/contrib/vibeAuthentication/browser/vibeAuthentication.contribution.ts
+[auth-contribution]: ../../src/vs/workbench/contrib/vibeAuthentication/browser/vibeAuthenticationAccount.ts
+[auth-registration]: ../../src/vs/workbench/contrib/vibeAuthentication/browser/vibeAuthentication.contribution.ts
 [contribution-tests]: ../../src/vs/workbench/contrib/vibeAuthentication/test/browser/vibeAuthentication.contribution.test.ts
 [agent-server]: ../../src/vs/server/node/remoteExtensionHostAgentServer.ts
 [web-client]: ../../src/vs/server/node/webClientServer.ts

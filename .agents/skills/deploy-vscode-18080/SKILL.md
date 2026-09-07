@@ -26,7 +26,11 @@ The script resolves the source root from its own repository location. Mutable st
 default to XDG state/config directories. An operator can override those locations through the
 existing `VIBE_VSCODE_SERVICE_STATE_ROOT`, `VIBE_VSCODE_SERVICE_LOG`,
 `VIBE_VSCODE_TLS_CERT_PATH`, and `VIBE_VSCODE_TLS_KEY_PATH` environment inputs without editing
-tracked files.
+tracked files. `VIBE_VSCODE_SERVER_BASE_PATH` selects an optional simple URL base path, and
+`VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS` selects a 60-second to 7-day session lifetime.
+
+The account, session, and request authorization contract is canonical in
+[Full-screen login and instance authentication](../../../vibe_vscode_doc/design/login_authentication.md).
 
 The script must remain the single automation entry for this skill. It:
 
@@ -40,8 +44,17 @@ The script must remain the single automation entry for this skill. It:
 - resolves and builds the source checkout relative to this skill, without invoking another project's control code;
 - keeps mutable state and TLS material outside the checkout at operator-supplied or XDG-standard locations;
 - terminates public HTTPS and WebSocket traffic in Caddy on `0.0.0.0:18080`, while the upstream VS Code Server uses its original HTTP implementation over a private Unix socket;
-- starts the development service without a connection token, waits for an anonymous HTTPS `200` response, verifies the public listener and private backend health, and confirms the tmux session is running from the expected candidate root before succeeding;
-- fails instead of killing an unrecognized process when the port or backend socket is not owned by the canonical tmux session.
+- starts exactly two candidate processes: Caddy and the VS Code Remote Server, with Better Auth initialized inside the Remote Server and persistent authentication state outside immutable releases;
+- lets Caddy expose only the Remote Server's authentication routes without `forward_auth`, and sends all other HTTP and WebSocket traffic through the same Remote Server's `/auth/verify` contract;
+- returns any sliding-session `Set-Cookie` emitted by `/auth/verify` to the browser before proxying the authorized request;
+- starts VS Code without its connection token only behind the mandatory Caddy authorization boundary and a private Unix socket;
+- preserves an outer proxy's browser-visible `X-Forwarded-Host` as `X-Original-Host` before Caddy normalizes forwarded headers, so authentication and Workbench `remoteAuthority` use one public identity;
+- requires the public authentication status to return `200`, an unauthenticated Workbench request to return `303`, the Remote Server's private authentication health check to return `204`, the private Workbench endpoint to return `200`, and simulated proxy authority probes to pass before succeeding;
+- fails instead of killing an unrecognized process when the port, authentication socket, or backend socket is not owned by the canonical tmux session.
+
+The entry point may start a legacy authentication sidecar only while restoring the exact verified
+release that predates embedded Better Auth after a failed first migration. Such a release is never
+promoted as the selected snapshot; every newly built candidate must carry the embedded-auth marker.
 
 A running pre-launcher or source-linked release may remain only the verified rollback anchor after
 passing both health boundaries. New candidates and selected snapshot restarts must satisfy the

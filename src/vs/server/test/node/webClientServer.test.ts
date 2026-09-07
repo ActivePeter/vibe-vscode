@@ -20,7 +20,7 @@ import { webClientCacheDirectory } from '../../../platform/remote/common/webClie
 import { IWebClientStartupConfiguration, IWebClientStartupMessages } from '../../../platform/remote/common/webClientStartup.js';
 import { NoneServerConnectionToken } from '../../node/serverConnectionToken.js';
 import { IServerEnvironmentService } from '../../node/serverEnvironmentService.js';
-import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientPreferredEncodings, getWebClientResourceScheme, getWebClientStartupLocaleCandidates, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRoute, parseWebClientStartupTemplate, serveFile, WebClientServer, WebClientStartupMessages } from '../../node/webClientServer.js';
+import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientPreferredEncodings, getWebClientRemoteAuthority, getWebClientResourceScheme, getWebClientStartupLocaleCandidates, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRoute, parseWebClientStartupTemplate, serveFile, WebClientServer, WebClientStartupMessages } from '../../node/webClientServer.js';
 
 suite('WebClientServer', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -138,6 +138,20 @@ suite('WebClientServer', () => {
 			forwardedHttps: 'https',
 			forwardedChain: 'https',
 			invalid: 'http',
+		});
+	});
+
+	test('uses one preserved browser-visible remote authority across proxy rewrites', () => {
+		assert.deepStrictEqual({
+			preserved: getWebClientRemoteAuthority('public.example', 'internal-proxy.invalid', '127.0.0.1:18080'),
+			forwarded: getWebClientRemoteAuthority(undefined, 'public.example, internal-proxy.invalid', '127.0.0.1:18080'),
+			direct: getWebClientRemoteAuthority(undefined, undefined, 'localhost:18080'),
+			missing: getWebClientRemoteAuthority(undefined, undefined, undefined),
+		}, {
+			preserved: 'public.example',
+			forwarded: 'public.example',
+			direct: 'localhost:18080',
+			missing: undefined,
 		});
 	});
 

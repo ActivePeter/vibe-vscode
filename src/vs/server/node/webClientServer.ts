@@ -310,6 +310,17 @@ export function getWebClientResourceScheme(forwardedProto: string | undefined): 
 	return publicScheme === Schemas.https ? Schemas.https : Schemas.http;
 }
 
+/** Returns the browser-visible authority preserved by the nearest trusted reverse proxy. */
+export function getWebClientRemoteAuthority(originalHost: string | undefined, forwardedHost: string | undefined, host: string | undefined): string | undefined {
+	for (const candidate of [originalHost, forwardedHost, host]) {
+		const authority = candidate?.split(',', 1)[0].trim();
+		if (authority) {
+			return authority;
+		}
+	}
+	return undefined;
+}
+
 async function readBuiltinExtensionPackageNLS(extensionPath: string, locale: string): Promise<ITranslations> {
 	for (const candidate of getBuiltinExtensionPackageNLSCandidates(locale)) {
 		try {
@@ -533,7 +544,7 @@ export class WebClientServer {
 		let remoteAuthority = (
 			useTestResolver
 				? 'test+test'
-				: (getFirstHeader('x-original-host') || getFirstHeader('x-forwarded-host') || req.headers.host)
+				: getWebClientRemoteAuthority(getFirstHeader('x-original-host'), getFirstHeader('x-forwarded-host'), req.headers.host)
 		);
 		if (!remoteAuthority) {
 			return serveError(req, res, 400, `Bad request.`);

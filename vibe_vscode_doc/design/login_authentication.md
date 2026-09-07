@@ -79,7 +79,55 @@ flowchart LR
 
 ## 6. 全流程时序:从部署到退出
 
-下图把所有参与方按时间串起来。八个参与方对应第 4 节的角色:部署入口、Caddy、Remote Server 的请求分发、鉴权 HTTP adapter、Better Auth 与其配置、SQLite、Workbench 服务端、浏览器。每个阶段后面的文字说明每一步由哪个文件的哪个函数完成、传递了什么。
+本节分两层。6.1 是粗粒度总览,把 Remote Server 内部的鉴权与 Workbench 合并成一个参与方,只看请求在部署脚本、浏览器、Caddy、Remote Server、SQLite 之间怎么流转。6.2 按阶段展开,把 Remote Server 拆成请求分发、鉴权 adapter、Better Auth、Workbench 服务端四个参与方,每张图后列出由哪个文件的哪个函数完成、传递了什么。
+
+### 6.1 粗粒度总览
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Deploy as deploy-18080.sh
+    participant Browser as 浏览器
+    participant Caddy as Caddy
+    participant Remote as Remote Server<br/>鉴权 + Workbench
+    participant DB as SQLite
+
+    Note over Deploy,DB: 阶段 0 · 部署启动与健康门
+    Deploy->>Remote: 启动,带鉴权状态目录与会话 TTL
+    Remote->>DB: 初始化 secret、数据库、迁移
+    Deploy->>Caddy: 启动网关
+    Deploy->>Caddy: 私有与公开健康探针通过后提升 last-known-good
+
+    Note over Browser,DB: 阶段 1 · 首次访问,尚无管理员
+    Browser->>Caddy: GET /(无 cookie)
+    Caddy->>Remote: forward_auth /auth/verify
+    Remote->>DB: 无会话,且用户表为空
+    Remote-->>Browser: 303 /auth/register?return_to=…
+
+    Note over Browser,DB: 阶段 2 · 创建唯一管理员
+    Browser->>Caddy: GET 与 POST /auth/register
+    Caddy->>Remote: /auth/* 直通
+    Remote->>DB: 写入唯一管理员与会话
+    Remote-->>Browser: 303 return_to,附 Set-Cookie
+
+    Note over Browser,DB: 阶段 3 · 已登录访问,每个 HTTP 与 WebSocket 请求
+    Browser->>Caddy: GET / 或 WebSocket 升级(带 cookie)
+    Caddy->>Remote: forward_auth /auth/verify
+    Remote->>DB: 校验会话,按需续期
+    Remote-->>Caddy: 204,可能附续期 Set-Cookie
+    Caddy->>Remote: reverse_proxy 原请求
+    Remote-->>Browser: Workbench 页面或扩展宿主连接
+
+    Note over Browser,DB: 阶段 4 · 退出
+    Browser->>Caddy: POST /auth/logout
+    Caddy->>Remote: /auth/* 直通
+    Remote->>DB: 删除当前会话
+    Remote-->>Browser: 303 /auth/login,附过期 cookie
+```
+
+### 6.2 按阶段展开
+
+#### 阶段 0 · 部署启动与健康门
 
 ```mermaid
 sequenceDiagram
@@ -87,13 +135,9 @@ sequenceDiagram
     participant Deploy as deploy-18080.sh
     participant Caddy as Caddy
     participant Remote as Remote Server<br/>remoteExtensionHostAgentServer
-    participant AuthSrv as vibeAuthenticationServer
     participant Auth as Better Auth<br/>vibeAuthentication
     participant DB as SQLite
-    participant Web as webClientServer<br/>Workbench
-    participant Browser as 浏览器
 
-    Note over Deploy,Web: 阶段 0 · 部署启动与健康门
     Deploy->>Deploy: 校验 base path 与 TTL,创建 state/auth(0700)与 socket 目录,umask 0077
     Deploy->>Remote: 启动 bin/vibe-vscode-server,环境 VIBE_VSCODE_AUTH_STATE_DIR 与 TTL,参数 --without-connection-token --socket-path
     Remote->>Auth: createVibeAuthenticationServerFromEnvironment(basePath)
@@ -104,6 +148,25 @@ sequenceDiagram
     Deploy->>Remote: 私有 socket GET /auth/health 期望 204,GET / 期望 200
     Deploy->>Caddy: 公开 GET /auth/api/status 期望 200,GET /(无 cookie)期望 303,authority 探针
     Deploy->>Deploy: 健康门全部通过后原子提升 last-known-good
+```
+
+1. [`deploy-18080.sh`][deploy] 的 `validate_authentication_configuration` 校验 `VIBE_VSCODE_SERVER_BASE_PATH` 与 `VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS`;`run_gateway_stack` 创建 `<state>/auth`(`0700`)与 socket 目录,设置 `umask 0077`,按代际生成 socket 路径。
+2. 以 `bin/vibe-vscode-server` 启动 Remote Server,环境里带 `VIBE_VSCODE_AUTH_STATE_DIR` 与 TTL,参数带 `--without-connection-token` 与 `--socket-path`。
+3. [`remoteExtensionHostAgentServer.ts`][agent-server] 的 `createServer` 调用 `createVibeAuthenticationServerFromEnvironment(serverBasePath)`。[`vibeAuthentication.ts`][auth] 的 `VibeAuthenticationService.create` 读取或独占创建 secret、打开数据库、跑迁移,再由 [`vibeAuthenticationServer.ts`][auth-server] 包装成 HTTP adapter。若 `connectionToken.type` 不是 `None`,立即 `dispose` 并抛错。
+4. 部署脚本启动 Caddy,注入 `VIBE_VSCODE_AUTH_ADDRESS`、`VIBE_VSCODE_AUTH_PATH`、`VIBE_VSCODE_BACKEND_ADDRESS`;[`Caddyfile`][caddyfile] 据此生成 `@authentication` 直通与 `forward_auth` 两条路径。
+5. `is_runtime_healthy` 依次探测:私有 socket `/auth/health` 204、私有 Workbench 200、公开 `/auth/api/status` 200、公开根路径无 cookie 303,以及两项 authority 探针。全部通过后 `promote_runtime` 原子切换 `last-known-good`。
+
+#### 阶段 1 与 2 · 首次访问并创建唯一管理员
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Browser as 浏览器
+    participant Caddy as Caddy
+    participant Remote as Remote Server<br/>remoteExtensionHostAgentServer
+    participant AuthSrv as vibeAuthenticationServer
+    participant Auth as Better Auth<br/>vibeAuthentication
+    participant DB as SQLite
 
     Note over Browser,DB: 阶段 1 · 首次访问,尚无管理员
     Browser->>Caddy: GET /?folder=…(无 cookie)
@@ -129,8 +192,32 @@ sequenceDiagram
     Auth->>DB: INSERT user(instanceOwner 唯一约束)与 session
     Auth-->>AuthSrv: 200 与 Set-Cookie __Secure-vibe.session_token
     AuthSrv-->>Browser: 303 到 return_to,附 Set-Cookie
+```
 
-    Note over Browser,Web: 阶段 3 · 已登录访问 Workbench,每个 HTTP 与 WebSocket 请求都走一遍
+6. 浏览器请求 Workbench 根路径。Caddy 对非 `/auth/*` 路径先发 `forward_auth` 子请求 `GET /auth/verify`,携带 `X-Forwarded-Method`、`X-Forwarded-Uri`、`X-Original-Host`。
+7. Remote Server 的 `handleRequest` 第一步把请求交给 `VibeAuthenticationServer.handle`,路径以 `/auth` 开头即由 `dispatch` 处理,原有的"仅 GET"与连接 token 分支不会介入。
+8. `handleVerify` 调 `readSession`,后者经 `invokeBetterAuth` 构造一个指向 `${publicOrigin}${apiPath}/get-session` 的 `Request`,注入 `host`、`x-vibe-public-origin`、`x-vibe-client-ip`,交给 Better Auth 的 `handler`。无会话返回 `{ authenticated: false }`。
+9. `isNavigationRequest` 判定这是页面导航(`Sec-Fetch-Mode: navigate` 或 `Accept: text/html`,非 WebSocket),`registrationOpen` 查用户表为空,于是 303 到 `/auth/register`,`return_to` 经 `sanitizeReturnTo` 收敛到 base path 内。
+10. 浏览器请求 `/auth/register`,Caddy 的 `@authentication` 直接反代;`handleRegisterPage` 用 `resolveLocale` 选语言,`renderPage` 生成带 CSP nonce 的自包含页面。
+11. 表单 POST 到 `/auth/register`。`handleRegister` 用 `readForm` 读取(`application/x-www-form-urlencoded`,上限 16 KiB,超限排空后 413),`getSingleFormValue` 只接受单值,先比对两次密码,再查 `registrationOpen`。
+12. `invokeBetterAuth POST /sign-up/email`,email 固定为 `administrator@vibe.invalid`,`name` 与 `username` 取表单值。Better Auth 依 `trustedOrigins` 回调校验 `Origin`,按 `/sign-up/email` 每分钟 5 次限速,哈希密码,插入用户与会话。`instanceOwner` 的唯一约束保证并发注册只有一条能提交。
+13. `copyBetterAuthHeaders` 把 `Set-Cookie` 与 `Retry-After` 原样带回,成功则 303 到 `return_to`;失败时 `readBetterAuthError` 取错误码映射为本地化文案,重渲染注册页。
+
+#### 阶段 3 · 已登录访问 Workbench
+
+每个非 `/auth/*` 的 HTTP 请求、静态资源、manifest 分块与 WebSocket 升级都走一遍这张图。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Browser as 浏览器
+    participant Caddy as Caddy
+    participant Remote as Remote Server<br/>remoteExtensionHostAgentServer
+    participant AuthSrv as vibeAuthenticationServer
+    participant Auth as Better Auth<br/>vibeAuthentication
+    participant DB as SQLite
+    participant Web as webClientServer<br/>Workbench
+
     Browser->>Caddy: GET /(带 cookie)
     Caddy->>Caddy: 删除客户端可能带来的 X-Vibe-Auth-Set-Cookie
     Caddy->>Remote: forward_auth GET /auth/verify
@@ -147,38 +234,7 @@ sequenceDiagram
     Browser->>Caddy: WebSocket 升级(带 cookie)
     Caddy->>Remote: forward_auth /auth/verify,无 cookie 时 401 且不跳转
     Caddy->>Remote: 代理升级到扩展宿主
-
-    Note over Browser,DB: 阶段 4 · 退出
-    Browser->>Caddy: GET /auth/logout 得到确认页,然后 POST /auth/logout
-    Caddy->>Remote: @authentication 直通
-    Remote->>AuthSrv: handleLogout,readForm,invokeBetterAuth POST /sign-out
-    Auth->>DB: 删除当前会话
-    AuthSrv-->>Browser: 303 /auth/login,附过期 cookie
 ```
-
-### 阶段 0 · 部署启动与健康门
-
-1. [`deploy-18080.sh`][deploy] 的 `validate_authentication_configuration` 校验 `VIBE_VSCODE_SERVER_BASE_PATH` 与 `VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS`;`run_gateway_stack` 创建 `<state>/auth`(`0700`)与 socket 目录,设置 `umask 0077`,按代际生成 socket 路径。
-2. 以 `bin/vibe-vscode-server` 启动 Remote Server,环境里带 `VIBE_VSCODE_AUTH_STATE_DIR` 与 TTL,参数带 `--without-connection-token` 与 `--socket-path`。
-3. [`remoteExtensionHostAgentServer.ts`][agent-server] 的 `createServer` 调用 `createVibeAuthenticationServerFromEnvironment(serverBasePath)`。[`vibeAuthentication.ts`][auth] 的 `VibeAuthenticationService.create` 读取或独占创建 secret、打开数据库、跑迁移,再由 [`vibeAuthenticationServer.ts`][auth-server] 包装成 HTTP adapter。若 `connectionToken.type` 不是 `None`,立即 `dispose` 并抛错。
-4. 部署脚本启动 Caddy,注入 `VIBE_VSCODE_AUTH_ADDRESS`、`VIBE_VSCODE_AUTH_PATH`、`VIBE_VSCODE_BACKEND_ADDRESS`;[`Caddyfile`][caddyfile] 据此生成 `@authentication` 直通与 `forward_auth` 两条路径。
-5. `is_runtime_healthy` 依次探测:私有 socket `/auth/health` 204、私有 Workbench 200、公开 `/auth/api/status` 200、公开根路径无 cookie 303,以及两项 authority 探针。全部通过后 `promote_runtime` 原子切换 `last-known-good`。
-
-### 阶段 1 · 首次访问,尚无管理员
-
-6. 浏览器请求 Workbench 根路径。Caddy 对非 `/auth/*` 路径先发 `forward_auth` 子请求 `GET /auth/verify`,携带 `X-Forwarded-Method`、`X-Forwarded-Uri`、`X-Original-Host`。
-7. Remote Server 的 `handleRequest` 第一步把请求交给 `VibeAuthenticationServer.handle`,路径以 `/auth` 开头即由 `dispatch` 处理,原有的"仅 GET"与连接 token 分支不会介入。
-8. `handleVerify` 调 `readSession`,后者经 `invokeBetterAuth` 构造一个指向 `${publicOrigin}${apiPath}/get-session` 的 `Request`,注入 `host`、`x-vibe-public-origin`、`x-vibe-client-ip`,交给 Better Auth 的 `handler`。无会话返回 `{ authenticated: false }`。
-9. `isNavigationRequest` 判定这是页面导航(`Sec-Fetch-Mode: navigate` 或 `Accept: text/html`,非 WebSocket),`registrationOpen` 查用户表为空,于是 303 到 `/auth/register`,`return_to` 经 `sanitizeReturnTo` 收敛到 base path 内。
-10. 浏览器请求 `/auth/register`,Caddy 的 `@authentication` 直接反代;`handleRegisterPage` 用 `resolveLocale` 选语言,`renderPage` 生成带 CSP nonce 的自包含页面。
-
-### 阶段 2 · 创建唯一管理员
-
-11. 表单 POST 到 `/auth/register`。`handleRegister` 用 `readForm` 读取(`application/x-www-form-urlencoded`,上限 16 KiB,超限排空后 413),`getSingleFormValue` 只接受单值,先比对两次密码,再查 `registrationOpen`。
-12. `invokeBetterAuth POST /sign-up/email`,email 固定为 `administrator@vibe.invalid`,`name` 与 `username` 取表单值。Better Auth 依 `trustedOrigins` 回调校验 `Origin`,按 `/sign-up/email` 每分钟 5 次限速,哈希密码,插入用户与会话。`instanceOwner` 的唯一约束保证并发注册只有一条能提交。
-13. `copyBetterAuthHeaders` 把 `Set-Cookie` 与 `Retry-After` 原样带回,成功则 303 到 `return_to`;失败时 `readBetterAuthError` 取错误码映射为本地化文案,重渲染注册页。
-
-### 阶段 3 · 已登录访问 Workbench
 
 14. 每个非 `/auth/*` 请求(含 WebSocket 升级)都重复第 6 到 8 步。Caddy 先删除客户端可能伪造的 `X-Vibe-Auth-Set-Cookie`。
 15. Better Auth 的 `get-session` 在距上次续期超过 `updateAge` 时刷新过期时间并返回新的 `Set-Cookie`;`handleVerify` 返回 204 并附上它。
@@ -186,12 +242,33 @@ sequenceDiagram
 17. Remote Server 进入原有路由。[`webClientServer.ts`][web-client] 用 `getWebClientRemoteAuthority` 从 `X-Original-Host` → `X-Forwarded-Host` → `Host` 取公开身份写入 `remoteAuthority`,渲染 `workbench.html`;之后走 PR #14 的分块缓存启动,静态资源与 manifest 同样逐个经过 `forward_auth`。
 18. WebSocket 升级无 cookie 时 `/auth/verify` 返回 401 而不是 303,浏览器不会被重定向,扩展宿主连接直接失败。
 
-### 阶段 4 · 退出
+#### 阶段 4 · 退出
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Browser as 浏览器
+    participant Caddy as Caddy
+    participant Remote as Remote Server<br/>remoteExtensionHostAgentServer
+    participant AuthSrv as vibeAuthenticationServer
+    participant Auth as Better Auth<br/>vibeAuthentication
+    participant DB as SQLite
+
+    Browser->>Caddy: GET /auth/logout
+    Caddy->>Remote: @authentication 直通
+    Remote->>AuthSrv: handleLogoutPage,readSession,无会话则 303 /auth/login
+    AuthSrv-->>Browser: 200 确认页,显示用户名
+    Browser->>Caddy: POST /auth/logout
+    Caddy->>Remote: @authentication 直通
+    Remote->>AuthSrv: handleLogout,readForm,invokeBetterAuth POST /sign-out
+    Auth->>DB: 删除当前会话
+    AuthSrv-->>Browser: 303 /auth/login,附过期 cookie
+```
 
 19. `GET /auth/logout` 需要有效会话,否则 303 到登录页;有会话时渲染确认页并显示用户名。
 20. `POST /auth/logout` 经 `invokeBetterAuth POST /sign-out` 删除当前会话,303 到 `/auth/login` 并附过期 cookie;其他浏览器的会话不受影响。
 
-### 失败分支
+### 6.3 失败分支
 
 每一步的失败出口见第 9 节的表:manifest 与 secret 损坏在阶段 0 失败关闭;并发注册在阶段 2 由唯一约束裁决;凭据错误、跨源、超限、限速在阶段 2 与登录时以 401 / 403 / 413 / 429 返回并重渲染页面;会话缺失在阶段 3 按导航与否分别 303 与 401。
 

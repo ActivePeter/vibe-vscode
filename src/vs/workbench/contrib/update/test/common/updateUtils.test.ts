@@ -15,7 +15,8 @@ suite('UpdateUtils', () => {
 	let clock: sinon.SinonFakeTimers;
 
 	setup(() => {
-		clock = sinon.useFakeTimers();
+		// These synchronous helpers need a fixed Date, not ownership of native timers.
+		clock = sinon.useFakeTimers({ toFake: ['Date'] });
 	});
 
 	teardown(() => {

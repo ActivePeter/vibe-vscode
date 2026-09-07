@@ -65,7 +65,6 @@ function runEsbuildBundle(outDir: string, minify: boolean, nls: boolean, sourceM
 export const vscodeWebResourceIncludes = [
 	'out-build/vs/code/browser/workbench/workbench-startup.html',
 	'out-build/vs/platform/remote/common/workbench-startup.nls.*.json',
-	'out-build/vs/workbench/contrib/vibeAuthentication/browser/vibeAuthentication.nls.*.json',
 
 	// NLS
 	'out-build/nls.messages.js',

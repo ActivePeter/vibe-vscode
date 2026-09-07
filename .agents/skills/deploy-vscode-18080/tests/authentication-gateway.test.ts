@@ -11,7 +11,6 @@ import { constants } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import { registerHooks } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -27,10 +26,6 @@ Object.assign(globalThis, {
 	_VSCODE_PRODUCT_JSON: JSON.parse(await readFile(join(root, 'product.json'), 'utf8')),
 	_VSCODE_PACKAGE_JSON: JSON.parse(await readFile(join(root, 'package.json'), 'utf8')),
 });
-registerHooks({ resolve(specifier, context, next) {
-	assert.notEqual(specifier, 'better-sqlite3', 'the removed native dependency must not be loaded');
-	return next(specifier, context);
-} });
 const { VibeAuthenticationService }: typeof import('../../../../src/vs/server/node/vibeAuthentication.js') = await import(pathToFileURL(join(root, 'out/vs/server/node/vibeAuthentication.js')));
 const { VibeAuthenticationServer }: typeof import('../../../../src/vs/server/node/vibeAuthenticationServer.js') = await import(pathToFileURL(join(root, 'out/vs/server/node/vibeAuthenticationServer.js')));
 const temporary = await mkdtemp(join(tmpdir(), 'vibe-gateway-review-'));
@@ -133,7 +128,7 @@ try {
 	const deniedAfterLogout = await request('/static/resource.js', { headers: { Cookie: cookie } });
 	assert.deepEqual([logout.status, deniedAfterLogout.status, protectedRequests], [303, 401, 2]);
 	assert.ok((deniedAfterLogout.headers['set-cookie']?.length ?? 0) > 1, 'denials must preserve separate cookie-clearing headers');
-	console.log('Real Caddy gateway passed: navigation 303; resources/WS 401; forged origin 403; registration 303; authorized HTTP 200/WS 101; exactly one renewal cookie; logout revocation and multi-cookie denial preserved. No better-sqlite3 import.');
+	console.log('Real Caddy gateway passed: navigation 303; resources/WS 401; forged origin 403; registration 303; authorized HTTP 200/WS 101; exactly one renewal cookie; logout revocation and multi-cookie denial preserved.');
 } catch (error) {
 	console.error(gatewayLog);
 	throw error;

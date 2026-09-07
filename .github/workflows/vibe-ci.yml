@@ -164,8 +164,8 @@ jobs:
         run: |
           # Discover tests by product area; the Node-only auth suite has its own runner below.
           xvfb-run -a ./scripts/test.sh \
-            --runGlob '{vs/base/test/{browser/ui/tree,node},vs/code/test/browser,vs/platform/sign/test,vs/server/test,vs/sessions/test,vs/workbench/api/test,vs/workbench/contrib/{chat,remote,files,terminal,update,workspace}/test,vs/workbench/services/{editor,accounts,authentication,environment,logicalWorkspace}/test,vs/workbench/test/browser}/**/*.test.js' \
-            --excludeRunGlob '{**/electron-*/**/*.test.js,**/vibeAuthentication.test.js}' \
+            --runGlob '{vs/base/test/{browser/ui/tree,node},vs/code/test/browser,vs/platform/sign/test,vs/server/test,vs/sessions/test,vs/workbench/api/test,vs/workbench/contrib/{chat,remote,files,terminal,update,vibeAuthentication,workspace}/test,vs/workbench/services/{editor,accounts,authentication,environment,logicalWorkspace}/test,vs/workbench/test/browser}/**/*.test.js' \
+            --excludeRunGlob '**/electron-*/**/*.test.js' \
             --timeout 20000
         env:
           VSCODE_SKIP_PRELAUNCH: '1'

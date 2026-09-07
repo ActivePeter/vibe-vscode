@@ -49,7 +49,6 @@ interface BetterAuthError {
 
 export interface VibeAuthenticationServerOptions {
 	readonly authenticationService: VibeAuthenticationService;
-	readonly basePath?: string;
 }
 
 class RequestBodyTooLargeError extends Error { }
@@ -62,12 +61,14 @@ export class VibeAuthenticationServer {
 	private readonly basePath: string;
 	private readonly authPath: string;
 	private readonly apiPath: string;
+	private readonly publicHost: string;
 
 	constructor(options: VibeAuthenticationServerOptions) {
 		this.authenticationService = options.authenticationService;
-		this.basePath = normalizeVibeAuthenticationBasePath(options.basePath ?? '');
+		this.basePath = this.authenticationService.basePath;
 		this.authPath = `${this.basePath}/auth`;
 		this.apiPath = `${this.authPath}/api`;
+		this.publicHost = new URL(this.publicOrigin).host;
 	}
 
 	public get publicOrigin(): string {
@@ -239,14 +240,12 @@ export class VibeAuthenticationServer {
 			return;
 		}
 		const error = await readBetterAuthError(authenticationResponse);
-		const rateLimited = authenticationResponse.status === 429;
-		const invalidOrigin = authenticationResponse.status === 403 || error.code === 'INVALID_ORIGIN';
 		this.renderPage(request, response, {
 			kind: 'login',
 			locale,
 			returnTo,
 			username,
-			error: rateLimited ? messages[locale].rateLimited : invalidOrigin ? messages[locale].invalidOrigin : messages[locale].invalidCredentials,
+			error: describeBetterAuthFailure(authenticationResponse, error, locale, 'invalidCredentials'),
 		}, authenticationResponse.status);
 	}
 
@@ -266,50 +265,33 @@ export class VibeAuthenticationServer {
 			}, 400);
 			return;
 		}
-		if (!this.authenticationService.registrationOpen) {
-			this.renderPage(request, response, {
-				kind: 'login', locale, returnTo, username, error: messages[locale].registrationClosed,
-			}, 409);
-			return;
-		}
-
-		const authenticationResponse = await this.invokeBetterAuth(request, 'POST', '/sign-up/email', {
+		const authenticationResponse = this.authenticationService.registrationOpen ? await this.invokeBetterAuth(request, 'POST', '/sign-up/email', {
 			email: administratorEmail,
 			name: username,
 			username,
 			password,
-		});
-		this.copyBetterAuthHeaders(authenticationResponse, response);
-		if (authenticationResponse.ok) {
+		}) : undefined;
+		if (authenticationResponse) {
+			this.copyBetterAuthHeaders(authenticationResponse, response);
+		}
+		if (authenticationResponse?.ok) {
 			this.redirect(response, returnTo);
 			return;
 		}
 
-		const error = await readBetterAuthError(authenticationResponse);
-		if (!this.authenticationService.registrationOpen) {
+		if (!authenticationResponse || !this.authenticationService.registrationOpen) {
 			this.renderPage(request, response, {
 				kind: 'login', locale, returnTo, username, error: messages[locale].registrationClosed,
 			}, 409);
 			return;
 		}
-		const rateLimited = authenticationResponse.status === 429;
-		const invalidOrigin = authenticationResponse.status === 403 || error.code === 'INVALID_ORIGIN';
-		const invalidUsername = error.code === 'INVALID_USERNAME' || error.code === 'USERNAME_TOO_SHORT' || error.code === 'USERNAME_TOO_LONG';
-		const invalidPassword = error.code === 'PASSWORD_TOO_SHORT' || error.code === 'PASSWORD_TOO_LONG' || error.code === 'INVALID_PASSWORD';
+		const error = await readBetterAuthError(authenticationResponse);
 		this.renderPage(request, response, {
 			kind: 'register',
 			locale,
 			returnTo,
 			username,
-			error: rateLimited
-				? messages[locale].rateLimited
-				: invalidOrigin
-					? messages[locale].invalidOrigin
-					: invalidUsername
-						? messages[locale].invalidUsername
-						: invalidPassword
-							? messages[locale].invalidPassword
-							: messages[locale].invalidRequest,
+			error: describeBetterAuthFailure(authenticationResponse, error, locale, 'invalidRequest'),
 		}, authenticationResponse.status);
 	}
 
@@ -330,11 +312,7 @@ export class VibeAuthenticationServer {
 			kind: 'logout',
 			locale,
 			returnTo: `${this.basePath}/`,
-			error: authenticationResponse.status === 429
-				? messages[locale].rateLimited
-				: error.code === 'INVALID_ORIGIN' || authenticationResponse.status === 403
-					? messages[locale].invalidOrigin
-					: messages[locale].invalidRequest,
+			error: describeBetterAuthFailure(authenticationResponse, error, locale, 'invalidRequest'),
 		}, authenticationResponse.status);
 	}
 
@@ -358,7 +336,7 @@ export class VibeAuthenticationServer {
 		const publicOrigin = this.publicOrigin;
 		const headers = fromNodeHeaders(request.headers);
 		headers.delete('content-length');
-		headers.set('host', new URL(publicOrigin).host);
+		headers.set('host', this.publicHost);
 		headers.set('x-vibe-client-ip', (firstCommaSeparatedValue(firstHeader(request.headers['x-forwarded-for'])) ?? request.socket.remoteAddress ?? 'unknown').slice(0, 128));
 		if (body) {
 			headers.set('content-type', 'application/json');
@@ -457,7 +435,7 @@ export class VibeAuthenticationServer {
 
 export async function createVibeAuthenticationServer(args: Pick<ServerParsedArgs, 'auth-state-dir' | 'public-origin' | 'auth-session-ttl-seconds'>, basePath: string): Promise<VibeAuthenticationServer | undefined> {
 	const stateDirectory = args['auth-state-dir'];
-	if (!stateDirectory) {
+	if (stateDirectory === undefined) {
 		if (args['public-origin'] !== undefined || args['auth-session-ttl-seconds'] !== undefined) {
 			throw new Error('Authentication options require --auth-state-dir.');
 		}
@@ -469,24 +447,13 @@ export async function createVibeAuthenticationServer(args: Pick<ServerParsedArgs
 	if (!args['public-origin']) {
 		throw new Error('Authentication requires --public-origin with the browser-visible HTTPS origin.');
 	}
-	const normalizedBasePath = normalizeVibeAuthenticationBasePath(basePath);
 	const authenticationService = await VibeAuthenticationService.create({
 		stateDirectory,
 		publicOrigin: args['public-origin'],
-		basePath: normalizedBasePath,
+		basePath,
 		sessionTtlSeconds: args['auth-session-ttl-seconds'] === undefined ? undefined : Number(args['auth-session-ttl-seconds']),
 	});
-	return new VibeAuthenticationServer({ authenticationService, basePath: normalizedBasePath });
-}
-
-export function normalizeVibeAuthenticationBasePath(value: string): string {
-	if (value === '' || value === '/') {
-		return '';
-	}
-	if (!/^\/[0-9A-Za-z._~-]+(?:\/[0-9A-Za-z._~-]+)*$/.test(value)) {
-		throw new Error('The server base path must contain one or more simple absolute path segments without a trailing slash.');
-	}
-	return value;
+	return new VibeAuthenticationServer({ authenticationService });
 }
 
 function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedAuthenticationPage {
@@ -585,14 +552,6 @@ async function readForm(request: http.IncomingMessage): Promise<URLSearchParams>
 	if (contentType !== 'application/x-www-form-urlencoded') {
 		return new URLSearchParams();
 	}
-	const declaredLength = Number(firstHeader(request.headers['content-length']));
-	if (Number.isFinite(declaredLength) && declaredLength > requestBodyMaximumBytes) {
-		for await (const _chunk of request) {
-			// Drain the request without retaining an oversized body.
-		}
-		throw new RequestBodyTooLargeError();
-	}
-
 	let size = 0;
 	let tooLarge = false;
 	const chunks: Buffer[] = [];
@@ -618,6 +577,26 @@ async function readBetterAuthError(response: Response): Promise<BetterAuthError>
 	} catch {
 		return {};
 	}
+}
+
+const betterAuthFailureMessages: Partial<Record<string, keyof Messages>> = {
+	INVALID_ORIGIN: 'invalidOrigin',
+	INVALID_USERNAME: 'invalidUsername',
+	USERNAME_TOO_SHORT: 'invalidUsername',
+	USERNAME_TOO_LONG: 'invalidUsername',
+	PASSWORD_TOO_SHORT: 'invalidPassword',
+	PASSWORD_TOO_LONG: 'invalidPassword',
+	INVALID_PASSWORD: 'invalidPassword',
+};
+
+function describeBetterAuthFailure(response: Response, error: BetterAuthError, locale: Locale, fallback: 'invalidCredentials' | 'invalidRequest'): string {
+	if (response.status === 429) {
+		return messages[locale].rateLimited;
+	}
+	if (response.status === 403) {
+		return messages[locale].invalidOrigin;
+	}
+	return messages[locale][betterAuthFailureMessages[error.code ?? ''] ?? fallback];
 }
 
 function getSingleFormValue(form: URLSearchParams, key: string): string | undefined {

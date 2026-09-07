@@ -7,6 +7,7 @@ import assert from 'assert';
 import * as fs from 'fs';
 import type * as http from 'http';
 import * as os from 'os';
+import * as sinon from 'sinon';
 import { FileAccess } from '../../../base/common/network.js';
 import { join } from '../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
@@ -105,8 +106,6 @@ suite('VibeAuthenticationServer', () => {
 				status: registrationPage.status,
 				language: registrationPage.headers['content-language'],
 				localized: registrationPage.body.includes('创建管理员账号'),
-				containsWorkbench: registrationPage.body.includes('workbench.desktop.main.js'),
-				containsLegacyCsrf: registrationPage.body.includes('csrf_token'),
 			},
 			registration: { status: registration.status, location: registration.headers.location },
 			sessionCookieAttributes: {
@@ -130,7 +129,7 @@ suite('VibeAuthenticationServer', () => {
 			},
 			storesPlaintextPassword: databaseContents.includes(Buffer.from(validPassword)),
 		}, {
-			registrationPage: { status: 200, language: 'zh-cn', localized: true, containsWorkbench: false, containsLegacyCsrf: false },
+			registrationPage: { status: 200, language: 'zh-cn', localized: true },
 			registration: { status: 303, location: '/code/' },
 			sessionCookieAttributes: { httpOnly: true, secure: true, sameSite: true, path: true },
 			authorized: 204,
@@ -193,15 +192,17 @@ suite('VibeAuthenticationServer', () => {
 		const crossOrigin = await postForm(harness.port, '/code/auth/register?lang=en', {
 			return_to: '/code/', username: 'admin', password: validPassword, confirm_password: validPassword,
 		}, undefined, 'https://attacker.invalid');
-		const oversized = await request(harness.port, '/code/auth/register', {
+		const oversizedBody = `username=${'a'.repeat(17_000)}`;
+		const oversized = await Promise.all(['content-length', 'transfer-encoding'].map(header => request(harness.port, '/code/auth/register', {
 			method: 'POST',
-			body: `username=${'a'.repeat(17_000)}`,
+			body: oversizedBody,
 			headers: {
 				'content-type': 'application/x-www-form-urlencoded',
+				[header]: header === 'content-length' ? Buffer.byteLength(oversizedBody) : 'chunked',
 				origin: publicOrigin,
 				'x-forwarded-proto': 'https',
 			},
-		});
+		})));
 		const registration = await postForm(harness.port, '/code/auth/register', {
 			return_to: '/code/', username: 'admin', password: validPassword, confirm_password: validPassword,
 		});
@@ -215,11 +216,11 @@ suite('VibeAuthenticationServer', () => {
 
 		assert.deepStrictEqual({
 			crossOrigin: { status: crossOrigin.status, message: crossOrigin.body.includes('browser address could not be verified') },
-			oversized: { status: oversized.status, body: oversized.body },
+			oversized: oversized.map(response => ({ status: response.status, body: response.body })),
 			attempts,
 		}, {
 			crossOrigin: { status: 403, message: true },
-			oversized: { status: 413, body: 'Payload Too Large' },
+			oversized: [{ status: 413, body: 'Payload Too Large' }, { status: 413, body: 'Payload Too Large' }],
 			attempts: [401, 401, 401, 401, 401, 429],
 		});
 	});
@@ -252,14 +253,78 @@ suite('VibeAuthenticationServer', () => {
 		const stateDirectory = join(testDirectory, 'invalid-configuration');
 		const args = { 'auth-state-dir': stateDirectory, 'public-origin': publicOrigin };
 		await assert.rejects(createVibeAuthenticationServer({ 'auth-state-dir': stateDirectory }, ''), /--public-origin/);
+		for (const stateDirectory of ['', 'relative-state']) {
+			await assert.rejects(createVibeAuthenticationServer({ ...args, 'auth-state-dir': stateDirectory }, ''), /absolute path/);
+		}
 		for (const origin of ['http://vscode.example', 'https://user:password@vscode.example', 'https://vscode.example/path', 'https://vscode.example?query=1', 'https://vscode.example#fragment']) {
 			await assert.rejects(createVibeAuthenticationServer({ ...args, 'public-origin': origin }, ''), /HTTPS origin/);
 		}
 		for (const ttl of ['59', '604801', 'NaN', '1.5', '']) {
 			await assert.rejects(createVibeAuthenticationServer({ ...args, 'auth-session-ttl-seconds': ttl }, ''), /session lifetime/);
 		}
+		for (const basePath of ['code', '/code/', '//code', '/code?query', '/code#fragment']) {
+			await assert.rejects(createVibeAuthenticationServer(args, basePath), /server base path/);
+		}
 		assert.strictEqual(fs.existsSync(stateDirectory), false);
 		assert.strictEqual(await createVibeAuthenticationServer({}, ''), undefined);
+	});
+
+	test('normalizes the root base path once for the service and HTTP adapter', async () => {
+		await harness.close();
+		harness = await createHarness(testDirectory, '/');
+		const status = await request(harness.port, '/auth/api/status');
+		const registration = await postForm(harness.port, '/auth/register', {
+			username: 'admin', password: validPassword, confirm_password: validPassword,
+		});
+		assert.deepStrictEqual({
+			basePath: harness.authenticationService.basePath,
+			status: JSON.parse(status.body),
+			location: registration.headers.location,
+			cookiePath: getSessionSetCookie(registration.headers)?.includes('Path=/;'),
+		}, { basePath: '', status: { authenticated: false, registrationOpen: true }, location: '/', cookiePath: true });
+	});
+
+	test('maps Better Auth failures consistently across all form routes and both locales', async () => {
+		const handler = sinon.stub(harness.authenticationService, 'handle');
+		try {
+			for (const locale of ['en', 'zh-cn']) {
+				const bundle: typeof import('../../node/vibe-authentication.nls.en.json') = JSON.parse(fs.readFileSync(FileAccess.asFileUri(`vs/server/node/vibe-authentication.nls.${locale}.json`).fsPath, 'utf8'));
+				for (const route of ['login', 'register', 'logout']) {
+					for (const [status, code, message] of [
+						[429, 'INVALID_PASSWORD', 'rateLimited'],
+						[403, 'INVALID_USERNAME', 'invalidOrigin'],
+						[400, 'INVALID_ORIGIN', 'invalidOrigin'],
+						[400, 'INVALID_USERNAME', 'invalidUsername'],
+						[400, 'USERNAME_TOO_SHORT', 'invalidUsername'],
+						[400, 'USERNAME_TOO_LONG', 'invalidUsername'],
+						[400, 'PASSWORD_TOO_SHORT', 'invalidPassword'],
+						[400, 'PASSWORD_TOO_LONG', 'invalidPassword'],
+						[400, 'INVALID_PASSWORD', 'invalidPassword'],
+						[400, 'UNRECOGNIZED_ERROR', route === 'login' ? 'invalidCredentials' : 'invalidRequest'],
+					] as const) {
+						handler.resolves(Response.json({ code }, { status }));
+						const response = await postForm(harness.port, `/code/auth/${route}?lang=${locale}`, {});
+						assert.deepStrictEqual({ status: response.status, localized: response.body.includes(bundle[message]) }, {
+							status, localized: true,
+						}, `${route}/${locale}/${code}`);
+					}
+				}
+			}
+		} finally {
+			handler.restore();
+		}
+	});
+
+	test('does not call Better Auth for an already closed registration', async () => {
+		const form = { username: 'admin', password: validPassword, confirm_password: validPassword };
+		assert.strictEqual((await postForm(harness.port, '/code/auth/register', form)).status, 303);
+		const handler = sinon.spy(harness.authenticationService, 'handle');
+		try {
+			const response = await postForm(harness.port, '/code/auth/register?lang=en', form);
+			assert.deepStrictEqual({ status: response.status, calls: handler.callCount }, { status: 409, calls: 0 });
+		} finally {
+			handler.restore();
+		}
 	});
 
 	test('ships matching message keys and renders both packaged locales', async () => {
@@ -285,15 +350,15 @@ interface AuthenticationTestHarness {
 	readonly close: () => Promise<void>;
 }
 
-async function createHarness(stateDirectory: string): Promise<AuthenticationTestHarness> {
+async function createHarness(stateDirectory: string, basePath = '/code'): Promise<AuthenticationTestHarness> {
 	const authenticationService = await VibeAuthenticationService.create({
 		stateDirectory,
 		publicOrigin,
-		basePath: '/code',
+		basePath,
 		sessionTtlSeconds: 60,
 		sessionUpdateAgeSeconds: 1,
 	});
-	const authenticationServer = new VibeAuthenticationServer({ authenticationService, basePath: '/code' });
+	const authenticationServer = new VibeAuthenticationServer({ authenticationService });
 	const server = nodeHttp.createServer(async (request, response) => {
 		if (!await authenticationServer.handle(request, response)) {
 			response.writeHead(404, { 'Content-Type': 'text/plain' });

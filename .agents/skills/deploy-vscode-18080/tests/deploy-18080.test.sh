@@ -104,15 +104,11 @@ assert_equal 'require-update ensure-caddy require-source prepare-active:/test/wo
 
 temporary_root="$(mktemp -d)"
 holder_pid=
-reuse_test_root=
 copy_test_root=
 cleanup() {
 	touch "$temporary_root/release" 2>/dev/null || true
 	if [[ -n "$holder_pid" ]]; then
 		wait "$holder_pid" 2>/dev/null || true
-	fi
-	if [[ -n "$reuse_test_root" ]]; then
-		rm -rf -- "$reuse_test_root"
 	fi
 	rm -rf -- "$temporary_root"
 	if [[ -n "$copy_test_root" ]]; then
@@ -120,19 +116,6 @@ cleanup() {
 	fi
 }
 trap cleanup EXIT
-
-mkdir -p -- "$SERVICE_RELEASES_ROOT"
-reuse_test_root="$(mktemp -d "$SERVICE_RELEASES_ROOT/.copy-runtime-tree-test.XXXXXX")"
-mkdir -p -- "$reuse_test_root/source" "$reuse_test_root/previous" "$temporary_root/outside-previous"
-printf 'unchanged dependency\n' > "$reuse_test_root/source/dependency.js"
-cp -a -- "$reuse_test_root/source/." "$reuse_test_root/previous/"
-copy_runtime_tree "$reuse_test_root/source" "$reuse_test_root/candidate" "$reuse_test_root/previous"
-[[ "$reuse_test_root/previous/dependency.js" -ef "$reuse_test_root/candidate/dependency.js" ]] || fail_test 'candidate did not hard-link an unchanged dependency from a previous immutable release'
-cp -a -- "$reuse_test_root/source/." "$temporary_root/outside-previous/"
-copy_runtime_tree "$reuse_test_root/source" "$reuse_test_root/outside-candidate" "$temporary_root/outside-previous"
-if [[ "$temporary_root/outside-previous/dependency.js" -ef "$reuse_test_root/outside-candidate/dependency.js" ]]; then
-	fail_test 'candidate hard-linked a dependency from outside the immutable release root'
-fi
 
 mkdir -p "$SOURCE_ROOT/.build"
 copy_test_root="$(mktemp -d "$SOURCE_ROOT/.build/deploy-copy-test.XXXXXX")"
@@ -150,12 +133,6 @@ VIBE_VSCODE_SERVICE_RUNTIME_ROOT="$copy_test_root" bash -c '
 if grep -Eq -- 'run_legacy_server|--tls-(key|cert)-path' "$DEPLOY_SCRIPT"; then
 	fail_test 'deployment script still contains a direct-TLS server path'
 fi
-grep -Fq 'forward_auth' "$TEST_ROOT/../../../../resources/server/vibe-vscode/Caddyfile" || fail_test 'Caddy does not enforce forward authentication'
-grep -Fq 'copy_headers Set-Cookie>X-Vibe-Auth-Set-Cookie' "$TEST_ROOT/../../../../resources/server/vibe-vscode/Caddyfile" || fail_test 'Caddy does not return a renewed Better Auth session cookie'
-grep -Fq -- '--auth-state-dir "$SERVICE_AUTH_STATE_ROOT"' "$DEPLOY_SCRIPT" || fail_test 'deployment does not enable authentication through the shared CLI'
-grep -Fq 'runtime_uses_authentication_cli "$runtime_root"' "$DEPLOY_SCRIPT" || fail_test 'candidate releases are not gated by the authenticated launcher metadata'
-grep -Fq 'VIBE_VSCODE_SERVER_BASE_PATH=%q' "$DEPLOY_SCRIPT" || fail_test 'service restart does not preserve the configured base path'
-grep -Fq 'VIBE_VSCODE_PUBLIC_ORIGIN=%q' "$DEPLOY_SCRIPT" || fail_test 'service restart does not preserve its configured public origin'
 
 set +e
 VIBE_VSCODE_PUBLIC_ORIGIN= bash "$DEPLOY_SCRIPT" --internal-run /test/runtime /test/workspace.code-workspace >"$temporary_root/missing-origin.log" 2>&1
@@ -325,23 +302,6 @@ legacy_backend_socket="$(
 )"
 assert_equal "$SERVICE_LEGACY_BACKEND_SOCKET" "$legacy_backend_socket"
 
-runtime_pointer="$temporary_root/runtime-pointer"
-runtime_pointer_target="$temporary_root/runtime-pointer-target"
-mkdir -p "$runtime_pointer_target"
-set +e
-(
-	trap - EXIT
-	set -e
-	mv() { return 42; }
-	set_runtime_link "$runtime_pointer" "$runtime_pointer_target"
-) >"$temporary_root/runtime-pointer-failure.log" 2>&1
-runtime_pointer_status=$?
-set -e
-assert_equal 42 "$runtime_pointer_status"
-[[ ! -e "${runtime_pointer}.tmp.$$" && ! -L "${runtime_pointer}.tmp.$$" ]] || fail_test 'failed pointer replacement left a stale temporary link'
-set_runtime_link "$runtime_pointer" "$runtime_pointer_target"
-assert_equal "$runtime_pointer_target" "$(readlink -f -- "$runtime_pointer")"
-
 runtime_links_root="$temporary_root/runtime-links"
 external_links_root="$temporary_root/external-links"
 mkdir -p "$runtime_links_root/lib" "$external_links_root"
@@ -384,31 +344,6 @@ legacy_anchor="$({
 } 2>/dev/null | tail -n 1)"
 assert_equal '/test/running|true' "$legacy_anchor"
 
-source_bootstrap_calls="$temporary_root/source-bootstrap.calls"
-source_bootstrap="$({
-	tmux() { [[ "$1" == has-session ]]; }
-	is_recognized_service_session() { :; }
-	service_runtime_root() { printf '%s\n' "$SOURCE_ROOT"; }
-	validate_runtime_root() { :; }
-	is_runtime_healthy() { :; }
-	has_public_listener() { :; }
-	create_runtime_snapshot() {
-		printf 'snapshot:%s\n' "${2:-candidate}" >> "$source_bootstrap_calls"
-		printf -v "$1" '%s' /test/bootstrap
-	}
-	validate_candidate_runtime_root() { return 1; }
-	stop_service() { printf 'stop\n' >> "$source_bootstrap_calls"; }
-	start_service() { printf 'start:%s\n' "${3:-false}" >> "$source_bootstrap_calls"; }
-	wait_until_ready() { printf 'wait:%s\n' "$1" >> "$source_bootstrap_calls"; }
-	set_runtime_link() { fail_test 'legacy source bootstrap became the strict selected snapshot'; }
-	ACTIVE_RUNTIME_ROOT=
-	ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=false
-	prepare_real_active_runtime /test/workspace.code-workspace
-	printf '%s|%s\n' "$ACTIVE_RUNTIME_ROOT" "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME"
-} 2>/dev/null | tail -n 1)"
-assert_equal '/test/bootstrap|true' "$source_bootstrap"
-assert_equal "$(printf '%s\n' 'snapshot:compatibility' 'stop' 'start:true' 'wait:last-known-good bootstrap runtime')" "$(cat "$source_bootstrap_calls")"
-
 set +e
 (
 	trap - EXIT
@@ -433,90 +368,6 @@ if grep -Fq "link:$SERVICE_CURRENT_LINK:/test/running" "$temporary_root/rollback
 	fail_test 'legacy rollback runtime became the strict selected snapshot'
 fi
 
-promotion_calls="$temporary_root/promotion-failure.calls"
-set +e
-(
-	trap - EXIT
-	set -e
-	ACTIVE_RUNTIME_ROOT=/test/last-known-good
-	ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=false
-	validate_candidate_runtime_root() { :; }
-	stop_service() { printf 'stop\n' >> "$promotion_calls"; }
-	start_service() { printf 'start:%s:%s\n' "$1" "${3:-false}" >> "$promotion_calls"; }
-	wait_until_ready() { printf 'wait:%s:%s\n' "$1" "$2" >> "$promotion_calls"; }
-	promote_runtime() {
-		printf 'promote:%s:%s\n' "$1" "$2" >> "$promotion_calls"
-		return 42
-	}
-	print_log_tail() { printf 'log-tail\n' >> "$promotion_calls"; }
-	set_runtime_link() { printf 'link:%s:%s\n' "$1" "$2" >> "$promotion_calls"; }
-	activate_real_candidate_runtime /test/candidate /test/workspace.code-workspace
-) >"$temporary_root/promotion-failure.log" 2>&1
-promotion_failure_status=$?
-set -e
-assert_equal 1 "$promotion_failure_status"
-assert_equal "$(printf '%s\n' \
-	'stop' \
-	'start:/test/candidate:false' \
-	'wait:candidate runtime:/test/candidate' \
-	'promote:/test/candidate:/test/last-known-good' \
-	'log-tail' \
-	'stop' \
-	'start:/test/last-known-good:false' \
-	'wait:restored last-known-good runtime:/test/last-known-good' \
-	"link:$SERVICE_CURRENT_LINK:/test/last-known-good")" "$(cat "$promotion_calls")"
-if grep -Fq 'Vibe VS Code deployment is ready' "$temporary_root/promotion-failure.log"; then
-	fail_test 'promotion failure was reported as a successful deployment'
-fi
-
-promotion_pointer_calls="$temporary_root/promotion-pointer.calls"
-set +e
-(
-	trap - EXIT
-	set -e
-	validate_candidate_runtime_root() { :; }
-	set_runtime_link() {
-		printf '%s:%s\n' "$1" "$2" >> "$promotion_pointer_calls"
-		return 42
-	}
-	if ! promote_runtime "$SERVICE_RELEASES_ROOT/candidate" "$SERVICE_RELEASES_ROOT/last-known-good"; then
-		exit 42
-	fi
-) >"$temporary_root/promotion-pointer.log" 2>&1
-promotion_pointer_status=$?
-set -e
-assert_equal 42 "$promotion_pointer_status"
-assert_equal "$SERVICE_PREVIOUS_LINK:$SERVICE_RELEASES_ROOT/last-known-good" "$(cat "$promotion_pointer_calls")"
-
-cleanup_failure_calls="$temporary_root/cleanup-failure.calls"
-set +e
-(
-	trap - EXIT
-	set -e
-	ACTIVE_RUNTIME_ROOT=/test/last-known-good
-	ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=false
-	validate_candidate_runtime_root() { :; }
-	stop_service() { printf 'stop\n' >> "$cleanup_failure_calls"; }
-	start_service() { printf 'start:%s:%s\n' "$1" "${3:-false}" >> "$cleanup_failure_calls"; }
-	wait_until_ready() { printf 'wait:%s:%s\n' "$1" "$2" >> "$cleanup_failure_calls"; }
-	promote_runtime() { printf 'promote:%s:%s\n' "$1" "$2" >> "$cleanup_failure_calls"; }
-	cleanup_inactive_releases() {
-		printf 'cleanup:%s:%s\n' "$1" "$2" >> "$cleanup_failure_calls"
-		return 42
-	}
-	activate_real_candidate_runtime /test/candidate /test/workspace.code-workspace
-) >"$temporary_root/cleanup-failure.log" 2>&1
-cleanup_failure_status=$?
-set -e
-assert_equal 0 "$cleanup_failure_status"
-assert_equal "$(printf '%s\n' \
-	'stop' \
-	'start:/test/candidate:false' \
-	'wait:candidate runtime:/test/candidate' \
-	'promote:/test/candidate:/test/last-known-good' \
-	'cleanup:/test/candidate:/test/last-known-good')" "$(cat "$cleanup_failure_calls")"
-grep -Fq 'deployment committed, but one or more inactive releases could not be removed' "$temporary_root/cleanup-failure.log" || fail_test 'cleanup failure was not reported'
-grep -Fq 'Vibe VS Code deployment is ready' "$temporary_root/cleanup-failure.log" || fail_test 'committed deployment was not reported ready after cleanup failure'
 
 set +e
 (

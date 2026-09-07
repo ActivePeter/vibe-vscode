@@ -96,7 +96,7 @@ The shared launcher reads `version` and `mode` from `vibe-release.json` and supp
 | `production` | `NODE_ENV=production`, `VSCODE_DEV` unset | Release archive |
 | `development` | `NODE_ENV=development`, `VSCODE_DEV=1` | Staged source snapshot |
 
-Missing `mode` defaults to production for older release metadata; an unknown mode fails before the server starts. Operators configure sockets, state, and authentication through launch arguments, not by editing immutable metadata. Except for `--version` and `--help`, the Vibe launcher requires explicit authentication arguments. The Remote Server validates them and refuses authentication without a private socket or with a connection token.
+Missing `mode` defaults to production for older release metadata; an unknown mode fails before the server starts. Operators configure sockets, state, and authentication through launch arguments, not by editing immutable metadata. Except for `--version` and `--help`, the Vibe launcher requires `--auth-state-dir`. The Remote Server validates the public origin and other authentication options and refuses authentication without a private socket or with a connection token.
 
 For a private backend, the equivalent operator-facing launch is:
 

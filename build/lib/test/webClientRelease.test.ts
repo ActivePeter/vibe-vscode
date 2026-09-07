@@ -31,7 +31,7 @@ test('the shared launcher uses stamped metadata for both runtime profiles, regar
 			await installWebClientLauncher(temporary, 'v1.2.3', commit, mode);
 			const result = await run(path.join(temporary, 'bin/vibe-vscode-server'), ['--socket-path', '/test/backend.sock', ...authenticationArguments], { env: { ...process.env, NODE_ENV: 'test', VSCODE_DEV: 'inherited' } });
 			results.push(JSON.parse(result.stdout));
-			await assert.rejects(run(path.join(temporary, 'bin/vibe-vscode-server'), ['--socket-path', '/test/backend.sock']), /requires --auth-state-dir and --public-origin/);
+			await assert.rejects(run(path.join(temporary, 'bin/vibe-vscode-server'), ['--socket-path', '/test/backend.sock']), /requires --auth-state-dir/);
 		}
 		assert.deepStrictEqual(results, [
 			{ mode: 'production', dev: null, args: ['--web-client-cache-version', 'v1.2.3', '--socket-path', '/test/backend.sock', ...authenticationArguments] },

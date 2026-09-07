@@ -32,7 +32,7 @@ export class VibeAuthenticationService {
 	private readonly database: DatabaseSync;
 	private disposed = false;
 
-	private constructor(authenticationHandler: (request: Request) => Promise<Response>, database: DatabaseSync, public readonly publicOrigin: string) {
+	private constructor(authenticationHandler: (request: Request) => Promise<Response>, database: DatabaseSync, public readonly publicOrigin: string, public readonly basePath: string) {
 		this.authenticationHandler = authenticationHandler;
 		this.database = database;
 	}
@@ -43,7 +43,10 @@ export class VibeAuthenticationService {
 			throw new Error('The public origin must be an HTTPS origin without credentials, a path, query, or fragment.');
 		}
 		const publicOrigin = publicUrl.origin;
-		const basePath = options.basePath ?? '';
+		const basePath = options.basePath === '/' ? '' : options.basePath ?? '';
+		if (basePath && !/^\/[0-9A-Za-z._~-]+(?:\/[0-9A-Za-z._~-]+)*$/.test(basePath)) {
+			throw new Error('The server base path must contain one or more simple absolute path segments without a trailing slash.');
+		}
 		const sessionTtlSeconds = options.sessionTtlSeconds ?? 12 * 60 * 60;
 		const sessionUpdateAgeSeconds = options.sessionUpdateAgeSeconds ?? Math.min(5 * 60, Math.max(1, Math.floor(sessionTtlSeconds / 2)));
 		if (!Number.isSafeInteger(sessionTtlSeconds) || sessionTtlSeconds < 60 || sessionTtlSeconds > 7 * 24 * 60 * 60) {
@@ -141,8 +144,7 @@ export class VibeAuthenticationService {
 			const authentication = betterAuth(authenticationOptions);
 			const migrations = await getMigrations(authentication.options);
 			await migrations.runMigrations();
-			await fs.chmod(databasePath, 0o600);
-			return new VibeAuthenticationService(authentication.handler, database, publicOrigin);
+			return new VibeAuthenticationService(authentication.handler, database, publicOrigin, basePath);
 		} catch (error) {
 			database.close();
 			throw error;

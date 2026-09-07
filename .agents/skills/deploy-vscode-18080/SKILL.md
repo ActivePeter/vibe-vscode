@@ -62,6 +62,9 @@ The entry point never starts an authentication sidecar. New candidates declare t
 `authentication: "embedded-cli-v1"` contract in `vibe-release.json`. While restoring the exact
 healthy embedded release that predates that CLI, the existing rollback bridge supplies its old
 authentication environment inputs. Such a release cannot become a newly selected snapshot.
+The server module also exists in that pre-CLI release, so its presence alone cannot establish
+CLI support. This bridge is limited to the live, verified rollback anchor; there is no separate
+compatibility snapshot-building mode.
 
 A running pre-launcher or source-linked release may remain only the verified rollback anchor after
 passing both health boundaries. New candidates and selected snapshot restarts must satisfy the

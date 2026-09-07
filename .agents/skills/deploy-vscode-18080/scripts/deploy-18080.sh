@@ -229,13 +229,6 @@ is_runtime_healthy() {
 		&& [[ "$(backend_health_status "$backend_socket")" == '200' ]]
 }
 
-active_backend_health_status() {
-	local backend_socket
-
-	backend_socket="$(service_backend_socket)" || return 0
-	backend_health_status "$backend_socket"
-}
-
 cleanup_stale_backend_sockets() {
 	find "$SERVICE_SOCKET_ROOT" -maxdepth 1 -type s \( -name backend.sock -o -name 'backend-[0-9]*-[0-9]*.sock' \) -delete
 }
@@ -464,18 +457,12 @@ resolve_runtime_link() {
 
 set_runtime_link() {
 	local link_path="$1"
-	local move_status=0
 	local runtime_root="$2"
 	local temporary_link="${link_path}.tmp.$$"
 
-	mkdir -p -- "$SERVICE_RUNTIME_ROOT" || return $?
-	rm -f -- "$temporary_link" || return $?
-	ln -s -- "$runtime_root" "$temporary_link" || return $?
-	mv -Tf -- "$temporary_link" "$link_path" || move_status=$?
-	if (( move_status != 0 )); then
-		rm -f -- "$temporary_link" || true
-		return "$move_status"
-	fi
+	mkdir -p -- "$SERVICE_RUNTIME_ROOT"
+	ln -s -- "$runtime_root" "$temporary_link"
+	mv -Tf -- "$temporary_link" "$link_path"
 }
 
 copy_runtime_tree() {
@@ -483,7 +470,6 @@ copy_runtime_tree() {
 	local target_path="$2"
 	local previous_path="${3:-}"
 	local resolved_previous_path=
-	local resolved_releases_root
 	local -a rsync_arguments=(--archive)
 
 	# Reuse immutable files from the active release when possible. The first migration from a
@@ -492,9 +478,8 @@ copy_runtime_tree() {
 	if [[ -n "$previous_path" && -d "$previous_path" && ! -L "$previous_path" ]]; then
 		resolved_previous_path="$(realpath -e -- "$previous_path")"
 	fi
-	resolved_releases_root="$(realpath -e -- "$SERVICE_RELEASES_ROOT")"
 	case "$resolved_previous_path" in
-	"$resolved_releases_root"/*) rsync_arguments+=(--link-dest="$resolved_previous_path") ;;
+	"$SERVICE_RELEASES_ROOT"/*) rsync_arguments+=(--link-dest="$resolved_previous_path") ;;
 	esac
 	mkdir -p -- "$target_path"
 	rsync "${rsync_arguments[@]}" "$source_path/" "$target_path/"
@@ -502,7 +487,6 @@ copy_runtime_tree() {
 
 create_runtime_snapshot() {
 	local result_variable="$1"
-	local validation_mode="${2:-candidate}"
 	local release_id
 	local release_root
 	local node_modules_path
@@ -551,18 +535,7 @@ create_runtime_snapshot() {
 	remove_unresolved_package_bin_links "$STAGING_RUNTIME_ROOT"
 	"$NODE_BIN" "$SOURCE_ROOT/build/web-release.ts" prepare \
 		"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" --development
-	case "$validation_mode" in
-	candidate)
-		validate_candidate_runtime_root "$STAGING_RUNTIME_ROOT" || fail "staged runtime is incomplete or depends on state outside its immutable release: $STAGING_RUNTIME_ROOT"
-		;;
-	compatibility)
-		validate_caddy_runtime_root "$STAGING_RUNTIME_ROOT" && validate_runtime_links "$STAGING_RUNTIME_ROOT" \
-			|| fail "staged compatibility runtime is incomplete or depends on state outside its immutable release: $STAGING_RUNTIME_ROOT"
-		;;
-	*)
-		fail "unsupported runtime snapshot validation mode: $validation_mode"
-		;;
-	esac
+	validate_candidate_runtime_root "$STAGING_RUNTIME_ROOT" || fail "staged runtime is incomplete or depends on state outside its immutable release: $STAGING_RUNTIME_ROOT"
 	mv -- "$STAGING_RUNTIME_ROOT" "$release_root"
 	STAGING_RUNTIME_ROOT=
 	printf -v "$result_variable" '%s' "$release_root"
@@ -745,6 +718,8 @@ start_service() {
 	else
 		validate_candidate_runtime_startup "$runtime_root" || return 1
 	fi
+	# tmux removes its session before the old shell's HUP/EXIT trap finishes.
+	# A late cleanup must only unlink its own generation, never the new backend.
 	(( BACKEND_SOCKET_GENERATION += 1 ))
 	backend_socket="$SERVICE_SOCKET_ROOT/backend-$$-$BACKEND_SOCKET_GENERATION.sock"
 	is_backend_socket_listening "$backend_socket" && fail "candidate backend socket is already owned by another process: $backend_socket"
@@ -800,7 +775,6 @@ prepare_active_runtime() {
 	local workspace_path="$1"
 	local running_runtime
 	local bootstrap_runtime
-	local bootstrap_allows_legacy_runtime=false
 
 	if ! tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
 		is_port_listening && fail "port $SERVICE_PORT is owned by an unrecognized process"
@@ -839,17 +813,11 @@ prepare_active_runtime() {
 	fi
 
 	printf 'Migrating the legacy source-tree service to an immutable runtime snapshot...\n'
-	create_runtime_snapshot bootstrap_runtime compatibility
-	if ! validate_candidate_runtime_root "$bootstrap_runtime"; then
-		bootstrap_allows_legacy_runtime=true
-	fi
+	create_runtime_snapshot bootstrap_runtime
 	stop_service
-	if start_service "$bootstrap_runtime" "$workspace_path" "$bootstrap_allows_legacy_runtime" && wait_until_ready 'last-known-good bootstrap runtime' "$bootstrap_runtime"; then
+	if start_service "$bootstrap_runtime" "$workspace_path" && wait_until_ready 'last-known-good bootstrap runtime' "$bootstrap_runtime"; then
 		ACTIVE_RUNTIME_ROOT="$bootstrap_runtime"
-		ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME="$bootstrap_allows_legacy_runtime"
-		if [[ "$bootstrap_allows_legacy_runtime" == false ]]; then
-			set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
-		fi
+		set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
 		return 0
 	fi
 
@@ -896,70 +864,47 @@ prepare_snapshot_restart() {
 promote_runtime() {
 	local candidate_runtime="$1"
 	local previous_runtime="$2"
+	local release_root
 
 	if [[ -n "$previous_runtime" && "$previous_runtime" == "$SERVICE_RELEASES_ROOT/"* && "$previous_runtime" != "$candidate_runtime" ]] && validate_candidate_runtime_root "$previous_runtime"; then
-		set_runtime_link "$SERVICE_PREVIOUS_LINK" "$previous_runtime" || return $?
+		set_runtime_link "$SERVICE_PREVIOUS_LINK" "$previous_runtime"
 	else
-		rm -f -- "$SERVICE_PREVIOUS_LINK" || return $?
+		rm -f -- "$SERVICE_PREVIOUS_LINK"
 	fi
 	set_runtime_link "$SERVICE_CURRENT_LINK" "$candidate_runtime"
-}
-
-cleanup_inactive_releases() {
-	local candidate_runtime="$1"
-	local previous_runtime="$2"
-	local release_root
 
 	for release_root in "$SERVICE_RELEASES_ROOT"/*; do
 		[[ -d "$release_root" ]] || continue
 		if [[ "$release_root" != "$candidate_runtime" && "$release_root" != "$previous_runtime" ]]; then
-			rm -rf -- "$release_root" || return $?
+			rm -rf -- "$release_root"
 		fi
 	done
 }
 
-restore_last_known_good_runtime() {
-	local failure_message="$1"
-	local workspace_path="$2"
-
-	print_log_tail
-	printf '%s; restoring last-known-good runtime...\n' "$failure_message" >&2
-	stop_service
-	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]] && start_service "$ACTIVE_RUNTIME_ROOT" "$workspace_path" "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME" && wait_until_ready 'restored last-known-good runtime' "$ACTIVE_RUNTIME_ROOT"; then
-		if [[ "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME" == true ]]; then
-			fail "$failure_message; restored last-known-good runtime"
-		fi
-		if ! set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"; then
-			fail "$failure_message; restored last-known-good runtime, but its release pointer could not be restored"
-		fi
-		fail "$failure_message; restored last-known-good runtime"
-	fi
-
-	print_log_tail
-	fail "$failure_message and last-known-good runtime could not be restored"
-}
-
-# Candidate health | pointer promotion | inactive cleanup | outcome
-# failed           | not attempted     | not attempted    | restore last-known-good
-# passed           | failed            | not attempted    | restore last-known-good
-# passed           | committed         | failed           | keep candidate, warn
 activate_candidate_runtime() {
 	local candidate_runtime="$1"
 	local workspace_path="$2"
 
 	validate_candidate_runtime_root "$candidate_runtime" || fail "candidate runtime is incomplete or depends on state outside its immutable release: $candidate_runtime"
 	stop_service
-	if ! start_service "$candidate_runtime" "$workspace_path" || ! wait_until_ready 'candidate runtime' "$candidate_runtime"; then
-		restore_last_known_good_runtime 'Candidate runtime failed health checks' "$workspace_path"
-	fi
-	if ! promote_runtime "$candidate_runtime" "$ACTIVE_RUNTIME_ROOT"; then
-		restore_last_known_good_runtime 'Candidate runtime passed health checks but release promotion failed' "$workspace_path"
+	if start_service "$candidate_runtime" "$workspace_path" && wait_until_ready 'candidate runtime' "$candidate_runtime"; then
+		promote_runtime "$candidate_runtime" "$ACTIVE_RUNTIME_ROOT"
+		printf 'Vibe VS Code deployment is ready: %s (0.0.0.0:%s)\n' "$SERVICE_URL" "$SERVICE_PORT"
+		return 0
 	fi
 
-	if ! cleanup_inactive_releases "$candidate_runtime" "$ACTIVE_RUNTIME_ROOT"; then
-		printf 'Warning: deployment committed, but one or more inactive releases could not be removed.\n' >&2
+	print_log_tail
+	printf 'Candidate runtime failed; restoring last-known-good runtime...\n' >&2
+	stop_service
+	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]] && start_service "$ACTIVE_RUNTIME_ROOT" "$workspace_path" "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME" && wait_until_ready 'restored last-known-good runtime' "$ACTIVE_RUNTIME_ROOT"; then
+		if [[ "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME" != true ]]; then
+			set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
+		fi
+		fail 'candidate runtime failed health checks; restored last-known-good runtime'
 	fi
-	printf 'Vibe VS Code deployment is ready: %s (0.0.0.0:%s)\n' "$SERVICE_URL" "$SERVICE_PORT"
+
+	print_log_tail
+	fail 'candidate runtime failed and last-known-good runtime could not be restored'
 }
 
 require_common_commands() {

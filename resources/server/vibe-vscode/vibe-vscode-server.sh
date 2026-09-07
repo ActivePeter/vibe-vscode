@@ -5,8 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-VERSION="$("$ROOT/node" -p 'require(process.argv[1]).version' "$ROOT/vibe-release.json")"
-MODE="$("$ROOT/node" -p 'require(process.argv[1]).mode ?? "production"' "$ROOT/vibe-release.json")"
+read -r VERSION MODE < <("$ROOT/node" -p 'const m = require(process.argv[1]); `${m.version} ${m.mode ?? "production"}`' "$ROOT/vibe-release.json")
 
 case "$MODE" in
 production)

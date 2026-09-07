@@ -14,6 +14,14 @@ import { precompressWebAssets } from './precompress.ts';
 const chunkSize = 256 * 1024;
 const hash = (data: Uint8Array) => createHash('sha256').update(data).digest('hex');
 
+function createEsbuildOptions(root: string): esbuild.BuildOptions {
+	return {
+		absWorkingDir: root, bundle: true, format: 'esm', platform: 'browser',
+		target: 'es2024', minify: true, write: false,
+		loader: { '.ttf': 'dataurl', '.woff': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl', '.sh': 'dataurl' },
+	};
+}
+
 /** Bundles an immutable snapshot into independently compressed, integrity-checked startup chunks. */
 export async function prepareWebClientCache(outDirectory: string): Promise<IWebClientCacheManifest> {
 	const root = path.resolve(outDirectory);
@@ -40,16 +48,9 @@ export async function prepareWebClientCache(outDirectory: string): Promise<IWebC
 		},
 	};
 	const options: esbuild.BuildOptions = {
-		absWorkingDir: root,
-		bundle: true,
-		format: 'esm',
-		platform: 'browser',
-		target: 'es2024',
-		minify: true,
+		...createEsbuildOptions(root),
 		sourcemap: false,
-		write: false,
 		metafile: true,
-		loader: { '.ttf': 'dataurl', '.woff': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl', '.sh': 'dataurl' },
 	};
 	const [workbench, loader, stylesheet] = await Promise.all([
 		esbuild.build({
@@ -103,9 +104,7 @@ async function prepareSourceEntries(outDirectory: string): Promise<void> {
 	const root = path.resolve(outDirectory);
 	const directory = path.join(root, 'vs/code/browser/workbench');
 	const options: esbuild.BuildOptions = {
-		absWorkingDir: root, bundle: true, format: 'esm', platform: 'browser',
-		target: 'es2024', minify: true, write: false, allowOverwrite: true,
-		loader: { '.ttf': 'dataurl', '.woff': 'dataurl', '.woff2': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl', '.sh': 'dataurl' },
+		...createEsbuildOptions(root), allowOverwrite: true,
 	};
 	const [workbench, startup] = await Promise.all([
 		esbuild.build({ ...options, entryPoints: ['vs/code/browser/workbench/workbench.js'], outdir: directory }),

@@ -81,7 +81,7 @@ flowchart LR
 
 ## 6. 全流程时序
 
-本节分两个视角、三个场景。6.1 是用户操作流程,只看用户在浏览器里做了什么、看到了什么,Caddy 与 Remote Server 合并为"服务"。6.2 是内部运行流程,把服务拆成 Caddy、Remote Server 请求分发、鉴权 adapter、Better Auth、SQLite、Workbench 服务端,每张图后列出由哪个文件的哪个函数完成、传递了什么。两个视角都按首次注册、后续登录、退出三个场景组织;部署启动只出现在内部视角,作为三个场景的前置。
+本节分多个角度。6.1 是用户操作流程,只看用户在浏览器里做了什么、看到了什么,Caddy 与 Remote Server 合并为"服务"。6.2 是内部运行流程,把服务拆成 Caddy、Remote Server 请求分发、鉴权 adapter、Better Auth、SQLite、Workbench 服务端,每张图后列出由哪个文件的哪个函数完成、传递了什么。两个视角都按首次注册、后续登录、退出三个场景组织;部署启动只出现在内部视角,作为三个场景的前置。6.3 把 `/auth/verify` 的出口按条件画成决策树,6.4 用状态图看实例与会话的组合,6.5 汇总失败分支。
 
 ### 6.1 用户操作流程
 
@@ -345,7 +345,69 @@ sequenceDiagram
 23. `GET /auth/logout` 需要有效会话,否则 303 到登录页;有会话时渲染确认页并显示用户名。
 24. `POST /auth/logout` 经 `invokeBetterAuth POST /sign-out` 删除当前会话,303 到 `/auth/login` 并附过期 cookie;后续请求不再获准,其他浏览器的会话不受影响;已有 WebSocket 的边界见第 3 节。
 
-### 6.3 失败分支
+### 6.3 授权决策
+
+时序图按时间展开,这张图按条件展开:`/auth/verify` 对一个请求只有四种出口,登录页与注册页的入口守卫与之对称。
+
+```mermaid
+flowchart TD
+    R["Caddy 收到非 /auth/* 请求,forward_auth 到 /auth/verify"] --> S{"readSession 有有效会话?"}
+    S -- 是 --> OK["204,可能附续期 Set-Cookie"] --> PX["reverse_proxy 到原有 Workbench 路由"]
+    S -- 否 --> NAV{"导航请求?<br/>GET 或 HEAD,且 Sec-Fetch-Mode 为 navigate 或 Accept 含 text/html,<br/>且不是 WebSocket 升级"}
+    NAV -- 否 --> U401["401 JSON,不跳转<br/>fetch、WebSocket 握手直接失败"]
+    NAV -- 是 --> REG{"registrationOpen,用户表为空?"}
+    REG -- 是 --> R303["303 /auth/register?return_to=…"]
+    REG -- 否 --> L303["303 /auth/login?return_to=…"]
+
+    subgraph GUARD["页面入口的对称守卫"]
+        direction TB
+        LP["GET /auth/login"] --> LP1{"用户表为空?"}
+        LP1 -- 是 --> LP2["303 /auth/register"]
+        LP1 -- 否 --> LP3{"已有会话?"}
+        LP3 -- 是 --> LP4["303 return_to"]
+        LP3 -- 否 --> LP5["渲染登录页"]
+        RP["GET /auth/register"] --> RP1{"用户表为空?"}
+        RP1 -- 否 --> RP2["303 /auth/login"]
+        RP1 -- 是 --> RP3["渲染注册页"]
+    end
+```
+
+`return_to` 在每个出口都经 `sanitizeReturnTo` 收敛到 base path 内且不指向 `/auth/*`;WebSocket 的判定依赖 Caddy 转发的 `X-Forwarded-Upgrade`,因为 `forward_auth` 子请求本身已剥掉升级头。
+
+### 6.4 实例与会话状态
+
+再换一个角度:实例只有"未注册 / 已注册"两个状态且单向,浏览器会话在"无 / 有效"之间往返。两者的组合决定了 6.3 的每个出口。
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "实例(数据库)" as Instance {
+        [*] --> Unregistered: 部署启动,用户表为空
+        state "未注册" as Unregistered
+        state "已注册" as Registered
+        Unregistered --> Registered: POST /auth/register 成功,instanceOwner 唯一约束保证只发生一次
+        Registered --> Registered: 重启,沿用 secret 与数据库,不重开注册
+    }
+    state "浏览器会话(cookie)" as Session {
+        [*] --> None
+        state "无会话" as None
+        state "有效" as Valid
+        None --> Valid: 注册或登录成功,Set-Cookie
+        Valid --> Valid: 使用中且距上次续期超过 updateAge,续期 Set-Cookie 经 Caddy 回传
+        Valid --> None: 超过 TTL 未使用而过期
+        Valid --> None: POST /auth/logout,sign-out 删除会话
+        Valid --> None: 清 cookie 或换浏览器,服务端会话仍在直到过期
+    }
+```
+
+| 实例 | 会话 | 导航请求 | 非导航与 WebSocket |
+|---|---|---|---|
+| 未注册 | 无 | 303 注册页 | 401 |
+| 已注册 | 无 | 303 登录页 | 401 |
+| 已注册 | 有效 | 204,放行 | 204,放行 |
+| 未注册 | 有效 | 不可能出现,会话只能在注册后建立 | 同左 |
+
+### 6.5 失败分支
 
 每一步的失败出口见第 9 节的表:manifest 与 secret 损坏在部署启动时失败关闭;并发注册由唯一约束裁决;凭据错误、跨源、超限、限速在注册与登录时以 401 / 403 / 413 / 429 返回并重渲染页面;会话缺失时按导航与否分别 303 与 401。
 

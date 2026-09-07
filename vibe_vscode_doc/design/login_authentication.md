@@ -274,7 +274,7 @@ sequenceDiagram
     Auth->>Auth: origin 校验,/sign-in/username 每分钟 5 次限速,比对密码哈希
     Auth->>DB: 查用户,INSERT session
     Auth-->>AuthSrv: 200 与 Set-Cookie,或 401 / 403 / 429
-    AuthSrv-->>Browser: 303 到 return_to,附 Set-Cookie;失败则以原状态码重渲染登录页
+    AuthSrv-->>Browser: 303 到 return_to,附 Set-Cookie,失败则以原状态码重渲染登录页
 ```
 
 14. 无会话且用户表非空时,`handleVerify` 对导航请求 303 到 `/auth/login`;非导航请求(fetch、WebSocket)返回 401 JSON,不跳转。

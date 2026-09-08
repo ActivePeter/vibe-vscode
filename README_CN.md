@@ -47,7 +47,32 @@ curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/i
 # 浏览器打开 https://dev.example.com:18080，注册管理员，然后在界面中添加项目。
 ```
 
-没有自有 TLS 证书时，按启动日志信任 Caddy 根证书；管理员注册完成前请限制访问。多入口、持久配置与做成服务见[配置与浏览器地址](docs/install.md#configuration-and-browser-addresses)、[做成服务](docs/install.md#run-as-a-service-optional)；tag 如何变成发布包见[发布流程](docs/release.md)。
+没有自有 TLS 证书时，按启动日志信任 Caddy 根证书；管理员注册完成前请限制访问。Ctrl-C 停止全部进程。
+
+| 参数 | 默认 | 用途 |
+| --- | --- | --- |
+| `--origin` | `https://<主机名>:<端口>` | 浏览器里输入的 HTTPS 地址本身；多个入口就重复给出，不需要域名 |
+| `--port` | `18080` | 公开 HTTPS 端口 |
+| `--state-dir` | `~/.vibe-vscode/state` | 账号、设置、扩展与工作区，升级时保留 |
+| `--tls-cert` / `--tls-key` | 自签 | 自有证书与私钥 |
+| `--session-ttl` | `43200` | 会话有效期，秒 |
+
+```bash
+# 局域网、VPN 与本机三个入口
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://192.168.1.5:18080 --origin https://100.64.0.7:18080 --origin https://localhost:18080
+
+# 自有证书，443 端口
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com --port 443 --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem
+
+# 把默认值写进配置文件，之后直接 start
+printf 'VIBE_VSCODE_ORIGIN=https://dev.example.com:18080\n' > ~/.vibe-vscode/state/vibe-vscode.env
+~/.vibe-vscode/current/bin/vibe-vscode start
+
+# 可选：做成用户级服务
+~/.vibe-vscode/current/bin/vibe-vscode systemd > ~/.config/systemd/user/vibe-vscode.service && systemctl --user enable --now vibe-vscode
+```
+
+细节、健康检查、升级与回滚见[安装与启动](docs/install.md)。
 
 ## 开发启动
 

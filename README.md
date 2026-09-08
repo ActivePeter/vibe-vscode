@@ -47,7 +47,32 @@ Use the hostname or IP you will type into the browser:
 # Open https://dev.example.com:18080; register the administrator, then add projects in the workbench.
 ```
 
-Without your own TLS certificate, trust the Caddy root certificate printed at startup. Restrict access until the administrator is registered. Multiple addresses, persistent configuration and running as a service: [Configuration and browser addresses](docs/install.md#configuration-and-browser-addresses), [Run as a service](docs/install.md#run-as-a-service-optional). How a tag becomes a release: [Releases](docs/release.md).
+Without your own TLS certificate, trust the Caddy root certificate printed at startup. Restrict access until the administrator is registered. Ctrl-C stops everything.
+
+| Option | Default | Use |
+| --- | --- | --- |
+| `--origin` | `https://<hostname>:<port>` | The exact HTTPS address typed into the browser; repeat it for several entries, no domain needed |
+| `--port` | `18080` | Public HTTPS port |
+| `--state-dir` | `~/.vibe-vscode/state` | Accounts, settings, extensions and the workspace; keep it across upgrades |
+| `--tls-cert` / `--tls-key` | self-signed | Your own certificate and key |
+| `--session-ttl` | `43200` | Session lifetime in seconds |
+
+```bash
+# LAN, VPN and local entries at once
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://192.168.1.5:18080 --origin https://100.64.0.7:18080 --origin https://localhost:18080
+
+# Your own certificate on port 443
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com --port 443 --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem
+
+# Persist defaults, then just start
+printf 'VIBE_VSCODE_ORIGIN=https://dev.example.com:18080\n' > ~/.vibe-vscode/state/vibe-vscode.env
+~/.vibe-vscode/current/bin/vibe-vscode start
+
+# Optional: run as a user service
+~/.vibe-vscode/current/bin/vibe-vscode systemd > ~/.config/systemd/user/vibe-vscode.service && systemctl --user enable --now vibe-vscode
+```
+
+Details, health checks, upgrades and rollback: [Install and start](docs/install.md).
 
 ## Develop from source
 

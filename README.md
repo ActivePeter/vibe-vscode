@@ -30,10 +30,10 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
 
 ## Install
 
-Linux x64, no root, no systemd; Node and Caddy are bundled. Replace `<tag>` with a [published release](https://github.com/ActivePeter/vibe-vscode/releases):
+Linux x64, no root, no systemd; Node and Caddy are bundled. Install [v1.135.0-vibe.1](https://github.com/ActivePeter/vibe-vscode/releases/tag/v1.135.0-vibe.1):
 
 ```bash
-curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/v1.135.0-vibe.1/install.sh' | bash -s -- --tag 'v1.135.0-vibe.1'
 ```
 
 The installer verifies the archive and selects it as `~/.vibe-vscode/current`; it never starts anything. Custom install root, upgrades and rollback: [Install and start](docs/install.md#quick-start).

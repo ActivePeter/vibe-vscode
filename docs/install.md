@@ -16,7 +16,7 @@ curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/i
 
 No root, systemd, separate Node installation, or separate Caddy installation is required. The host needs Bash, curl, tar, find, GNU coreutils (including sha256sum), and util-linux (flock and setsid). Use a port above 1023 for an unprivileged start. Add `--root '<absolute-install-root>'` to the installer for a custom installation.
 
-The installer verifies the archive checksum and runtime before atomically selecting `<root>/releases/<tag>` through `<root>/current`. It never overwrites an existing release or starts a service. `start` runs the bundled Caddy and Remote Server in the foreground, streams their logs, and stops both on Ctrl-C or if either component exits. Caddy listens on `0.0.0.0`; the backend uses a private Unix socket in a `0700` runtime directory.
+The installer verifies the archive checksum and runtime before atomically selecting `<root>/releases/<tag>` through `<root>/current`, and creates the default state directory `<root>/state` (`0700`) so configuration can be written before the first start; if it cannot create that directory it exits with an error naming the path. It never overwrites an existing release or starts a service. `start` runs the bundled Caddy and Remote Server in the foreground, streams their logs, and stops both on Ctrl-C or if either component exits. Caddy listens on `0.0.0.0`; the backend uses a private Unix socket in a `0700` runtime directory.
 
 Without certificate options, Caddy issues certificates with its local CA. The startup log prints the browser addresses first and the root certificate to trust: `<state-dir>/caddy/pki/authorities/local/root.crt`. Import that root certificate into the browser/client's trust store; do not distribute its private key. No trust store is modified automatically. With your own certificate, pass `--tls-cert '<certificate-file>' --tls-key '<private-key-file>'`; its SANs must cover every configured hostname or IP.
 
@@ -35,7 +35,7 @@ The default port is `18080`, state is `<root>/state`, and the default origin is 
 
 These are an explicit HTTPS allowlist, not permission to trust arbitrary request headers. The first forwarded host, or Host when absent, only selects a listed origin; an unmatched form POST is rejected, and navigation returns to the first configured origin. Workbench connections use the same selection. Cookies are host-only: different hostnames/IPs normally have separate browser sessions and sign out independently. Cookies do **not** isolate different ports on the same hostname. The authentication contract is documented in [Full-screen login and instance authentication](../vibe_vscode_doc/design/login_authentication.md).
 
-Persistent defaults live in `<state-dir>/vibe-vscode.env`. Create that directory and edit the file as data:
+Persistent defaults live in `<state-dir>/vibe-vscode.env`; the installer already created the default state directory. Edit the file as data:
 
 ```dotenv
 VIBE_VSCODE_ORIGIN=https://dev.example.com:18080,https://100.64.0.7:18080
@@ -61,16 +61,14 @@ Keep `auth/`, `server/`, `extensions/`, `caddy/` and `vibe-vscode.code-workspace
 Stop any foreground instance first. Generate a user unit with the same options as `start` (or put the defaults in the configuration file above):
 
 ```bash
-mkdir -p ~/.config/systemd/user
-~/.vibe-vscode/current/bin/vibe-vscode systemd --origin https://dev.example.com:18080 > ~/.config/systemd/user/vibe-vscode.service
-systemctl --user daemon-reload
-systemctl --user enable --now vibe-vscode
+~/.vibe-vscode/current/bin/vibe-vscode systemd --install --origin https://dev.example.com:18080
+systemctl --user daemon-reload && systemctl --user enable --now vibe-vscode
 loginctl enable-linger "$(id -un)"
 ```
 
-Linger keeps the user service running after logout and may require administrator approval. The generated unit prints the same reminder. `systemd` only prints a unit; it never installs or enables anything. Its `ExecStart` uses `<root>/current/bin/vibe-vscode start --state-dir …`, preserving CLI overrides and rereading the same data file at each start. Crash recovery reuses the selected release without building or downloading.
+`--install` creates `~/.config/systemd/user/` (or `$XDG_CONFIG_HOME/systemd/user/`) when missing and writes `vibe-vscode.service` there; if the directory cannot be created or written it exits with an error naming the path so you can create it and grant permission, then rerun. Without `--install`, `systemd` prints the unit to stdout. Linger keeps the user service running after logout and may require administrator approval. Nothing is enabled automatically. Its `ExecStart` uses `<root>/current/bin/vibe-vscode start --state-dir …`, preserving CLI overrides and rereading the same data file at each start. Crash recovery reuses the selected release without building or downloading.
 
-For an administrator-managed system service, generate with `--user <service-account> --state-dir '<absolute-state-dir>'`, install the result as `/etc/systemd/system/vibe-vscode.service`, and use `systemctl` without `--user`. Create the account and give it access to the installation, state and certificate files first; the generator does not change accounts or permissions. No separate Caddy service or hand-edited templates are needed.
+For an administrator-managed system service, run `systemd --install --user <service-account> --state-dir '<absolute-state-dir>'` as root; it writes `/etc/systemd/system/vibe-vscode.service`, then use `systemctl` without `--user`. Create the account and give it access to the installation, state and certificate files first; the generator does not change accounts or permissions. No separate Caddy service or hand-edited templates are needed.
 
 ## Upgrade, health checks, and rollback
 

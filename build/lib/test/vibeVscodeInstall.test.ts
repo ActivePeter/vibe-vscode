@@ -77,7 +77,8 @@ test('installs without system directories, reuses immutable tags, upgrades and r
 			unchanged: before.mtimeMs === (await fs.stat(path.join(release, 'vibe-release.json'))).mtimeMs,
 			state: await fs.readFile(path.join(f.root, 'state/auth/keep'), 'utf8'),
 			releases: (await fs.readdir(path.join(f.root, 'releases'))).sort(),
-		}, { upgraded: 'releases/v1.2.4', rolledBack: 'releases/v1.2.3', restored: 'releases/v1.2.4', unchanged: true, state: 'account and session state', releases: ['v1.2.3', 'v1.2.4'] });
+			stateMode: (await fs.stat(path.join(f.root, 'state'))).mode & 0o777,
+		}, { upgraded: 'releases/v1.2.4', rolledBack: 'releases/v1.2.3', restored: 'releases/v1.2.4', unchanged: true, state: 'account and session state', releases: ['v1.2.3', 'v1.2.4'], stateMode: 0o700 });
 	} finally {
 		await f.dispose();
 	}
@@ -155,6 +156,30 @@ test('the generated user unit preserves CLI overrides, escapes paths and documen
 		await assert.rejects(run(cli, ['systemd', '--state-dir', state], { cwd: f.temporary, env: f.env }), /Invalid URL/);
 		await assert.rejects(fs.stat(path.join(f.temporary, 'SHOULD_NOT_EXIST')), { code: 'ENOENT' });
 		assert.deepStrictEqual(await fs.readdir(state), ['vibe-vscode.env']);
+	} finally {
+		await f.dispose();
+	}
+});
+
+test('systemd --install creates the unit directory, writes the unit, and fails clearly without permission', linuxOnly, async () => {
+	const f = await fixture();
+	try {
+		await f.archive('v1.2.3');
+		await f.install('--tag', 'v1.2.3');
+		const cli = path.join(f.root, 'current/bin/vibe-vscode');
+		const configHome = path.join(f.temporary, 'xdg config');
+		const installed = await run(cli, ['systemd', '--install', '--origin', 'https://localhost:18443'], { env: { ...f.env, XDG_CONFIG_HOME: configHome } });
+		const unit = path.join(configHome, 'systemd/user/vibe-vscode.service');
+		assert.deepStrictEqual({
+			wrote: installed.stdout.includes(`Wrote ${unit}`),
+			next: installed.stdout.includes('systemctl --user daemon-reload && systemctl --user enable --now vibe-vscode'),
+			execStart: (await fs.readFile(unit, 'utf8')).includes('"--origin" "https://localhost:18443"'),
+		}, { wrote: true, next: true, execStart: true });
+		if (process.getuid?.() !== 0) {
+			const readOnly = path.join(f.temporary, 'read-only');
+			await fs.mkdir(readOnly, { mode: 0o500 });
+			await assert.rejects(run(cli, ['systemd', '--install'], { env: { ...f.env, XDG_CONFIG_HOME: path.join(readOnly, 'config') } }), /cannot create .*then rerun/);
+		}
 	} finally {
 		await f.dispose();
 	}

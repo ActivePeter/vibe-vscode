@@ -20,9 +20,11 @@ try {
   --tls-cert <file> --tls-key <file>  Use your certificate; otherwise Caddy's local CA
   --session-ttl <seconds>        Session lifetime (default: 43200)
   --user <user>                  systemd only: generate a system service
+  --install                      systemd only: write the unit into the systemd unit directory
 
 start runs in the foreground; Ctrl-C stops both processes. status checks both boundaries.
-systemd prints a unit; it does not install or enable anything.
+systemd prints a unit; with --install it writes the unit file (creating the directory) and prints the
+systemctl commands to run next. Nothing is enabled automatically.
 Config: <state-dir>/vibe-vscode.env, literal VIBE_VSCODE_ORIGIN, PORT, TLS_CERT,
 TLS_KEY and SESSION_TTL values. Command-line options override the file.`);
 		process.exit(0);

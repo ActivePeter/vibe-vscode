@@ -69,7 +69,8 @@ printf 'VIBE_VSCODE_ORIGIN=https://dev.example.com:18080\n' > ~/.vibe-vscode/sta
 ~/.vibe-vscode/current/bin/vibe-vscode start
 
 # Optional: run as a user service
-~/.vibe-vscode/current/bin/vibe-vscode systemd > ~/.config/systemd/user/vibe-vscode.service && systemctl --user enable --now vibe-vscode
+~/.vibe-vscode/current/bin/vibe-vscode systemd --install
+systemctl --user daemon-reload && systemctl --user enable --now vibe-vscode
 ```
 
 Details, health checks, upgrades and rollback: [Install and start](docs/install.md).

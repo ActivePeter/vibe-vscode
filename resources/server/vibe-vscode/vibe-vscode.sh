@@ -7,6 +7,35 @@ umask 0077
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 COMMAND="${1:---help}"
 [[ $# -eq 0 ]] || shift
+
+fail() { printf 'vibe-vscode: %s\n' "$*" >&2; exit 1; }
+
+if [[ "$COMMAND" == systemd ]]; then
+	install_unit=false
+	system_unit=false
+	unit_arguments=()
+	for argument in "$@"; do
+		case "$argument" in
+		--install) install_unit=true ;;
+		--user | --user=*) system_unit=true; unit_arguments+=("$argument") ;;
+		*) unit_arguments+=("$argument") ;;
+		esac
+	done
+	if [[ "$install_unit" == true ]]; then
+		unit="$("$ROOT/node" "$ROOT/resources/server/vibe-vscode/cli-config.ts" "$ROOT" systemd "${unit_arguments[@]}")"
+		if [[ "$system_unit" == true ]]; then
+			target=/etc/systemd/system/vibe-vscode.service
+			next='systemctl daemon-reload && systemctl enable --now vibe-vscode'
+		else
+			target="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/vibe-vscode.service"
+			next='systemctl --user daemon-reload && systemctl --user enable --now vibe-vscode'
+		fi
+		mkdir -p -- "$(dirname -- "$target")" 2>/dev/null || fail "cannot create $(dirname -- "$target"); create it with write permission for $(id -un), then rerun"
+		printf '%s\n' "$unit" > "$target" 2>/dev/null || fail "cannot write $target; fix its permissions, then rerun"
+		printf 'Wrote %s\nNext: %s\n' "$target" "$next"
+		exit 0
+	fi
+fi
 if [[ "$COMMAND" != start && "$COMMAND" != status ]]; then
 	exec "$ROOT/node" "$ROOT/resources/server/vibe-vscode/cli-config.ts" "$ROOT" "$COMMAND" "$@"
 fi
@@ -20,8 +49,6 @@ BACKEND_PID=''
 CADDY_PID=''
 SOCKET_DIRECTORY=''
 SOCKET=''
-
-fail() { printf 'vibe-vscode: %s\n' "$*" >&2; exit 1; }
 
 probe() {
 	curl --noproxy '*' --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 2 "$@" 2>/dev/null || true

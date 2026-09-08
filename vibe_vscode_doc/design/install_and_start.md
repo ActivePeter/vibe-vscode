@@ -22,10 +22,8 @@ curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/i
 要做成后台服务的人再多一步:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-~/.vibe-vscode/current/bin/vibe-vscode systemd --origin https://dev.example.com:18080 > ~/.config/systemd/user/vibe-vscode.service
-systemctl --user daemon-reload
-systemctl --user enable --now vibe-vscode
+~/.vibe-vscode/current/bin/vibe-vscode systemd --install --origin https://dev.example.com:18080
+systemctl --user daemon-reload && systemctl --user enable --now vibe-vscode
 loginctl enable-linger "$(id -un)"
 ```
 
@@ -37,7 +35,7 @@ loginctl enable-linger "$(id -un)"
 
 | 部件 | 职责 | 复用什么 |
 |---|---|---|
-| [`install.sh`](../../install.sh)(release 附件和包内 `bin/install.sh`) | 持有 `<root>/install.lock`,下载并校验 tar/metadata,验证后发布不可变 release,原子切换 `current`/`previous`;不启动进程、不写状态或系统目录。 | 将原手工安装流程固化,增加并发锁、路径包含性验证与失败清理 |
+| [`install.sh`](../../install.sh)(release 附件和包内 `bin/install.sh`) | 持有 `<root>/install.lock`,下载并校验 tar/metadata,验证后发布不可变 release,原子切换 `current`/`previous`;创建默认状态目录 `<root>/state`(0700),创建失败即报错退出并给出路径;不启动进程、不写系统目录。 | 将原手工安装流程固化,增加并发锁、路径包含性验证与失败清理 |
 | [Caddy 随包发布](../../build/lib/caddy.ts) | `package` 将固定版本二进制放在包根,与 `node` 并列;归档 SHA-512 与二进制 SHA-256 都通过才接受。 | 沿用 `ensure_caddy_binary` 的 Caddy `2.11.4`、架构和校验值,使用已有构建下载工具 |
 | [`bin/vibe-vscode`](../../resources/server/vibe-vscode/vibe-vscode.sh)(用户入口) | `start` 持有状态目录的运行锁,拥有 Caddy/Remote Server 两个子进程组和 socket 的最终清理;`systemd` 只输出 unit;`status` 只读探测。配置由随包 Node 执行的 [TypeScript 解析器](../../resources/server/vibe-vscode/cli-config.ts) 按数据读取。 | `run_gateway_stack`(两进程、socket、`wait -n`、trap 清理)、`is_runtime_healthy`(四个探针)、`wait_until_ready`。现有 `bin/vibe-vscode-server` 保留为底层 launcher,由 `start` 调用 |
 
@@ -194,7 +192,7 @@ Caddyfile 模板按 TLS 来源二选一由 `start` 生成到 `<state-dir>/caddy/
 
 ## 6. 服务化可选
 
-`vibe-vscode systemd` 按当前参数打印一份 unit,`ExecStart` 就是 `<root>/current/bin/vibe-vscode start --state-dir …`。用户级(`systemctl --user`)与系统级都可用,三个旧手改模板已删除。生成器保留命令行覆盖项,其他默认值在每次启动时从同一个配置文件读取,只输出文本,不安装或启用服务。
+`vibe-vscode systemd` 按当前参数生成一份 unit,`ExecStart` 就是 `<root>/current/bin/vibe-vscode start --state-dir …`。加 `--install` 时自动创建 unit 目录(用户级 `~/.config/systemd/user/`,带 `--user <account>` 时为 `/etc/systemd/system/`)并写入文件,目录创建不了或文件写不进就报错退出并给出路径,由用户自行创建或授权后重跑;之后打印要执行的 `daemon-reload` 与 `enable` 命令,不自动启用。不带 `--install` 只打印到 stdout。用户级与系统级都可用,三个旧手改模板已删除。生成器保留命令行覆盖项,其他默认值在每次启动时从同一个配置文件读取。
 
 用户级服务若要在注销后常驻,还需 `loginctl enable-linger <user>`,该操作可能需要管理员授权;生成的 unit 顶部也带此提示。系统级用 `--user <service-account>` 生成 `User=`,账号、目录权限与安装 unit 由操作者管理。
 

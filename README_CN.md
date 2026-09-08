@@ -16,7 +16,17 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
   - ✅ **登录后才能访问**：所有托管的 HTTP 请求和 WebSocket 握手在到达任何 VS Code 路由之前必须先通过登录。第一个访问者注册唯一的管理员账号，之后注册关闭。会话在服务重启后仍然有效，使用中自动续期，可在 Accounts 菜单或命令面板退出。认证内嵌在远程服务器进程中，使用 Node 自带的 SQLite，由 Caddy 在网关强制执行；见[设计文档](vibe_vscode_doc/design/login_authentication.md)。
   - 🚧 **非阻塞的远程连接体验**：计划用状态栏中的重连或不可用状态替代模态打断，在网络恢复后立即推动重试，并保持当前工作内容打开；当前实现尚未包含这项能力。
 
-  正式发布包、systemd/Caddy 配置、升级与回滚见[发布与安装文档](docs/release.md)。若从源码开发，安装依赖后可用两个终端启动环境：
+  Linux x64 快速开始（把 `<tag>` 换成已发布版本，地址换成浏览器实际访问的主机名或 IP）：
+
+  ```bash
+  curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+  ~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
+  # 浏览器打开 https://dev.example.com:18080，注册管理员，然后在界面中添加项目。
+  ```
+
+  Node 与 Caddy 随包提供，无需 root 或 systemd。没有自有 TLS 证书时，按启动日志信任 Caddy 根证书；管理员注册完成前请限制初始访问。多入口、持久配置、可选服务化、升级与回滚见[发布与安装文档](docs/release.md#quick-start)。
+
+  若从源码开发，安装依赖后可用两个终端启动环境：
 
   ```bash
   # 终端 1：持续编译

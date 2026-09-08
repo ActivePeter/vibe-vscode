@@ -44,7 +44,8 @@ try {
 	const port = address.port;
 	await new Promise<void>(resolve => reservation.close(() => resolve()));
 	const publicOrigin = `https://configured.example:${port}`;
-	const authentication = await VibeAuthenticationService.create({ stateDirectory: join(temporary, 'auth'), publicOrigin, sessionTtlSeconds: 60, sessionUpdateAgeSeconds: 1 });
+	const secondOrigin = `https://100.64.0.7:${port}`;
+	const authentication = await VibeAuthenticationService.create({ stateDirectory: join(temporary, 'auth'), publicOrigins: [publicOrigin, secondOrigin], sessionTtlSeconds: 60, sessionUpdateAgeSeconds: 1 });
 	const authenticationServer = adapter = new VibeAuthenticationServer({ authenticationService: authentication });
 	backend = http.createServer(async (request, response) => {
 		if (!await authenticationServer.handle(request, response)) {
@@ -75,7 +76,7 @@ try {
 	gateway.stdout?.on('data', chunk => { gatewayLog += chunk; });
 	gateway.stderr?.on('data', chunk => { gatewayLog += chunk; });
 	const request = (path: string, options: { method?: string; headers?: http.OutgoingHttpHeaders; body?: string } = {}): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> => new Promise((resolve, reject) => {
-		const req = https.request({ host: '127.0.0.1', port, path, rejectUnauthorized: false, method: options.method ?? 'GET', headers: options.headers }, response => {
+		const req = https.request({ host: '127.0.0.1', port, path, rejectUnauthorized: false, method: options.method ?? 'GET', headers: { Host: new URL(publicOrigin).host, ...options.headers } }, response => {
 			const chunks: Buffer[] = [];
 			response.on('data', chunk => chunks.push(chunk));
 			response.on('end', () => resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks).toString('utf8') }));
@@ -110,8 +111,9 @@ try {
 	const form = new URLSearchParams({ username: 'review-admin', password: 'review-only password value', confirm_password: 'review-only password value', return_to: '/' }).toString();
 	const headers = { 'Content-Type': 'application/x-www-form-urlencoded', Host: 'attacker.invalid', 'X-Forwarded-Host': 'attacker.invalid', 'X-Original-Host': 'attacker.invalid' };
 	const deniedRegistration = await request('/auth/register', { method: 'POST', headers: { ...headers, Origin: 'https://attacker.invalid' }, body: form });
-	const registration = await request('/auth/register', { method: 'POST', headers: { ...headers, Origin: publicOrigin }, body: form });
-	assert.deepEqual([deniedRegistration.status, registration.status], [403, 303]);
+	const deniedHost = await request('/auth/register', { method: 'POST', headers: { ...headers, Origin: publicOrigin }, body: form });
+	const registration = await request('/auth/register', { method: 'POST', headers: { ...headers, 'X-Forwarded-Host': `${new URL(secondOrigin).host}, proxy.invalid`, Origin: secondOrigin }, body: form });
+	assert.deepEqual([deniedRegistration.status, deniedHost.status, registration.status, registration.headers.location], [403, 403, 303, `${secondOrigin}/`]);
 	const sessionCookie = registration.headers['set-cookie']?.find(value => value.startsWith('__Secure-vibe.session_token='));
 	assert.ok(sessionCookie);
 	const cookie = sessionCookie.split(';', 1)[0];

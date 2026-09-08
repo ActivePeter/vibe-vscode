@@ -2,18 +2,109 @@
 
 # Releases and installation
 
-Vibe VS Code releases target Linux x64 and run the Web workbench with a remote server. The archive includes Node, production dependencies, built-in extensions, and verified browser cache chunks. Users do not need Node or a source checkout to run it. Other operating systems and architectures are not covered by this release workflow yet.
+Vibe VS Code releases target Linux x64 and run the Web workbench with a remote server. The archive includes Node, pinned Caddy 2.11.4, production dependencies, built-in extensions, and verified browser cache chunks. Users do not need Node or a source checkout to run it. Other operating systems and architectures are not covered by this release workflow yet.
+
+## Quick start
+
+Choose a **published** tag from [GitHub Releases](https://github.com/ActivePeter/vibe-vscode/releases), replace `<tag>`, and use the HTTPS address you will open in the browser:
+
+```bash
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
+# Open https://dev.example.com:18080; register the administrator, then add projects in the workbench.
+```
+
+No root, systemd, separate Node installation, or separate Caddy installation is required. The host needs Bash, curl, tar, find, GNU coreutils (including sha256sum), and util-linux (flock and setsid). Use a port above 1023 for an unprivileged start. Add `--root '<absolute-install-root>'` to the installer for a custom installation.
+
+The installer verifies the archive checksum and runtime before atomically selecting `<root>/releases/<tag>` through `<root>/current`. It never overwrites an existing release or starts a service. `start` runs the bundled Caddy and Remote Server in the foreground, streams their logs, and stops both on Ctrl-C or if either component exits. Caddy listens on `0.0.0.0`; the backend uses a private Unix socket in a `0700` runtime directory.
+
+Without certificate options, Caddy issues certificates with its local CA. The startup log prints the browser addresses first and the root certificate to trust: `<state-dir>/caddy/pki/authorities/local/root.crt`. Import that root certificate into the browser/client's trust store; do not distribute its private key. No trust store is modified automatically. With your own certificate, pass `--tls-cert '<certificate-file>' --tls-key '<private-key-file>'`; its SANs must cover every configured hostname or IP.
+
+Restrict access to the intended administrator until registration is complete: **the first visitor creates the only administrator account**. The `ready` message appears only after the private authentication/workbench checks and public status/login checks all pass. An empty physical workspace is created under state on first start and preserved thereafter; add project folders in the UI. There is no `--workspace` or `--base-path` option in this first launcher version.
+
+### Configuration and browser addresses
+
+The default port is `18080`, state is `<root>/state`, and the default origin is `https://<hostname -f>:<port>` (with the machine hostname as fallback). Prefer an explicit, reachable `--origin`. A domain is not required; repeat the option for LAN, VPN, or local access:
+
+```bash
+~/.vibe-vscode/current/bin/vibe-vscode start \
+  --origin https://192.168.1.5:18080 \
+  --origin https://100.64.0.7:18080 \
+  --origin https://localhost:18080
+```
+
+These are an explicit HTTPS allowlist, not permission to trust arbitrary request headers. The first forwarded host, or Host when absent, only selects a listed origin; an unmatched form POST is rejected, and navigation returns to the first configured origin. Workbench connections use the same selection. Cookies are host-only: different hostnames/IPs normally have separate browser sessions and sign out independently. Cookies do **not** isolate different ports on the same hostname. The authentication contract is documented in [Full-screen login and instance authentication](../vibe_vscode_doc/design/login_authentication.md).
+
+Persistent defaults live in `<state-dir>/vibe-vscode.env`. Create that directory and edit the file as data:
+
+```dotenv
+VIBE_VSCODE_ORIGIN=https://dev.example.com:18080,https://100.64.0.7:18080
+VIBE_VSCODE_PORT=18080
+VIBE_VSCODE_SESSION_TTL=43200
+```
+
+| Input | Meaning |
+| --- | --- |
+| `--state-dir <directory>` | Selects state and the configuration file itself; there is no `VIBE_VSCODE_STATE_DIR` file key |
+| `--origin` / `VIBE_VSCODE_ORIGIN` | Repeated CLI options, or comma-separated file values; complete HTTPS origins without paths, credentials or wildcards |
+| `--port` / `VIBE_VSCODE_PORT` | Caddy's local listening port; defaults to 18080 |
+| `--tls-cert` / `VIBE_VSCODE_TLS_CERT` | Certificate file, supplied together with the key |
+| `--tls-key` / `VIBE_VSCODE_TLS_KEY` | Private key file |
+| `--session-ttl` / `VIBE_VSCODE_SESSION_TTL` | Sliding-session lifetime in seconds, from 60 to 604800; defaults to 43200 |
+
+CLI options override file values; providing `--origin` replaces the entire file list. The file is not sourced as shell code: variables, tilde and command substitutions are not expanded, and unknown keys are rejected. Certificate paths in the file are relative to state unless absolute; CLI paths are relative to the calling directory. State cannot overlap a runtime or the releases tree.
+
+Keep `auth/`, `server/`, `extensions/`, `caddy/` and `vibe-vscode.code-workspace` under state across restarts and upgrades. Losing `auth/` loses the administrator database and signing secret, invalidates sessions, and reopens registration. Back up state before upgrades.
+
+## Run as a service (optional)
+
+Stop any foreground instance first. Generate a user unit with the same options as `start` (or put the defaults in the configuration file above):
+
+```bash
+mkdir -p ~/.config/systemd/user
+~/.vibe-vscode/current/bin/vibe-vscode systemd --origin https://dev.example.com:18080 > ~/.config/systemd/user/vibe-vscode.service
+systemctl --user daemon-reload
+systemctl --user enable --now vibe-vscode
+loginctl enable-linger "$(id -un)"
+```
+
+Linger keeps the user service running after logout and may require administrator approval. The generated unit prints the same reminder. `systemd` only prints a unit; it never installs or enables anything. Its `ExecStart` uses `<root>/current/bin/vibe-vscode start --state-dir …`, preserving CLI overrides and rereading the same data file at each start. Crash recovery reuses the selected release without building or downloading.
+
+For an administrator-managed system service, generate with `--user <service-account> --state-dir '<absolute-state-dir>'`, install the result as `/etc/systemd/system/vibe-vscode.service`, and use `systemctl` without `--user`. Create the account and give it access to the installation, state and certificate files first; the generator does not change accounts or permissions. No separate Caddy service or hand-edited templates are needed.
+
+## Upgrade, health checks, and rollback
+
+```bash
+~/.vibe-vscode/current/bin/install.sh --tag '<new-tag>'
+# Stop and restart the foreground command, or: systemctl --user restart vibe-vscode
+~/.vibe-vscode/current/bin/vibe-vscode status --origin https://dev.example.com:18080
+```
+
+Use the same `--state-dir` and configuration/CLI options as the running instance. `status` is read-only: it checks private `/auth/health` (204) and workbench `/` (200), then public `/auth/api/status` (200) and unauthenticated navigation `/` (303) for every origin. Local HTTPS probes preserve the browser authority/SNI while connecting to the local gateway; they skip trust validation so a new local CA can start. They do not prove that remote DNS, firewalls, or the browser's trust store are configured.
+
+The installer holds `<root>/install.lock` across download, validation and pointer changes. Concurrent installation fails without changing the selected release. An install failure leaves the old selection and service untouched; upgrading `current` also leaves a running instance pinned to its resolved release. `start` separately holds `<state-dir>/run.lock` for its entire lifetime, including health checks and child-process cleanup, so two starts cannot share state. It only signals the process groups it created, never an unrelated port owner.
+
+If the new runtime cannot start, its children are cleaned up; the version pointer is not silently changed. Select the prior release explicitly, then restart and check health:
+
+```bash
+~/.vibe-vscode/current/bin/install.sh --rollback
+# Restart with the same options, or: systemctl --user restart vibe-vscode
+~/.vibe-vscode/current/bin/vibe-vscode status --origin https://dev.example.com:18080
+```
+
+Rollback swaps `current` and `previous`; repeating it switches back. No release is automatically deleted, and state is never reset or copied into a release. Runtime rollback does not undo database migrations: consult each version's upgrade notes and keep a state backup. Restarts interrupt active connections; coordinate them with users.
 
 ## Build and publish
 
 [Vibe Release](../.github/workflows/release.yml) runs on a pushed `vMAJOR.MINOR.PATCH` tag, including prerelease suffixes. It can also be dispatched manually with an **existing tag**. Both paths resolve the tag to one commit before validation, and build that same commit throughout.
 
-The workflow reuses [Vibe CI](../.github/workflows/vibe-ci.yml): build-tool type checking, client/extension compilation, ESLint, hygiene, dependency layers, build tests, and regression tests discovered by product-area globs are release gates. New tests in those directories run without a separate file registration. Both bundled and minified Web Server packages must pass cache integrity, native dependency loading, archive creation, and production-launcher checks. These checks also run on pull requests, before any release tag is created. A failed gate prevents publication.
+The workflow reuses [Vibe CI](../.github/workflows/vibe-ci.yml): build-tool type checking, client/extension compilation, ESLint, hygiene, dependency layers, build tests, and regression tests discovered by product-area globs are release gates. New tests in those directories run without a separate file registration. Both bundled and minified Web Server packages must pass cache integrity, native dependency loading, archive creation, production-launcher checks, and installed-runtime smoke tests (TLS, health checks, locks and process cleanup). These checks also run on pull requests, before any release tag is created. A failed gate prevents publication.
 
 The release job builds `gulp vscode-reh-web-linux-x64-min`, verifies native dependencies through ESM and CommonJS with the packaged Node, checks compressed JS/CSS and runtime-link containment, then creates:
 
 - `vibe-vscode-server-<tag>-linux-x64.tar.gz`
 - `vibe-vscode-server-<tag>-linux-x64.tar.gz.sha256`
+- `install.sh` (identical to the repository-root installer and the copy in the archive)
 
 Only the final publication job has repository write permission. It creates a **draft GitHub Release** for the existing tag; a maintainer reviews and publishes that draft. Pull requests and branch pushes do not create tags or publish releases. Until a draft is published, its files are not public installation downloads. A rerun does not overwrite an existing release; use a new tag for changed code.
 
@@ -24,9 +115,12 @@ The archive preserves Gulp's production layout: dependencies originally built in
 | `node`, `node_modules/` | Matching Node runtime and production/native dependencies |
 | `out/`, `extensions/` | Built server, browser workbench, and extensions |
 | `out/vs/code/browser/workbench/cache/` | Manifest, loader, and verified gzip chunks |
-| `bin/vibe-vscode-server` | Shared runtime launcher; applies immutable release metadata |
+| `caddy` | Pinned HTTPS/WebSocket gateway, verified before packaging |
+| `bin/vibe-vscode` | Foreground start, status and optional systemd generation |
+| `bin/install.sh` | Upgrade/rollback entry point, including custom-root detection |
+| `bin/vibe-vscode-server` | Shared low-level launcher; applies immutable release metadata |
 | `vibe-release.json` | Version, exact source commit, runtime mode, platform, architecture, and authentication launcher contract |
-| `resources/server/vibe-vscode/` | Caddy, systemd, and operator configuration templates |
+| `resources/server/vibe-vscode/` | Shared Caddy rules and data-only CLI configuration parser |
 
 ### Source builds and development deployments
 
@@ -44,11 +138,22 @@ node build/web-release.ts verify '<runtime-root>'
 node build/web-release.ts package '<gulp-package-root>' '<artifact-directory>' '<release-tag>' '<source-commit>'
 ```
 
-`prepare` bundles and compresses staged browser assets and installs the launcher with release metadata. Omit `--development` for production output. `verify` checks the core cache manifest and its payloads; `package` additionally validates the production layout, compressed assets, native loading, launcher, and source identity before creating an archive outside the input package.
+`prepare` bundles and compresses staged browser assets and installs the launcher with release metadata. Omit `--development` for production output. `verify` checks the core cache manifest and its payloads; `package` additionally validates the production layout, compressed assets, native loading, launcher, and source identity and downloads the pinned Caddy archive, verifies its SHA-512 and the extracted binary's SHA-256, before creating the three release attachments outside the input package.
 
 There is one cache implementation in `build/lib/webClientCache.ts` and one compression implementation in `build/lib/precompress.ts`, shared by Gulp, `build/next`, and staged development preparation. The cache always reads the explicit `workbench.css` entry and ignores CSS imports when bundling JavaScript. Source staging first materializes that stylesheet and the standalone startup module from copied source output; it never rewrites the live checkout's output. Production builds already emit those entries.
 
-The always-latest development service remains source-based. Its deployment script builds a staged snapshot and starts the same [metadata-driven launcher](#configure-and-start) as the systemd template. The existing single-writer lock, process-ownership checks, private backend, health gates, and rollback transaction stay in the deployment coordinator. A healthy embedded runtime predating the authentication CLI may be retained only as the exact rollback anchor during migration; new candidates and selected snapshot restarts must declare `authentication: "embedded-cli-v1"` and pass the shared launcher's `--version` preflight. Candidate authentication configuration is validated against disposable state before stopping the active service.
+The always-latest development service remains source-based. Its deployment script builds a staged snapshot and starts the same [metadata-driven low-level launcher](#runtime-launcher-contract). The existing single-writer lock, process-ownership checks, private backend, health gates, and rollback transaction stay in the deployment coordinator. A healthy embedded runtime predating the authentication CLI may be retained only as the exact rollback anchor during migration; new candidates and selected snapshot restarts must declare `authentication: "embedded-cli-v1"` and pass the shared launcher's `--version` preflight. Candidate authentication configuration is validated against disposable state before stopping the active service.
+
+### Runtime launcher contract
+
+The low-level `bin/vibe-vscode-server` reads `version` and `mode` from `vibe-release.json` and supplies `--web-client-cache-version <version>`. Cache identity comes from release metadata, not a directory name or inherited environment.
+
+| Metadata mode | Runtime environment | Producer |
+| --- | --- | --- |
+| `production` | `NODE_ENV=production`, `VSCODE_DEV` unset | Release archive |
+| `development` | `NODE_ENV=development`, `VSCODE_DEV=1` | Staged source snapshot |
+
+Missing `mode` defaults to production for older metadata; an unknown mode fails before start. Apart from version/help preflight, the launcher requires `--auth-state-dir`. The Remote Server validates repeatable/comma-separated `--public-origin`, TTL, a private `--socket-path`, and `--without-connection-token` before opening authentication state. The user CLI supplies these arguments; public TLS remains Caddy's responsibility.
 
 ## Release notes
 
@@ -58,126 +163,6 @@ The draft body comes from a file that ships with the tagged commit, so notes are
 - The `source` job runs `node build/release-notes.ts` before any build and fails when the file is missing. A manual dispatch may set `allow_missing_notes` to publish a draft with a placeholder body instead; a pushed tag never can.
 - The `publish` job assembles the final body: the file, a generated appendix with the tag, source commit and archive checksums, then GitHub's categorized pull-request list ([`.github/release.yml`](../.github/release.yml)).
 - The release is still created as a **draft**. Publishing it in the GitHub UI is the confirmation step, and the body can be edited there; copy any edits back into the file in the next release pull request.
-
-## Download and install
-
-> The install script, the single `vibe-vscode start` entry point, and optional service generation described in [安装与启动](../vibe_vscode_doc/design/install_and_start.md) replace the manual steps below once implemented; until then this section is the procedure.
-
-Choose a published version from [GitHub Releases](https://github.com/ActivePeter/vibe-vscode/releases). Replace every `<placeholder>` below; download and verify as an unprivileged user before installing into an operator-owned directory.
-
-```bash
-set -euo pipefail
-TAG='<release-tag>'
-ASSET="vibe-vscode-server-$TAG-linux-x64.tar.gz"
-curl -fL -o "$ASSET" "https://github.com/ActivePeter/vibe-vscode/releases/download/$TAG/$ASSET"
-curl -fL -o "$ASSET.sha256" "https://github.com/ActivePeter/vibe-vscode/releases/download/$TAG/$ASSET.sha256"
-sha256sum --check "$ASSET.sha256"
-```
-
-Use a new directory for each release. Keep mutable server and authentication state, installed user extensions, and TLS material outside that tree. The service account should be able to read releases, but not rewrite them or the `current` pointer.
-
-```bash
-set -euo pipefail
-INSTALL_ROOT='<absolute-install-root>'
-mkdir -p "$INSTALL_ROOT/releases"
-exec 9>"$INSTALL_ROOT/deploy.lock"
-flock -n 9
-CANDIDATE="$INSTALL_ROOT/releases/$TAG"
-test ! -e "$CANDIDATE"
-mkdir "$CANDIDATE"
-tar -xzf "$ASSET" -C "$CANDIDATE"
-"$CANDIDATE/bin/vibe-vscode-server" --version
-```
-
-Keep this lock held through activation and health checks. For the first installation, select the verified candidate with an atomic pointer replacement:
-
-```bash
-ln -s "$CANDIDATE" "$INSTALL_ROOT/current.new"
-mv -T "$INSTALL_ROOT/current.new" "$INSTALL_ROOT/current"
-```
-
-Do not reuse an existing release directory, merge a tarball into `current`, or change a published tag in place. For subsequent upgrades, follow the rollback procedure below.
-
-## Configure and start
-
-The shared launcher reads `version` and `mode` from `vibe-release.json` and supplies `--web-client-cache-version <version>`. Cache identity comes from the release, not its installation directory name or inherited environment.
-
-| Metadata mode | Runtime environment | Producer |
-| --- | --- | --- |
-| `production` | `NODE_ENV=production`, `VSCODE_DEV` unset | Release archive |
-| `development` | `NODE_ENV=development`, `VSCODE_DEV=1` | Staged source snapshot |
-
-Missing `mode` defaults to production for older release metadata; an unknown mode fails before the server starts. Operators configure sockets, state, and authentication through launch arguments, not by editing immutable metadata. Except for `--version` and `--help`, the Vibe launcher requires `--auth-state-dir`. The Remote Server validates the public origin and other authentication options and refuses authentication without a private socket or with a connection token.
-
-For a private backend, the equivalent operator-facing launch is:
-
-```bash
-"$INSTALL_ROOT/current/bin/vibe-vscode-server" \
-  --socket-path '<private-unix-socket>' \
-  --server-data-dir '<state-root>/server' \
-  --extensions-dir '<state-root>/extensions' \
-  --auth-state-dir '<state-root>/auth' \
-  --public-origin 'https://<browser-visible-host>:<public-port>' \
-  --auth-session-ttl-seconds 43200 \
-  --without-connection-token \
-  --accept-server-license-terms
-```
-
-| Argument | Meaning |
-| --- | --- |
-| `--socket-path` | Private backend socket; it is not exposed as a public TCP listener |
-| `--server-data-dir` | Mutable settings, sessions, and server databases outside releases |
-| `--extensions-dir` | Mutable user-installed extensions outside releases |
-| `--auth-state-dir` | Persistent Better Auth SQLite database and signing secret outside releases |
-| `--public-origin` | One browser-visible HTTPS origin, without a URL path; used for trusted origins and Workbench remote authority |
-| `--auth-session-ttl-seconds` | Sliding-session lifetime; validated by the authentication service |
-| `--without-connection-token` | Required behind the mandatory Caddy login boundary and private socket |
-| `--web-client-cache-version` | Immutable tag/commit identity; supplied by the launcher |
-
-Public HTTPS belongs to Caddy, not the VS Code backend. Do not replace the private socket with a TCP listener when authentication is enabled. Caddy protects all HTTP and WebSocket handshakes; only the explicit authentication routes bypass `forward_auth`. Account, session, and renewal semantics are canonical in [Full-screen login and instance authentication](../vibe_vscode_doc/design/login_authentication.md).
-
-### systemd and Caddy/TLS
-
-Install Caddy separately, and create a dedicated `vibe-vscode` service account. The supplied templates use standard Linux systemd locations:
-
-- Copy `resources/server/vibe-vscode/service.env.example` from the archive to `/etc/vibe-vscode/service.env`, and replace every placeholder. This is the shared operator configuration for the backend and proxy.
-- Create the configured state directory, owned by `vibe-vscode`, with permissions that deny other users. Better Auth initializes its database and signing secret under `<state-root>/auth`; keep both across upgrades. Give the Caddy account access to the configured certificate and private key; it does not need access to authentication state.
-- Install `resources/server/vibe-vscode/vibe-vscode.service` as `/etc/systemd/system/vibe-vscode.service`.
-- Install `resources/server/vibe-vscode/caddy.service.conf` as `/etc/systemd/system/caddy.service.d/vibe-vscode.conf`. It assumes the distribution's Caddy executable is `/usr/bin/caddy`; adjust the installed drop-in if necessary.
-
-The backend unit creates the private socket under `/run/vibe-vscode`. The Caddy drop-in joins its group so it can reach that socket. Both `VIBE_VSCODE_AUTH_ADDRESS` and `VIBE_VSCODE_BACKEND_ADDRESS` name this same socket; `VIBE_VSCODE_AUTH_PATH` defaults to `/auth`. Caddy binds public HTTPS to `0.0.0.0` on `VIBE_VSCODE_PUBLIC_PORT` (18080 by default), using the configured TLS files. No private backend TCP port is opened.
-
-Set `VIBE_VSCODE_PUBLIC_ORIGIN` to the exact HTTPS origin in the browser's address bar, including a non-default port. An outer proxy may change `Host`, but client-supplied forwarding headers never change the configured identity. A URL prefix belongs in `--server-base-path` and the matching `VIBE_VSCODE_AUTH_PATH`, not in the origin. The default systemd template serves at `/`.
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now vibe-vscode
-sudo systemctl enable caddy
-sudo systemctl restart caddy
-```
-
-The bundled Caddyfile disables its admin API, so use a restart, not `caddy reload`, after changing proxy configuration. The public certificate must be trusted by the browser. Restrict initial access to the intended administrator until the first account has been created. Opening the configured HTTPS address then shows the full-screen login page; no token-bearing URL is needed.
-
-## Upgrade, health checks, and rollback
-
-Hold the same stable `deploy.lock` from candidate preparation through verification and any rollback. Keep the old server running while downloading, checking the checksum, and validating the new candidate. Record the resolved previous `current` target before changing it.
-
-Atomically point `current` at the new release, then restart only the recognized `vibe-vscode` systemd service. Verify all of the following before releasing the lock:
-
-- The private socket responds to `/version` with the expected source commit.
-- The private socket's `/auth/health` returns `204`.
-- The public HTTPS `/auth/api/status` returns `200` through the configured TLS endpoint.
-- An unauthenticated workbench navigation (`Accept: text/html`) returns `303` to login or first-time registration; resources and WebSocket handshakes return `401`. Public `/version` is also protected.
-- An authenticated browser can open the workbench and connect its extension host.
-- The public listener belongs to Caddy and the backend remains on its private socket.
-
-For a private health probe, an operator with socket access can use:
-
-```bash
-curl --fail --unix-socket /run/vibe-vscode/backend.sock http://localhost/version
-```
-
-If activation or health checks fail, atomically point `current` back to the recorded previous release, restart the same service, and verify its health before releasing the lock. Do not delete or reset the state databases to repair a failed rollout. Preserve the active and previous releases, plus any release still referenced by a live process. Restarting the server can interrupt active connections; coordinate upgrades with users.
 
 ## Verify browser caching and startup requirements
 

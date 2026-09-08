@@ -9,6 +9,7 @@ import type * as http from 'http';
 import { fromNodeHeaders } from 'better-auth/node';
 import { FileAccess } from '../../base/common/network.js';
 import { isAbsolute } from '../../base/common/path.js';
+import { matchVibePublicOrigin } from '../common/vibeAuthentication.js';
 import type { ServerParsedArgs } from './serverEnvironmentService.js';
 import { VibeAuthenticationService } from './vibeAuthentication.js';
 
@@ -61,18 +62,16 @@ export class VibeAuthenticationServer {
 	private readonly basePath: string;
 	private readonly authPath: string;
 	private readonly apiPath: string;
-	private readonly publicHost: string;
 
 	constructor(options: VibeAuthenticationServerOptions) {
 		this.authenticationService = options.authenticationService;
 		this.basePath = this.authenticationService.basePath;
 		this.authPath = `${this.basePath}/auth`;
 		this.apiPath = `${this.authPath}/api`;
-		this.publicHost = new URL(this.publicOrigin).host;
 	}
 
-	public get publicOrigin(): string {
-		return this.authenticationService.publicOrigin;
+	public get publicOrigins(): readonly string[] {
+		return this.authenticationService.publicOrigins;
 	}
 
 	public async handle(request: http.IncomingMessage, response: http.ServerResponse): Promise<boolean> {
@@ -101,6 +100,14 @@ export class VibeAuthenticationServer {
 
 	private async dispatch(request: http.IncomingMessage, response: http.ServerResponse, requestUrl: URL): Promise<void> {
 		const route = requestUrl.pathname.slice(this.authPath.length) || '/';
+		if (request.method === 'POST' && !this.matchPublicOrigin(request)) {
+			this.sendText(response, 403, messages[resolveLocale(request, requestUrl)].invalidOrigin);
+			return;
+		}
+		if ((request.method === 'GET' || request.method === 'HEAD') && ['/', '/login', '/register', '/logout'].includes(route) && !this.matchPublicOrigin(request)) {
+			this.redirect(request, response, `${requestUrl.pathname}${requestUrl.search}`);
+			return;
+		}
 		if (request.method === 'GET' && route === '/health') {
 			this.authenticationService.checkHealth();
 			this.sendEmpty(response, 204);
@@ -153,6 +160,14 @@ export class VibeAuthenticationServer {
 	}
 
 	private async handleVerify(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+		if (!this.matchPublicOrigin(request)) {
+			if (this.isNavigationRequest(request)) {
+				this.redirect(request, response, sanitizeReturnTo(firstHeader(request.headers['x-forwarded-uri']), this.basePath, this.authPath));
+			} else {
+				this.sendJson(response, 401, { authenticated: false });
+			}
+			return;
+		}
 		const session = await this.readSession(request, response);
 		if (session.authenticated) {
 			// Only 2xx responses use Caddy's single-cookie renewal bridge. Denials
@@ -169,7 +184,7 @@ export class VibeAuthenticationServer {
 			const forwardedUri = firstHeader(request.headers['x-forwarded-uri']);
 			const returnTo = sanitizeReturnTo(forwardedUri, this.basePath, this.authPath);
 			const destination = this.authenticationService.registrationOpen ? 'register' : 'login';
-			this.redirect(response, `${this.authPath}/${destination}?return_to=${encodeURIComponent(returnTo)}`);
+			this.redirect(request, response, `${this.authPath}/${destination}?return_to=${encodeURIComponent(returnTo)}`);
 			return;
 		}
 
@@ -179,11 +194,11 @@ export class VibeAuthenticationServer {
 	private async handleLoginPage(request: http.IncomingMessage, response: http.ServerResponse, requestUrl: URL): Promise<void> {
 		const returnTo = sanitizeReturnTo(requestUrl.searchParams.get('return_to'), this.basePath, this.authPath);
 		if (this.authenticationService.registrationOpen) {
-			this.redirect(response, `${this.authPath}/register?return_to=${encodeURIComponent(returnTo)}`);
+			this.redirect(request, response, `${this.authPath}/register?return_to=${encodeURIComponent(returnTo)}`);
 			return;
 		}
 		if ((await this.readSession(request, response)).authenticated) {
-			this.redirect(response, returnTo);
+			this.redirect(request, response, returnTo);
 			return;
 		}
 		this.renderPage(request, response, {
@@ -196,7 +211,7 @@ export class VibeAuthenticationServer {
 	private async handleRegisterPage(request: http.IncomingMessage, response: http.ServerResponse, requestUrl: URL): Promise<void> {
 		const returnTo = sanitizeReturnTo(requestUrl.searchParams.get('return_to'), this.basePath, this.authPath);
 		if (!this.authenticationService.registrationOpen) {
-			this.redirect(response, `${this.authPath}/login?return_to=${encodeURIComponent(returnTo)}`);
+			this.redirect(request, response, `${this.authPath}/login?return_to=${encodeURIComponent(returnTo)}`);
 			return;
 		}
 		this.renderPage(request, response, {
@@ -209,7 +224,7 @@ export class VibeAuthenticationServer {
 	private async handleLogoutPage(request: http.IncomingMessage, response: http.ServerResponse, requestUrl: URL): Promise<void> {
 		const session = await this.readSession(request, response);
 		if (!session.authenticated) {
-			this.redirect(response, `${this.authPath}/login`);
+			this.redirect(request, response, `${this.authPath}/login`);
 			return;
 		}
 		this.renderPage(request, response, {
@@ -236,7 +251,7 @@ export class VibeAuthenticationServer {
 		});
 		this.copyBetterAuthHeaders(authenticationResponse, response);
 		if (authenticationResponse.ok) {
-			this.redirect(response, returnTo);
+			this.redirect(request, response, returnTo);
 			return;
 		}
 		const error = await readBetterAuthError(authenticationResponse);
@@ -275,7 +290,7 @@ export class VibeAuthenticationServer {
 			this.copyBetterAuthHeaders(authenticationResponse, response);
 		}
 		if (authenticationResponse?.ok) {
-			this.redirect(response, returnTo);
+			this.redirect(request, response, returnTo);
 			return;
 		}
 
@@ -304,7 +319,7 @@ export class VibeAuthenticationServer {
 		const authenticationResponse = await this.invokeBetterAuth(request, 'POST', '/sign-out', {});
 		this.copyBetterAuthHeaders(authenticationResponse, response);
 		if (authenticationResponse.ok) {
-			this.redirect(response, `${this.authPath}/login`);
+			this.redirect(request, response, `${this.authPath}/login`);
 			return;
 		}
 		const error = await readBetterAuthError(authenticationResponse);
@@ -333,10 +348,10 @@ export class VibeAuthenticationServer {
 	}
 
 	private async invokeBetterAuth(request: http.IncomingMessage, method: 'GET' | 'POST', route: string, body?: object): Promise<Response> {
-		const publicOrigin = this.publicOrigin;
+		const publicOrigin = this.matchPublicOrigin(request) ?? this.publicOrigins[0];
 		const headers = fromNodeHeaders(request.headers);
 		headers.delete('content-length');
-		headers.set('host', this.publicHost);
+		headers.set('host', new URL(publicOrigin).host);
 		headers.set('x-vibe-client-ip', (firstCommaSeparatedValue(firstHeader(request.headers['x-forwarded-for'])) ?? request.socket.remoteAddress ?? 'unknown').slice(0, 128));
 		if (body) {
 			headers.set('content-type', 'application/json');
@@ -395,10 +410,14 @@ export class VibeAuthenticationServer {
 		return fetchMode === 'navigate' || accept.split(',').some(value => value.trim().startsWith('text/html'));
 	}
 
-	private redirect(response: http.ServerResponse, location: string): void {
+	private matchPublicOrigin(request: http.IncomingMessage): string | undefined {
+		return matchVibePublicOrigin(this.publicOrigins, firstHeader(request.headers['x-forwarded-host']), request.headers.host);
+	}
+
+	private redirect(request: http.IncomingMessage, response: http.ServerResponse, location: string): void {
 		response.writeHead(303, {
 			'Cache-Control': 'no-store',
-			'Location': location,
+			'Location': `${this.matchPublicOrigin(request) ?? this.publicOrigins[0]}${location}`,
 			'Referrer-Policy': 'no-referrer',
 			'X-Content-Type-Options': 'nosniff',
 		});
@@ -444,12 +463,12 @@ export async function createVibeAuthenticationServer(args: Pick<ServerParsedArgs
 	if (!isAbsolute(stateDirectory)) {
 		throw new Error('--auth-state-dir must be an absolute path.');
 	}
-	if (!args['public-origin']) {
+	if (!args['public-origin']?.length) {
 		throw new Error('Authentication requires --public-origin with the browser-visible HTTPS origin.');
 	}
 	const authenticationService = await VibeAuthenticationService.create({
 		stateDirectory,
-		publicOrigin: args['public-origin'],
+		publicOrigins: args['public-origin'],
 		basePath,
 		sessionTtlSeconds: args['auth-session-ttl-seconds'] === undefined ? undefined : Number(args['auth-session-ttl-seconds']),
 	});

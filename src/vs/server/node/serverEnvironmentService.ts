@@ -27,7 +27,7 @@ export const serverOptions: OptionDescriptions<Required<ServerParsedArgs>> = {
 	'connection-token-file': { type: 'string', cat: 'o', args: 'path', deprecates: ['connection-secret', 'connectionTokenFile'], description: nls.localize('connection-token-file', "Path to a file that contains the connection token.") },
 	'without-connection-token': { type: 'boolean', cat: 'o', description: nls.localize('without-connection-token', "Run without a connection token. Only use this if the connection is secured by other means.") },
 	'auth-state-dir': { type: 'string', cat: 'o', args: 'path', description: nls.localize('auth-state-dir', "Enable single-administrator authentication with this absolute persistent state directory. Requires a private socket and --without-connection-token behind Caddy.") },
-	'public-origin': { type: 'string', cat: 'o', args: 'origin', description: nls.localize('public-origin', "The browser-visible HTTPS origin for authentication and remote connections. Required with --auth-state-dir.") },
+	'public-origin': { type: 'string[]', cat: 'o', args: 'origin', description: nls.localize('public-origin', "Allowed browser-visible HTTPS origins for authentication and remote connections. Repeat this option or separate origins with commas. Required with --auth-state-dir.") },
 	'auth-session-ttl-seconds': { type: 'string', cat: 'o', args: 'seconds', description: nls.localize('auth-session-ttl-seconds', "Authentication session lifetime in seconds. Defaults to 43200.") },
 	'disable-websocket-compression': { type: 'boolean' },
 	'print-startup-performance': { type: 'boolean' },
@@ -155,7 +155,7 @@ export interface ServerParsedArgs {
 	 */
 	'without-connection-token'?: boolean;
 	'auth-state-dir'?: string;
-	'public-origin'?: string;
+	'public-origin'?: string[];
 	'auth-session-ttl-seconds'?: string;
 
 	'disable-websocket-compression'?: boolean;

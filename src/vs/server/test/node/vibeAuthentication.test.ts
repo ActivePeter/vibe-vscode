@@ -63,7 +63,7 @@ suite('VibeAuthenticationServer', () => {
 			status: JSON.parse(status.body),
 			nonAuthenticationPath: nonAuthenticationPath.status,
 		}, {
-			navigation: { status: 303, location: '/code/auth/register?return_to=%2Fcode%2F%3Ffolder%3D%252Fworkspace' },
+			navigation: { status: 303, location: `${publicOrigin}/code/auth/register?return_to=%2Fcode%2F%3Ffolder%3D%252Fworkspace` },
 			webSocket: { status: 401, body: '{"authenticated":false}' },
 			status: { authenticated: false, registrationOpen: true },
 			nonAuthenticationPath: 404,
@@ -130,15 +130,15 @@ suite('VibeAuthenticationServer', () => {
 			storesPlaintextPassword: databaseContents.includes(Buffer.from(validPassword)),
 		}, {
 			registrationPage: { status: 200, language: 'zh-cn', localized: true },
-			registration: { status: 303, location: '/code/' },
+			registration: { status: 303, location: `${publicOrigin}/code/` },
 			sessionCookieAttributes: { httpOnly: true, secure: true, sameSite: true, path: true },
 			authorized: 204,
 			renewed: true,
 			renewalCookieCount: 1,
 			status: { authenticated: true, registrationOpen: false, username: administratorName },
-			closedRegistration: { status: 303, location: '/code/auth/login?return_to=%2Fcode%2F' },
+			closedRegistration: { status: 303, location: `${publicOrigin}/code/auth/login?return_to=%2Fcode%2F` },
 			logoutPage: true,
-			logout: { status: 303, location: '/code/auth/login' },
+			logout: { status: 303, location: `${publicOrigin}/code/auth/login` },
 			afterLogout: 401,
 			stateModes: { directory: 0o700, database: 0o600, secret: 0o600 },
 			storesPlaintextPassword: false,
@@ -225,7 +225,7 @@ suite('VibeAuthenticationServer', () => {
 		});
 	});
 
-	test('pins the trusted origin even when host and proxy headers are forged', async () => {
+	test('rejects unlisted hosts even when the Origin header is allowed', async () => {
 		const body = new URLSearchParams({ username: 'admin', password: validPassword, confirm_password: validPassword }).toString();
 		const forgedHeaders = {
 			host: 'attacker.invalid',
@@ -238,26 +238,66 @@ suite('VibeAuthenticationServer', () => {
 		const denied = await request(harness.port, '/code/auth/register', {
 			method: 'POST', body, headers: { ...forgedHeaders, origin: 'https://attacker.invalid' },
 		});
-		const accepted = await request(harness.port, '/code/auth/register', {
+		const forgedWithAllowedOrigin = await request(harness.port, '/code/auth/register', {
 			method: 'POST', body, headers: { ...forgedHeaders, origin: publicOrigin },
 		});
+		const accepted = await postForm(harness.port, '/code/auth/register', { username: 'admin', password: validPassword, confirm_password: validPassword });
 		const cookie = getSessionCookie(accepted.headers);
 		const rejectedLogout = await postForm(harness.port, '/code/auth/logout', {}, cookie, 'https://attacker.invalid');
 		const sessionAfterRejectedLogout = await request(harness.port, '/code/auth/verify', { headers: { cookie } });
-		assert.deepStrictEqual({ denied: denied.status, accepted: accepted.status, logout: rejectedLogout.status, session: sessionAfterRejectedLogout.status }, {
-			denied: 403, accepted: 303, logout: 403, session: 204,
+		assert.deepStrictEqual({ denied: denied.status, forgedWithAllowedOrigin: forgedWithAllowedOrigin.status, accepted: accepted.status, logout: rejectedLogout.status, session: sessionAfterRejectedLogout.status }, {
+			denied: 403, forgedWithAllowedOrigin: 403, accepted: 303, logout: 403, session: 204,
 		});
+	});
+
+	test('selects the second allowed origin and keeps independently issued sessions separate', async () => {
+		await harness.close();
+		const secondOrigin = 'https://100.64.0.7:8443';
+		const secondHost = new URL(secondOrigin).host;
+		harness = await createHarness(testDirectory, '/code', [publicOrigin, secondOrigin]);
+		const registration = await postForm(harness.port, '/code/auth/register', {
+			username: 'admin', password: validPassword, confirm_password: validPassword,
+		}, undefined, secondOrigin, secondHost);
+		const secondCookie = getSessionCookie(registration.headers);
+		const login = await postForm(harness.port, '/code/auth/login', { username: 'admin', password: validPassword });
+		const firstCookie = getSessionCookie(login.headers);
+		const verify = await request(harness.port, '/code/auth/verify', { headers: { host: 'private-proxy.invalid', 'x-forwarded-host': `${secondHost}, proxy.invalid`, cookie: secondCookie } });
+		const logout = await postForm(harness.port, '/code/auth/logout', {}, secondCookie, secondOrigin, secondHost);
+		const firstSession = await request(harness.port, '/code/auth/verify', { headers: { cookie: firstCookie } });
+		const secondSession = await request(harness.port, '/code/auth/verify', { headers: { host: secondHost, cookie: secondCookie } });
+		const handler = sinon.spy(harness.authenticationService, 'handle');
+		try {
+			const denied = await postForm(harness.port, '/code/auth/login', { username: 'admin', password: validPassword }, undefined, secondOrigin, 'attacker.invalid');
+			const fallback = await request(harness.port, '/code/auth/verify', { headers: { host: 'attacker.invalid', accept: 'text/html', 'x-forwarded-uri': '//attacker.invalid/' } });
+			const loginPage = await request(harness.port, '/code/auth/login?lang=zh-cn', { headers: { host: 'attacker.invalid' } });
+			assert.deepStrictEqual({
+				registration: [registration.status, registration.headers.location],
+				login: [login.status, login.headers.location],
+				cookies: { distinct: firstCookie !== secondCookie, hostOnly: !getSessionSetCookie(registration.headers)?.includes('Domain=') },
+				verify: verify.status,
+				logout: [logout.status, logout.headers.location],
+				sessions: [firstSession.status, secondSession.status],
+				unlisted: [denied.status, handler.callCount, fallback.headers.location, loginPage.status, loginPage.headers.location],
+			}, {
+				registration: [303, `${secondOrigin}/code/`], login: [303, `${publicOrigin}/code/`],
+				cookies: { distinct: true, hostOnly: true }, verify: 204,
+				logout: [303, `${secondOrigin}/code/auth/login`], sessions: [204, 401],
+				unlisted: [403, 0, `${publicOrigin}/code/`, 303, `${publicOrigin}/code/auth/login?lang=zh-cn`],
+			});
+		} finally {
+			handler.restore();
+		}
 	});
 
 	test('validates CLI configuration before creating persistent state', async () => {
 		const stateDirectory = join(testDirectory, 'invalid-configuration');
-		const args = { 'auth-state-dir': stateDirectory, 'public-origin': publicOrigin };
+		const args = { 'auth-state-dir': stateDirectory, 'public-origin': [publicOrigin] };
 		await assert.rejects(createVibeAuthenticationServer({ 'auth-state-dir': stateDirectory }, ''), /--public-origin/);
 		for (const stateDirectory of ['', 'relative-state']) {
 			await assert.rejects(createVibeAuthenticationServer({ ...args, 'auth-state-dir': stateDirectory }, ''), /absolute path/);
 		}
-		for (const origin of ['http://vscode.example', 'https://user:password@vscode.example', 'https://vscode.example/path', 'https://vscode.example?query=1', 'https://vscode.example#fragment']) {
-			await assert.rejects(createVibeAuthenticationServer({ ...args, 'public-origin': origin }, ''), /HTTPS origin/);
+		for (const origin of ['http://vscode.example', 'https:vscode.example', 'https://user:password@vscode.example', 'https://vscode.example/path', 'https://vscode.example?query=1', 'https://vscode.example#fragment', 'https://*.example', 'https://vs\tcode.example', 'https://vscode.example\\']) {
+			await assert.rejects(createVibeAuthenticationServer({ ...args, 'public-origin': [publicOrigin, origin] }, ''), /HTTPS origin/);
 		}
 		for (const ttl of ['59', '604801', 'NaN', '1.5', '']) {
 			await assert.rejects(createVibeAuthenticationServer({ ...args, 'auth-session-ttl-seconds': ttl }, ''), /session lifetime/);
@@ -267,6 +307,12 @@ suite('VibeAuthenticationServer', () => {
 		}
 		assert.strictEqual(fs.existsSync(stateDirectory), false);
 		assert.strictEqual(await createVibeAuthenticationServer({}, ''), undefined);
+		const server = await createVibeAuthenticationServer({ ...args, 'public-origin': [`${publicOrigin},https://localhost:8443`, publicOrigin] }, '');
+		try {
+			assert.deepStrictEqual(server?.publicOrigins, [publicOrigin, 'https://localhost:8443']);
+		} finally {
+			server?.dispose();
+		}
 	});
 
 	test('normalizes the root base path once for the service and HTTP adapter', async () => {
@@ -281,7 +327,7 @@ suite('VibeAuthenticationServer', () => {
 			status: JSON.parse(status.body),
 			location: registration.headers.location,
 			cookiePath: getSessionSetCookie(registration.headers)?.includes('Path=/;'),
-		}, { basePath: '', status: { authenticated: false, registrationOpen: true }, location: '/', cookiePath: true });
+		}, { basePath: '', status: { authenticated: false, registrationOpen: true }, location: `${publicOrigin}/`, cookiePath: true });
 	});
 
 	test('maps Better Auth failures consistently across all form routes and both locales', async () => {
@@ -350,10 +396,10 @@ interface AuthenticationTestHarness {
 	readonly close: () => Promise<void>;
 }
 
-async function createHarness(stateDirectory: string, basePath = '/code'): Promise<AuthenticationTestHarness> {
+async function createHarness(stateDirectory: string, basePath = '/code', publicOrigins = [publicOrigin]): Promise<AuthenticationTestHarness> {
 	const authenticationService = await VibeAuthenticationService.create({
 		stateDirectory,
-		publicOrigin,
+		publicOrigins,
 		basePath,
 		sessionTtlSeconds: 60,
 		sessionUpdateAgeSeconds: 1,
@@ -398,7 +444,7 @@ function request(port: number, path: string, options: {
 	readonly body?: string;
 } = {}): Promise<TestResponse> {
 	return new Promise((resolve, reject) => {
-		const request = nodeHttp.request({ host: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: options.headers }, response => {
+		const request = nodeHttp.request({ host: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: { host: new URL(publicOrigin).host, ...options.headers } }, response => {
 			const chunks: Buffer[] = [];
 			response.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
 			response.on('end', () => resolve({
@@ -412,12 +458,13 @@ function request(port: number, path: string, options: {
 	});
 }
 
-function postForm(port: number, path: string, values: Record<string, string>, cookie?: string, origin?: string): Promise<TestResponse> {
+function postForm(port: number, path: string, values: Record<string, string>, cookie?: string, origin?: string, host = new URL(publicOrigin).host): Promise<TestResponse> {
 	const body = new URLSearchParams(values).toString();
 	return request(port, path, {
 		method: 'POST',
 		body,
 		headers: {
+			host,
 			'content-type': 'application/x-www-form-urlencoded',
 			'content-length': Buffer.byteLength(body),
 			origin: origin ?? publicOrigin,

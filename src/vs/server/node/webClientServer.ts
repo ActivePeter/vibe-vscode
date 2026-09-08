@@ -30,6 +30,7 @@ import { ITranslations, localizeManifest } from '../../platform/extensionManagem
 import { ICSSDevelopmentService } from '../../platform/cssDev/node/cssDevService.js';
 import { webClientCacheDirectory } from '../../platform/remote/common/webClientCache.js';
 import { IWebClientStartupConfiguration, IWebClientStartupMessages } from '../../platform/remote/common/webClientStartup.js';
+import { matchVibePublicOrigin } from '../common/vibeAuthentication.js';
 
 const textMimeType: { [ext: string]: string | undefined } = {
 	'.html': 'text/html',
@@ -310,10 +311,10 @@ export function getWebClientResourceScheme(forwardedProto: string | undefined): 
 	return publicScheme === Schemas.https ? Schemas.https : Schemas.http;
 }
 
-/** Authentication pins the public identity; token-based servers retain their proxy host contract. */
-export function getWebClientRemoteAuthority(publicOrigin: string | undefined, forwardedHost: string | undefined, host: string | undefined): string | undefined {
-	if (publicOrigin) {
-		return new URL(publicOrigin).host;
+/** Authentication selects only configured identities; token-based servers retain their proxy host contract. */
+export function getWebClientRemoteAuthority(publicOrigins: readonly string[] | undefined, forwardedHost: string | undefined, host: string | undefined): string | undefined {
+	if (publicOrigins) {
+		return new URL(matchVibePublicOrigin(publicOrigins, forwardedHost, host) ?? publicOrigins[0]).host;
 	}
 	for (const candidate of [forwardedHost, host]) {
 		const authority = candidate?.split(',', 1)[0].trim();
@@ -351,7 +352,7 @@ export class WebClientServer {
 		private readonly _basePath: string,
 		private readonly _productPath: string,
 		private readonly _remoteConnectionSigning: boolean,
-		private readonly _publicOrigin: string | undefined,
+		private readonly _publicOrigins: readonly string[] | undefined,
 		@IServerEnvironmentService private readonly _environmentService: IServerEnvironmentService,
 		@ILogService private readonly _logService: ILogService,
 		@IRequestService private readonly _requestService: IRequestService,
@@ -548,13 +549,13 @@ export class WebClientServer {
 		let remoteAuthority = (
 			useTestResolver
 				? 'test+test'
-				: getWebClientRemoteAuthority(this._publicOrigin, getFirstHeader('x-forwarded-host'), req.headers.host)
+				: getWebClientRemoteAuthority(this._publicOrigins, getFirstHeader('x-forwarded-host'), req.headers.host)
 		);
 		if (!remoteAuthority) {
 			return serveError(req, res, 400, `Bad request.`);
 		}
 		const forwardedPort = getFirstHeader('x-forwarded-port');
-		if (forwardedPort && !this._publicOrigin) {
+		if (forwardedPort && !this._publicOrigins) {
 			remoteAuthority = replacePort(remoteAuthority, forwardedPort);
 		}
 
@@ -606,7 +607,7 @@ export class WebClientServer {
 			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
 				...this._productService.extensionsGallery,
 				resourceUrlTemplate: this._webExtensionResourceUrlTemplate.with({
-					scheme: this._publicOrigin ? Schemas.https : getWebClientResourceScheme(getFirstHeader('x-forwarded-proto')),
+					scheme: this._publicOrigins ? Schemas.https : getWebClientResourceScheme(getFirstHeader('x-forwarded-proto')),
 					authority: remoteAuthority,
 					path: `${webExtensionRoute}/${this._webExtensionResourceUrlTemplate.authority}${this._webExtensionResourceUrlTemplate.path}`
 				}).toString(true)

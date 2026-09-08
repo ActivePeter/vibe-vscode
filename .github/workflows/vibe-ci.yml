@@ -266,6 +266,9 @@ jobs:
       - name: Verify release archive and production launcher
         run: node build/web-release.ts package ../vscode-reh-web-linux-x64 .build/release-validation v0.0.0-ci "$(git rev-parse HEAD)"
 
+      - name: Smoke test installation and foreground runtime
+        run: node build/lib/test/vibeVscodeRuntime.integration.ts .build/release-validation
+
       - name: Verify packaged Vibe extension
         env:
           PACKAGE_ROOT: ${{ github.workspace }}/../vscode-reh-web-linux-x64

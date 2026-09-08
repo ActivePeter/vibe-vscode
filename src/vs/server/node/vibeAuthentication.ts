@@ -18,7 +18,7 @@ const instanceOwnerValue = 'administrator';
 
 export interface VibeAuthenticationServiceOptions {
 	readonly stateDirectory: string;
-	readonly publicOrigin: string;
+	readonly publicOrigins: readonly string[];
 	readonly basePath?: string;
 	readonly sessionTtlSeconds?: number;
 	readonly sessionUpdateAgeSeconds?: number;
@@ -32,17 +32,24 @@ export class VibeAuthenticationService {
 	private readonly database: DatabaseSync;
 	private disposed = false;
 
-	private constructor(authenticationHandler: (request: Request) => Promise<Response>, database: DatabaseSync, public readonly publicOrigin: string, public readonly basePath: string) {
+	private constructor(authenticationHandler: (request: Request) => Promise<Response>, database: DatabaseSync, public readonly publicOrigins: readonly string[], public readonly basePath: string) {
 		this.authenticationHandler = authenticationHandler;
 		this.database = database;
 	}
 
 	public static async create(options: VibeAuthenticationServiceOptions): Promise<VibeAuthenticationService> {
-		const publicUrl = new URL(options.publicOrigin);
-		if (publicUrl.protocol !== 'https:' || publicUrl.username || publicUrl.password || publicUrl.pathname !== '/' || publicUrl.search || publicUrl.hash) {
-			throw new Error('The public origin must be an HTTPS origin without credentials, a path, query, or fragment.');
+		const publicOrigins = [...new Set(options.publicOrigins.flatMap(value => value.split(',')).map(value => {
+			const text = value.trim();
+			const publicUrl = new URL(text);
+			if (!/^https:\/\//i.test(text) || /[\x00-\x20\x7f\\]/.test(text) || publicUrl.protocol !== 'https:' || publicUrl.username || publicUrl.password || publicUrl.hostname.includes('*') || publicUrl.pathname !== '/' || publicUrl.search || publicUrl.hash) {
+				throw new Error('Each public origin must be an HTTPS origin without credentials, a path, query, fragment, or wildcard.');
+			}
+			return publicUrl.origin;
+		}))];
+		if (!publicOrigins.length) {
+			throw new Error('At least one public HTTPS origin is required.');
 		}
-		const publicOrigin = publicUrl.origin;
+		Object.freeze(publicOrigins);
 		const basePath = options.basePath === '/' ? '' : options.basePath ?? '';
 		if (basePath && !/^\/[0-9A-Za-z._~-]+(?:\/[0-9A-Za-z._~-]+)*$/.test(basePath)) {
 			throw new Error('The server base path must contain one or more simple absolute path segments without a trailing slash.');
@@ -72,7 +79,7 @@ export class VibeAuthenticationService {
 			const cookiePath = `${basePath}/`;
 			const authenticationOptions = {
 				appName: 'Vibe VS Code',
-				baseURL: publicOrigin,
+				baseURL: publicOrigins[0],
 				basePath: `${basePath}/auth/api`,
 				secret,
 				database,
@@ -113,7 +120,7 @@ export class VibeAuthenticationService {
 						'/sign-up/email': { window: 60, max: 5 },
 					},
 				},
-				trustedOrigins: [publicOrigin],
+				trustedOrigins: publicOrigins,
 				advanced: {
 					cookiePrefix: 'vibe',
 					useSecureCookies: true,
@@ -144,7 +151,7 @@ export class VibeAuthenticationService {
 			const authentication = betterAuth(authenticationOptions);
 			const migrations = await getMigrations(authentication.options);
 			await migrations.runMigrations();
-			return new VibeAuthenticationService(authentication.handler, database, publicOrigin, basePath);
+			return new VibeAuthenticationService(authentication.handler, database, publicOrigins, basePath);
 		} catch (error) {
 			database.close();
 			throw error;

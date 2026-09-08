@@ -16,7 +16,17 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
   - ✅ **Sign-in required**: Every hosted HTTP request and WebSocket handshake must pass sign-in before it reaches any VS Code route. The first visitor registers the single administrator account, after which registration closes. Sessions survive server restarts, renew while in use, and can be revoked from the Accounts menu or the Command Palette. Authentication is embedded in the remote server with Node's built-in SQLite and enforced by Caddy at the gateway; see the [design document](vibe_vscode_doc/design/login_authentication.md).
   - 🚧 **Non-blocking remote connectivity**: Replace modal interruption with status-bar reconnect state, immediate retry after network recovery, and uninterrupted access to the current work. This is not yet included in the current implementation.
 
-  See [Releases and installation](docs/release.md) for production packages, systemd/Caddy setup, upgrades, and rollback. For source development, install dependencies and start the environment in two terminals:
+  Linux x64 quick start (replace `<tag>` with a published version and use your browser-visible hostname or IP):
+
+  ```bash
+  curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+  ~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
+  # Open https://dev.example.com:18080; register the administrator, then add projects in the workbench.
+  ```
+
+  Node and Caddy are bundled; root and systemd are optional. Without your own TLS certificate, trust the Caddy root certificate printed at startup. Restrict initial access until the administrator is registered. Multiple addresses, persistent configuration, optional services, upgrades and rollback are covered by [Releases and installation](docs/release.md#quick-start).
+
+  For source development, install dependencies and start the environment in two terminals:
 
   ```bash
   # Terminal 1: continuously compile changes

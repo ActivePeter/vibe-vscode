@@ -18,6 +18,10 @@
 		"noUnusedLocals": true,
 		"noUnusedParameters": true
 	},
+	"include": [
+		"**/*",
+		"../resources/server/vibe-vscode/cli-config.ts"
+	],
 	"exclude": [
 		"node_modules/**",
 		"monaco-editor-playground/**",

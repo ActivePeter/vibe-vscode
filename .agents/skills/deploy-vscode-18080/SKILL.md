@@ -28,8 +28,8 @@ existing `VIBE_VSCODE_SERVICE_STATE_ROOT`, `VIBE_VSCODE_SERVICE_LOG`,
 `VIBE_VSCODE_TLS_CERT_PATH`, and `VIBE_VSCODE_TLS_KEY_PATH` environment inputs without editing
 tracked files. `VIBE_VSCODE_SERVER_BASE_PATH` selects an optional simple URL base path, and
 `VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS` selects a 60-second to 7-day session lifetime.
-`VIBE_VSCODE_PUBLIC_ORIGIN` is required and must be the browser-visible HTTPS origin, without
-a URL path. Confirm that address from operator configuration or the user; never infer it from
+`VIBE_VSCODE_PUBLIC_ORIGIN` is required and accepts a comma-separated allowlist of browser-visible
+HTTPS origins, each without a URL path. Confirm those addresses from operator configuration or the user; never infer them from
 client-supplied proxy headers or substitute a localhost probe address for a remote browser.
 
 The account, session, and request authorization contract is canonical in
@@ -48,13 +48,13 @@ The script must remain the single automation entry for this skill. It:
 - keeps mutable state and TLS material outside the checkout at operator-supplied or XDG-standard locations;
 - terminates public HTTPS and WebSocket traffic in Caddy on `0.0.0.0:18080`, while the upstream VS Code Server uses its original HTTP implementation over a private Unix socket;
 - starts exactly two candidate processes: Caddy and the VS Code Remote Server, with Better Auth and Node's built-in SQLite initialized inside the Remote Server and persistent authentication state outside immutable releases;
-- enables authentication with the same `--auth-state-dir`, `--public-origin`, and `--auth-session-ttl-seconds` CLI contract used by the production systemd unit;
+- enables authentication with the same `--auth-state-dir`, `--public-origin`, and `--auth-session-ttl-seconds` CLI contract used by the release launcher;
 - validates the configured origin, session lifetime, and database initialization against disposable state before stopping the active service; it never opens the user's authentication database during candidate preflight;
 - lets Caddy expose only the Remote Server's authentication routes without `forward_auth`, and sends all other HTTP and WebSocket traffic through the same Remote Server's `/auth/verify` contract;
 - strips protocol-upgrade headers from authentication routes and verification subrequests, so they cannot enter Node's separate upgrade handler; only an authorized original request may upgrade;
 - returns any sliding-session `Set-Cookie` emitted by `/auth/verify` to the browser before proxying the authorized request;
 - starts VS Code without its connection token only behind the mandatory Caddy authorization boundary and a private Unix socket;
-- pins Better Auth's trusted origin and Workbench's `remoteAuthority` to the configured public identity, independently of request headers;
+- uses the explicit allowlist for Better Auth's trusted origins and Workbench's `remoteAuthority`; forwarded headers may select a listed identity, never add one;
 - requires the public authentication status to return `200`, an unauthenticated Workbench request to return `303`, the Remote Server's private authentication health check to return `204`, and the private Workbench endpoint to return `200` before succeeding;
 - fails instead of killing an unrecognized process when the port or backend socket is not owned by the canonical tmux session.
 

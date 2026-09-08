@@ -395,7 +395,7 @@ const stateDirectory = await mkdtemp(join(tmpdir(), 'vibe-auth-preflight-'));
 try {
 	const authentication = await VibeAuthenticationService.create({
 		stateDirectory,
-		publicOrigin: process.argv[3],
+		publicOrigins: [process.argv[3]],
 		sessionTtlSeconds: Number(process.argv[4]),
 		basePath: process.argv[5],
 	});

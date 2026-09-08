@@ -7,6 +7,11 @@
 	bind 0.0.0.0
 	tls {$VIBE_VSCODE_TLS_CERT_PATH} {$VIBE_VSCODE_TLS_KEY_PATH}
 	encode zstd gzip
+	# Headers only select from the server's explicit origin allowlist.
+	map {http.request.header.X-Forwarded-Host} {vibe_public_host} {
+		"" {http.request.hostport}
+		default {http.request.header.X-Forwarded-Host}
+	}
 
 	@authentication path {$VIBE_VSCODE_AUTH_PATH} {$VIBE_VSCODE_AUTH_PATH}/*
 	handle @authentication {
@@ -15,6 +20,7 @@
 			header_up -Connection
 			header_up -Upgrade
 			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {vibe_public_host}
 		}
 	}
 
@@ -30,6 +36,7 @@
 				header_up X-Forwarded-Upgrade {http.request.header.Upgrade}
 				header_up -Connection
 				header_up -Upgrade
+				header_up X-Forwarded-Host {vibe_public_host}
 				copy_headers Set-Cookie>X-Vibe-Auth-Set-Cookie
 			}
 			@renewedSession header X-Vibe-Auth-Set-Cookie *
@@ -37,6 +44,7 @@
 
 			reverse_proxy {$VIBE_VSCODE_BACKEND_ADDRESS} {
 				header_up X-Forwarded-Proto https
+				header_up X-Forwarded-Host {vibe_public_host}
 				header_up -X-Vibe-Auth-Set-Cookie
 			}
 		}

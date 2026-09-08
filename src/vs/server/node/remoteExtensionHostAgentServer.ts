@@ -109,7 +109,7 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
 		this._allReconnectionTokens = new Set<string>();
 		this._webClientServer = (
 			hasWebClient
-				? this._instantiationService.createInstance(WebClientServer, this._connectionToken, serverBasePath ?? '/', this._serverProductPath, this._vsdaMod !== null, this._authenticationServer?.publicOrigin)
+				? this._instantiationService.createInstance(WebClientServer, this._connectionToken, serverBasePath ?? '/', this._serverProductPath, this._vsdaMod !== null, this._authenticationServer?.publicOrigins)
 				: null
 		);
 		this._logService.info(`Extension host agent started.`);

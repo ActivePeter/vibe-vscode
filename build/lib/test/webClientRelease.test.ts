@@ -48,49 +48,6 @@ test('the shared launcher uses stamped metadata for both runtime profiles, regar
 	}
 });
 
-test('systemd and Caddy templates share a complete authenticated launch configuration', linuxOnly, async () => {
-	const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'web-service-config-'));
-	const resources = path.resolve(import.meta.dirname, '../../../resources/server/vibe-vscode');
-	try {
-		const root = path.join(temporary, 'install with spaces', 'current');
-		await fs.mkdir(path.join(root, 'out'), { recursive: true });
-		await fs.symlink(process.execPath, path.join(root, 'node'));
-		await fs.writeFile(path.join(root, 'out/server-main.js'), 'console.log(JSON.stringify(process.argv.slice(2)));');
-		await installWebClientLauncher(root, 'v1.2.3', commit, 'production');
-		const example = await fs.readFile(path.join(resources, 'service.env.example'), 'utf8');
-		const environment = Object.fromEntries([...example.matchAll(/^(?<key>VIBE_VSCODE_\w+)=(?<value>.*)$/gm)].map(match => [match.groups!.key, match.groups!.value]));
-		Object.assign(environment, {
-			VIBE_VSCODE_INSTALL_ROOT: path.dirname(root),
-			VIBE_VSCODE_SERVICE_STATE_ROOT: path.join(temporary, 'state with spaces'),
-			VIBE_VSCODE_PUBLIC_ORIGIN: 'https://vscode.example:8443',
-		});
-		const unit = await fs.readFile(path.join(resources, 'vibe-vscode.service'), 'utf8');
-		const command = /^ExecStart=(?<command>.*)$/m.exec(unit)!.groups!.command;
-		// systemd expands each ${NAME} as one argument, including values with spaces.
-		const arguments_ = command.split(' ').map(argument => argument.replace(/\$\{(?<name>\w+)\}/g, (_match, name: string) => environment[name]));
-		const launch = await run(arguments_[0], arguments_.slice(1));
-		const args: string[] = JSON.parse(launch.stdout);
-		const caddy = await fs.readFile(path.join(resources, 'Caddyfile'), 'utf8');
-		const unresolved = [...caddy.matchAll(/\{\$(?<name>VIBE_VSCODE_\w+)\}/g)].map(match => match.groups!.name).filter(name => !environment[name]);
-		assert.deepStrictEqual({
-			state: args[args.indexOf('--auth-state-dir') + 1],
-			origin: args[args.indexOf('--public-origin') + 1],
-			ttl: args[args.indexOf('--auth-session-ttl-seconds') + 1],
-			privateSocket: args.includes('--socket-path'),
-			tokenDisabled: args.includes('--without-connection-token'),
-			authAddress: environment.VIBE_VSCODE_AUTH_ADDRESS,
-			authPath: environment.VIBE_VSCODE_AUTH_PATH,
-			unresolved,
-		}, {
-			state: path.join(temporary, 'state with spaces', 'auth'),
-			origin: 'https://vscode.example:8443', ttl: '43200', privateSocket: true, tokenDisabled: true,
-			authAddress: environment.VIBE_VSCODE_BACKEND_ADDRESS, authPath: '/auth', unresolved: [],
-		});
-	} finally {
-		await fs.rm(temporary, { recursive: true, force: true });
-	}
-});
-
 async function createFixture(root: string): Promise<string> {
 	const source = path.join(root, 'product');
 	const workbench = path.join(source, 'out/vs/code/browser/workbench');
@@ -142,7 +99,7 @@ test('packages an immutable, checksummed release with a production launcher and 
 	try {
 		const source = await createFixture(temporary);
 		const output = path.join(temporary, 'artifacts');
-		const archive = await packageWebClientRelease(source, output, 'v1.2.3', commit);
+		const archive = await packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy);
 		const contents = await fs.readFile(archive);
 		const destination = path.join(temporary, 'installed');
 		await fs.mkdir(destination);
@@ -154,14 +111,18 @@ test('packages an immutable, checksummed release with a production launcher and 
 			arguments: launch.stdout.trim().split('\n').slice(1),
 			inputUnchanged: !(await fs.readdir(source)).includes('vibe-release.json'),
 			files: (await fs.readdir(output)).sort(),
+			installerMatches: (await fs.readFile(path.join(output, 'install.sh'))).equals(await fs.readFile(path.resolve(import.meta.dirname, '../../../install.sh'))),
+			installedScriptMatches: (await fs.readFile(path.join(destination, 'bin/install.sh'))).equals(await fs.readFile(path.join(output, 'install.sh'))),
+			caddyPresent: (await fs.stat(path.join(destination, 'caddy'))).isFile(),
 		}, {
 			metadata: { version: 'v1.2.3', commit, platform: 'linux', arch: 'x64', mode: 'production', authentication: 'embedded-cli-v1' },
 			checksum: `${createHash('sha256').update(contents).digest('hex')}  ${path.basename(archive)}\n`,
 			arguments: ['--web-client-cache-version', 'v1.2.3', '--socket-path', '/test/backend.sock', ...authenticationArguments],
 			inputUnchanged: true,
-			files: [path.basename(archive), `${path.basename(archive)}.sha256`],
+			files: ['install.sh', path.basename(archive), `${path.basename(archive)}.sha256`],
+			installerMatches: true, installedScriptMatches: true, caddyPresent: true,
 		});
-		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit), /EEXIST/);
+		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy), /EEXIST/);
 		assert.deepStrictEqual(await fs.readFile(archive), contents);
 	} finally {
 		await fs.rm(temporary, { recursive: true, force: true });
@@ -182,7 +143,7 @@ test('rejects mismatched identity and non-self-contained packages before publish
 		assert.ok(!(await fs.readdir(source)).includes('new'));
 		await fs.writeFile(path.join(temporary, 'external.js'), 'export {};');
 		await fs.symlink(path.join(temporary, 'external.js'), path.join(source, 'node_modules/external.js'));
-		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit), /link escapes/);
+		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy), /link escapes/);
 		assert.deepStrictEqual(await fs.readdir(output), []);
 	} finally {
 		await fs.rm(temporary, { recursive: true, force: true });
@@ -197,13 +158,17 @@ test('rejects broken compression and native loading without publishing partial r
 		const gzipPath = path.join(source, 'out/vs/code/browser/workbench/workbench.js.gz');
 		const gzip = await fs.readFile(gzipPath);
 		await fs.writeFile(gzipPath, 'corrupt');
-		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit));
+		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy));
 		assert.deepStrictEqual(await fs.readdir(output), []);
 		await fs.writeFile(gzipPath, gzip);
 		await fs.writeFile(path.join(source, 'node'), '#!/bin/sh\nexit 23\n');
-		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit), /Command failed/);
+		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy), /Command failed/);
 		assert.deepStrictEqual(await fs.readdir(output), []);
 	} finally {
 		await fs.rm(temporary, { recursive: true, force: true });
 	}
 });
+
+async function installTestCaddy(root: string): Promise<void> {
+	await fs.writeFile(path.join(root, 'caddy'), '#!/bin/sh\n[ "$1" = version ]\n', { mode: 0o755 });
+}

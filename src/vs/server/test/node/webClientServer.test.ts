@@ -143,12 +143,18 @@ suite('WebClientServer', () => {
 
 	test('uses configured authority before proxy headers and retains the token-server fallback', () => {
 		assert.deepStrictEqual({
-			preserved: getWebClientRemoteAuthority('https://public.example', 'attacker.invalid', '127.0.0.1:18080'),
+			preserved: getWebClientRemoteAuthority(['https://public.example', 'https://100.64.0.7:8443'], 'attacker.invalid', '127.0.0.1:18080'),
+			secondEntry: getWebClientRemoteAuthority(['https://public.example', 'https://100.64.0.7:8443'], '100.64.0.7:8443, proxy.invalid', '127.0.0.1:18080'),
+			directEntry: getWebClientRemoteAuthority(['https://public.example', 'https://[::1]:8443'], undefined, '[::1]:8443'),
+			forgedFirst: getWebClientRemoteAuthority(['https://public.example'], 'attacker.invalid, public.example', 'public.example'),
 			forwarded: getWebClientRemoteAuthority(undefined, 'public.example, internal-proxy.invalid', '127.0.0.1:18080'),
 			direct: getWebClientRemoteAuthority(undefined, undefined, 'localhost:18080'),
 			missing: getWebClientRemoteAuthority(undefined, undefined, undefined),
 		}, {
 			preserved: 'public.example',
+			secondEntry: '100.64.0.7:8443',
+			directEntry: '[::1]:8443',
+			forgedFirst: 'public.example',
 			forwarded: 'public.example',
 			direct: 'localhost:18080',
 			missing: undefined,
@@ -370,7 +376,7 @@ suite('WebClientServer', () => {
 						const logService = store.add(new NullLogService());
 						const publicOrigin = versioned ? 'https://public.example:8443' : undefined;
 						const createWebClient = () => new WebClientServer(
-							new NoneServerConnectionToken(), '/base', '/oss-release', false, publicOrigin,
+							new NoneServerConnectionToken(), '/base', '/oss-release', false, publicOrigin ? [publicOrigin] : undefined,
 							upcastPartial<IServerEnvironmentService>({ appRoot: directory, isBuilt, args: upcastPartial<IServerEnvironmentService['args']>({ _: [], 'web-client-cache-version': versioned ? 'release' : undefined }) }),
 							logService,
 							upcastPartial<IRequestService>({}),

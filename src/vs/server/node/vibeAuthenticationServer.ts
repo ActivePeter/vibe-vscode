@@ -515,8 +515,8 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 		html, body { min-height: 100%; }
 		body { margin: 0; background: var(--page); color: var(--text); font: 400 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 		.shell { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
-		.card { width: min(100%, 400px); padding: 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 20px 60px rgba(0, 0, 0, .24); }
-		.brand { display: flex; align-items: center; justify-content: center; gap: var(--vscode-spacing-size240, 24px); margin-bottom: 32px; }
+		.card { width: min(100%, 400px); padding: var(--vscode-spacing-size400, 40px) 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 20px 60px rgba(0, 0, 0, .24); }
+		.brand { display: flex; align-items: center; justify-content: center; gap: var(--vscode-spacing-size240, 24px); margin-bottom: var(--vscode-spacing-size400, 40px); }
 		.brand-name { margin: 0; color: #2864F0; font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: -.02em; }
 		.mark { display: block; width: 40px; height: 40px; flex-shrink: 0; filter: drop-shadow(0 4px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, .14))); }
 		.eyebrow { margin: 0 0 6px; color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
@@ -534,10 +534,10 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 		.account { display: grid; gap: 4px; margin: 0; padding: 16px; border-radius: 6px; background: var(--surface-raised); }
 		.account span { color: var(--muted); font-size: 11px; }
 		.account strong { font-weight: 600; overflow-wrap: anywhere; }
-		.footer { margin: 24px 0 0; text-align: center; }
+		.footer { margin: var(--vscode-spacing-size320, 32px) 0 0; text-align: center; }
 		a { color: var(--accent); text-underline-offset: 2px; }
 		@media (prefers-color-scheme: light) { :root { color-scheme: light; --page: #f4f5f7; --surface: #ffffff; --surface-raised: #eef1f5; --text: #202124; --muted: #626872; --border: #c9ced6; --accent: #315f9d; --accent-strong: #2563a9; --button-text: #ffffff; --danger-bg: #fff0f1; --danger-border: #c76a74; --focus: #245f9e; } }
-		@media (max-width: 480px) { .shell { padding: 16px; } .card { padding: 24px; } }
+		@media (max-width: 480px) { .shell { padding: 16px; } .card { padding: var(--vscode-spacing-size320, 32px) 24px; } }
 		@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
 	</style>
 </head>

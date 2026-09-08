@@ -21,6 +21,7 @@ export interface ReleaseNotes {
 	readonly body: string;
 }
 
+// allow-any-unicode-next-line
 const missingNotesPlaceholder = '本版本文案待补,发布前请在此填写本版内容与升级须知。\n\nRelease notes are missing for this tag; fill in the highlights and upgrade notes before publishing.';
 
 /**
@@ -51,6 +52,7 @@ export async function resolveReleaseNotes(tag: string, notesDirectory: string, o
 }
 
 async function artifactsAppendix(tag: string, options: ReleaseNotesOptions): Promise<string> {
+	// allow-any-unicode-next-line
 	const lines = [`## 产物 / Artifacts`, ``, `- Tag \`${tag}\`, source commit \`${options.commit}\``];
 	if (options.artifactsDirectory) {
 		const names = (await fs.readdir(options.artifactsDirectory)).filter(name => name.endsWith('.sha256')).sort();

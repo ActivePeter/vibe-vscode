@@ -35,7 +35,7 @@ loginctl enable-linger "$(id -un)"
 
 | 部件 | 职责 | 复用什么 |
 |---|---|---|
-| [`install.sh`](../../install.sh)(release 附件和包内 `bin/install.sh`) | 持有 `<root>/install.lock`,下载并校验 tar/metadata,验证后发布不可变 release,原子切换 `current`/`previous`;创建默认状态目录 `<root>/state`(0700),创建失败即报错退出并给出路径;不启动进程、不写系统目录。 | 将原手工安装流程固化,增加并发锁、路径包含性验证与失败清理 |
+| [`install.sh`](../../install.sh)(release 附件和包内 `bin/install.sh`) | 持有 `<root>/install.lock`,下载并校验 tar/metadata,验证后发布不可变 release,原子切换 `current`/`previous`;不启动进程、不写状态或系统目录。 | 将原手工安装流程固化,增加并发锁、路径包含性验证与失败清理 |
 | [Caddy 随包发布](../../build/lib/caddy.ts) | `package` 将固定版本二进制放在包根,与 `node` 并列;归档 SHA-512 与二进制 SHA-256 都通过才接受。 | 沿用 `ensure_caddy_binary` 的 Caddy `2.11.4`、架构和校验值,使用已有构建下载工具 |
 | [`bin/vibe-vscode`](../../resources/server/vibe-vscode/vibe-vscode.sh)(用户入口) | `start` 持有状态目录的运行锁,拥有 Caddy/Remote Server 两个子进程组和 socket 的最终清理;`systemd` 只输出 unit;`status` 只读探测。配置由随包 Node 执行的 [TypeScript 解析器](../../resources/server/vibe-vscode/cli-config.ts) 按数据读取。 | `run_gateway_stack`(两进程、socket、`wait -n`、trap 清理)、`is_runtime_healthy`(四个探针)、`wait_until_ready`。现有 `bin/vibe-vscode-server` 保留为底层 launcher,由 `start` 调用 |
 
@@ -49,7 +49,7 @@ loginctl enable-linger "$(id -un)"
 |---|---|---|
 | `--origin` | `https://<hostname -f>:<port>` | 浏览器地址栏里的 HTTPS 地址,即 Remote Server 的 `--public-origin`。可以给多个:命令行重复该参数,env 文件里用逗号分隔;每个都是完整的 `https://主机或IP[:端口]`;不需要域名,IP、`localhost`、Tailscale 地址都行。唯一真正需要用户想一下的参数 |
 | `--port` | `18080` | Caddy 公开端口 |
-| `--state-dir` | `<root>/state` | 下面固定分 `auth/`、`server/`、`extensions/`、`caddy/` 和物理工作区文件 `vibe-vscode.code-workspace`,升级不动它 |
+| `--state-dir` | `<root>/state` | 由 `start` 创建(0700),创建不了就报错退出并给出路径;下面固定分 `auth/`、`server/`、`extensions/`、`caddy/` 和物理工作区文件 `vibe-vscode.code-workspace`,升级不动它 |
 | `--tls-cert` / `--tls-key` | 无 | 不给则用 Caddy 内置 CA 自签;给了就用用户证书 |
 | `--session-ttl` | `43200` | 透传给 `--auth-session-ttl-seconds` |
 

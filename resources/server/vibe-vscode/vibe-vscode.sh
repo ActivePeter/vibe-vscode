@@ -77,7 +77,7 @@ for required in flock curl base64 mktemp setsid; do
 	command -v "$required" >/dev/null || fail "missing required command: $required"
 done
 [[ -x "$ROOT/caddy" ]] || fail 'the release is missing its bundled Caddy binary'
-mkdir -p -- "$STATE"
+mkdir -p -- "$STATE" 2>/dev/null || fail "cannot create the state directory $STATE; create it, make it writable by $(id -un), then rerun"
 exec 9>"$STATE/run.lock"
 flock -n 9 || fail "another instance is already using $STATE"
 chmod 0700 "$STATE"
@@ -104,7 +104,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-mkdir -p -- "$STATE/auth" "$STATE/server" "$STATE/extensions" "$STATE/caddy"
+mkdir -p -- "$STATE/auth" "$STATE/server" "$STATE/extensions" "$STATE/caddy" 2>/dev/null || fail "cannot create the state subdirectories under $STATE; fix its permissions, then rerun"
 chmod 0700 "$STATE/auth" "$STATE/server" "$STATE/extensions" "$STATE/caddy"
 WORKSPACE="$STATE/vibe-vscode.code-workspace"
 if [[ ! -e "$WORKSPACE" && ! -L "$WORKSPACE" ]]; then

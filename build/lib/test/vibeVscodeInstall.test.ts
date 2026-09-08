@@ -77,8 +77,7 @@ test('installs without system directories, reuses immutable tags, upgrades and r
 			unchanged: before.mtimeMs === (await fs.stat(path.join(release, 'vibe-release.json'))).mtimeMs,
 			state: await fs.readFile(path.join(f.root, 'state/auth/keep'), 'utf8'),
 			releases: (await fs.readdir(path.join(f.root, 'releases'))).sort(),
-			stateMode: (await fs.stat(path.join(f.root, 'state'))).mode & 0o777,
-		}, { upgraded: 'releases/v1.2.4', rolledBack: 'releases/v1.2.3', restored: 'releases/v1.2.4', unchanged: true, state: 'account and session state', releases: ['v1.2.3', 'v1.2.4'], stateMode: 0o700 });
+		}, { upgraded: 'releases/v1.2.4', rolledBack: 'releases/v1.2.3', restored: 'releases/v1.2.4', unchanged: true, state: 'account and session state', releases: ['v1.2.3', 'v1.2.4'] });
 	} finally {
 		await f.dispose();
 	}

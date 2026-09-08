@@ -64,7 +64,7 @@ Without your own TLS certificate, trust the Caddy root certificate printed at st
 # Your own certificate on port 443
 ~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com --port 443 --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem
 
-# Persist defaults, then just start
+# After the first start has created ~/.vibe-vscode/state, persist defaults so later starts need no options
 printf 'VIBE_VSCODE_ORIGIN=https://dev.example.com:18080\n' > ~/.vibe-vscode/state/vibe-vscode.env
 ~/.vibe-vscode/current/bin/vibe-vscode start
 

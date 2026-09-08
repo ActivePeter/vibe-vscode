@@ -64,7 +64,7 @@ curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/i
 # 自有证书，443 端口
 ~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com --port 443 --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem
 
-# 把默认值写进配置文件，之后直接 start
+# 首次 start 会创建 ~/.vibe-vscode/state，之后把默认值写进配置文件，再启动就不用带参数
 printf 'VIBE_VSCODE_ORIGIN=https://dev.example.com:18080\n' > ~/.vibe-vscode/state/vibe-vscode.env
 ~/.vibe-vscode/current/bin/vibe-vscode start
 

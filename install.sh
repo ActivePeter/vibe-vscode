@@ -120,10 +120,6 @@ if [[ "$current" != "$CANDIDATE" ]]; then
 		fail 'could not select the release; current is unchanged'
 	fi
 fi
-# The default state directory is created here so configuration can be written before the first start.
-if ! mkdir -p -- "$ROOT/state" 2>/dev/null || ! chmod 0700 -- "$ROOT/state" 2>/dev/null; then
-	fail "cannot create the state directory $ROOT/state; create it, make it writable by $(id -un), then rerun"
-fi
 printf 'Selected %s. Existing releases and persistent state were preserved.\n' "$TAG"
 printf 'Next: %q start --origin https://<browser-visible-host>:18080\n' "$ROOT/current/bin/vibe-vscode"
 printf 'If an instance is running, stop and restart it to use the selected release.\n'

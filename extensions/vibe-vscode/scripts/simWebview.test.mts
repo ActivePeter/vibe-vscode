@@ -61,7 +61,7 @@ async function createWebview(permissionState: TestPermission['state'] = 'prompt'
 	const window = Object.assign(new EventTarget(), { location: { ancestorOrigins: ['https://workbench.example'] } });
 	const timers = new Map<number, () => void>();
 	let timerId = 0;
-	const probes: { url: string; signal: AbortSignal; result: ReturnType<typeof Promise.withResolvers<{ ok: boolean }>> }[] = [];
+	const resourceRequests: string[] = [];
 	const html = simWebview.renderSimWebview({
 		configuredBaseUrl,
 		hostContext: { language: 'en' },
@@ -75,11 +75,9 @@ async function createWebview(permissionState: TestPermission['state'] = 'prompt'
 		document: { getElementById: getElement, referrer: '' },
 		navigator: { permissions: { query: () => permissionQuery() } },
 		URL,
-		AbortController,
-		fetch: (url: URL, options: { signal: AbortSignal }) => {
-			const result = Promise.withResolvers<{ ok: boolean }>();
-			probes.push({ url: url.toString(), signal: options.signal, result });
-			return result.promise;
+		fetch: (url: URL) => {
+			resourceRequests.push(url.toString());
+			return Promise.resolve({ ok: false, status: 401 });
 		},
 		setTimeout: (callback: () => void) => { timers.set(++timerId, callback); return timerId; },
 		clearTimeout: (id: number) => timers.delete(id),
@@ -91,8 +89,9 @@ async function createWebview(permissionState: TestPermission['state'] = 'prompt'
 		window.dispatchEvent(Object.assign(new Event('message'), { data, origin, source }));
 	};
 	return {
-		frame, permission, probes, simMessages, hostMessages,
+		frame, permission, resourceRequests, simMessages, hostMessages,
 		getElement,
+		pendingTimers: () => timers.size,
 		token: () => decodeURIComponent(new URL(frame.src).hash.slice('#_vscodeEmbed='.length)),
 		receive,
 		setPermissionQuery: (query: typeof permissionQuery) => { permissionQuery = query; },
@@ -109,8 +108,8 @@ describe('Sim webview connection', () => {
 		const pendingUrl = view.frame.src;
 		view.expire();
 		await setImmediate();
-		assert.deepStrictEqual({ ...view.state(), sameNavigation: view.frame.src === pendingUrl, probeCancelled: view.probes[0].signal.aborted }, {
-			overlay: 'overlay failed', failure: 'local-network', title: 'Waiting for browser permission', retry: 'Refresh', sameNavigation: true, probeCancelled: false,
+		assert.deepStrictEqual({ ...view.state(), sameNavigation: view.frame.src === pendingUrl, requests: view.resourceRequests }, {
+			overlay: 'overlay failed', failure: 'local-network', title: 'Waiting for browser permission', retry: 'Refresh', sameNavigation: true, requests: [],
 		});
 	});
 
@@ -123,27 +122,24 @@ describe('Sim webview connection', () => {
 		view.permission.change('granted');
 		await setImmediate();
 		view.receive({ source: 'sim', token: view.token(), type: 'ready' });
-		assert.deepStrictEqual({ overlay: view.state().overlay, newToken: view.token() !== previousToken, probesCancelled: view.probes.map(probe => probe.signal.aborted), contexts: view.simMessages.length }, {
-			overlay: 'overlay hidden', newToken: true, probesCancelled: [true, true], contexts: 1,
+		assert.deepStrictEqual({ overlay: view.state().overlay, newToken: view.token() !== previousToken, timers: view.pendingTimers(), contexts: view.simMessages.length }, {
+			overlay: 'overlay hidden', newToken: true, timers: 0, contexts: 1,
 		});
 	});
 
-	it('reports a gateway HTTP failure even while the permission API still reports prompt', async () => {
-		const view = await createWebview();
-		await view.retry();
-		view.probes[0].result.resolve({ ok: false });
-		await setImmediate();
+	it('waits for the iframe handshake without probing through the webview resource loader', async () => {
+		const view = await createWebview('granted');
+		const beforeHandshake = view.state().overlay;
+		view.receive({ source: 'sim', token: view.token(), type: 'ready' });
 		view.expire();
-		assert.deepStrictEqual({ ...view.state(), probeUrl: view.probes[0].url }, {
-			overlay: 'overlay failed', failure: 'service', title: 'Unable to load Sim', retry: 'Refresh', probeUrl: 'https://workbench.example/sim/__vibe_status',
+		await setImmediate();
+		assert.deepStrictEqual({ beforeHandshake, overlay: view.state().overlay, requests: view.resourceRequests, contexts: view.simMessages.length }, {
+			beforeHandshake: 'overlay', overlay: 'overlay hidden', requests: [], contexts: 1,
 		});
 	});
 
-	it('does not mistake a reachable gateway for a ready Sim bridge or a pending permission', async () => {
-		const view = await createWebview();
-		await view.retry();
-		view.probes[0].result.resolve({ ok: true });
-		await setImmediate();
+	it('reports a service failure when permission is granted but the handshake times out', async () => {
+		const view = await createWebview('granted');
 		const beforeDeadline = view.state().overlay;
 		view.expire();
 		await setImmediate();
@@ -163,24 +159,31 @@ describe('Sim webview connection', () => {
 		assert.deepStrictEqual({ overlay: view.state().overlay, contexts: view.simMessages.length }, { overlay: 'overlay hidden', contexts: 1 });
 	});
 
-	it('ignores a late failed probe after the bridge has connected', async () => {
+	it('accepts a late authenticated handshake after showing a service failure', async () => {
 		const view = await createWebview('granted');
-		view.receive({ source: 'sim', token: view.token(), type: 'ready' });
-		view.probes[0].result.resolve({ ok: false });
+		view.expire();
 		await setImmediate();
-		assert.deepStrictEqual({ overlay: view.state().overlay, cancelled: view.probes[0].signal.aborted }, { overlay: 'overlay hidden', cancelled: true });
+		const beforeHandshake = view.state().overlay;
+		view.receive({ source: 'sim', token: view.token(), type: 'ready' });
+		assert.deepStrictEqual({ beforeHandshake, overlay: view.state().overlay, timers: view.pendingTimers(), contexts: view.simMessages.length }, {
+			beforeHandshake: 'overlay failed', overlay: 'overlay hidden', timers: 0, contexts: 1,
+		});
 	});
 
-	it('ignores probes and ready messages from an obsolete navigation', async () => {
+	it('ignores timeout permission results and ready messages from an obsolete navigation', async () => {
 		const view = await createWebview('granted');
 		const previousToken = view.token();
+		const query = Promise.withResolvers<TestPermission>();
+		view.setPermissionQuery(() => query.promise);
+		view.expire();
+		view.setPermissionQuery(() => Promise.resolve(view.permission));
 		view.receive({ source: 'vibe-extension', type: 'navigate', path: '/workspace/other' });
 		await setImmediate();
-		view.probes[0].result.resolve({ ok: false });
+		query.resolve(view.permission);
 		view.receive({ source: 'sim', token: previousToken, type: 'ready' });
 		await setImmediate();
-		assert.deepStrictEqual({ overlay: view.state().overlay, path: new URL(view.frame.src).pathname, probesCancelled: view.probes.map(probe => probe.signal.aborted), contexts: view.simMessages.length }, {
-			overlay: 'overlay', path: '/workspace/other', probesCancelled: [true, false], contexts: 0,
+		assert.deepStrictEqual({ overlay: view.state().overlay, path: new URL(view.frame.src).pathname, timers: view.pendingTimers(), contexts: view.simMessages.length }, {
+			overlay: 'overlay', path: '/workspace/other', timers: 1, contexts: 0,
 		});
 	});
 
@@ -202,16 +205,16 @@ describe('Sim webview connection', () => {
 		const deniedToken = view.token();
 		view.permission.change('denied');
 		view.receive({ source: 'sim', token: deniedToken, type: 'ready' });
-		assert.deepStrictEqual({ ...view.state(), frame: view.frame.src, cancelled: view.probes[0].signal.aborted, contexts: view.simMessages.length }, {
-			overlay: 'overlay failed', failure: 'local-network', title: 'Local network access is required', retry: 'Refresh', frame: 'about:blank', cancelled: true, contexts: 0,
+		assert.deepStrictEqual({ ...view.state(), frame: view.frame.src, timers: view.pendingTimers(), contexts: view.simMessages.length }, {
+			overlay: 'overlay failed', failure: 'local-network', title: 'Local network access is required', retry: 'Refresh', frame: 'about:blank', timers: 0, contexts: 0,
 		});
 	});
 
 	it('does not require the Vibe gateway health route for an explicitly configured Sim URL', async () => {
 		const view = await createWebview('prompt', 'https://sim.example/custom/');
 		view.receive({ source: 'sim', token: view.token(), type: 'ready' }, 'https://sim.example');
-		assert.deepStrictEqual({ overlay: view.state().overlay, path: new URL(view.frame.src).pathname, probes: view.probes.length }, {
-			overlay: 'overlay hidden', path: '/custom/workspace', probes: 0,
+		assert.deepStrictEqual({ overlay: view.state().overlay, path: new URL(view.frame.src).pathname, requests: view.resourceRequests }, {
+			overlay: 'overlay hidden', path: '/custom/workspace', requests: [],
 		});
 	});
 });

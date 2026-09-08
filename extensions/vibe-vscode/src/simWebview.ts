@@ -151,8 +151,6 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 		let navigationGeneration = 0;
 		let simOrigin = '';
 		let loadTimer;
-		let gatewayReached = false;
-		let gatewayController;
 		let stopWatchingLocalNetworkPermission;
 		const frame = document.getElementById('sim');
 		const overlay = document.getElementById('overlay');
@@ -245,24 +243,8 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 
 		function cancelConnectionChecks() {
 			clearTimeout(loadTimer);
-			gatewayController?.abort();
-			gatewayController = undefined;
 			stopWatchingLocalNetworkPermission?.();
 			stopWatchingLocalNetworkPermission = undefined;
-		}
-
-		async function checkGateway(generation, signal) {
-			try {
-				const response = await fetch(new URL('/sim/__vibe_status', simOrigin), { cache: 'no-store', credentials: 'omit', signal });
-				if (generation !== navigationGeneration || frameReady || signal.aborted) return;
-				gatewayReached = true;
-				if (!response.ok) {
-					clearTimeout(loadTimer);
-					showServiceFailure();
-				}
-			} catch {
-				// The connection deadline handles network failures without cancelling a pending permission request.
-			}
 		}
 
 		async function localNetworkPermissionState() {
@@ -318,15 +300,12 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			if (!configuredBaseUrl && requestLocalNetworkAccess) void watchLocalNetworkPermission(generation);
 			simOrigin = new URL(url).origin;
 			frame.src = url;
-			if (!configuredBaseUrl) {
-				gatewayController = new AbortController();
-				void checkGateway(generation, gatewayController.signal);
-			}
+			// Same-host fetches use VS Code's resource loader, so only the iframe handshake establishes readiness.
 			loadTimer = setTimeout(() => {
 				if (generation !== navigationGeneration || frameReady) return;
 				void localNetworkPermissionState().then(permissionState => {
 					if (generation !== navigationGeneration || frameReady) return;
-					if (permissionState === 'prompt' && !gatewayReached) {
+					if (permissionState === 'prompt') {
 						// Keep the iframe request alive so a late permission grant can still connect.
 						showLocalNetworkFailure(false, true);
 						return;
@@ -352,7 +331,6 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			currentPath = path;
 			currentFrameToken = token;
 			frameReady = false;
-			gatewayReached = false;
 			overlay.className = 'overlay';
 			overlay.dataset.failure = '';
 			if (!url) {

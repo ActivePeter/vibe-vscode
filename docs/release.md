@@ -50,6 +50,15 @@ There is one cache implementation in `build/lib/webClientCache.ts` and one compr
 
 The always-latest development service remains source-based. Its deployment script builds a staged snapshot and starts the same [metadata-driven launcher](#configure-and-start) as the systemd template. The existing single-writer lock, process-ownership checks, private backend, health gates, and rollback transaction stay in the deployment coordinator. A healthy embedded runtime predating the authentication CLI may be retained only as the exact rollback anchor during migration; new candidates and selected snapshot restarts must declare `authentication: "embedded-cli-v1"` and pass the shared launcher's `--version` preflight. Candidate authentication configuration is validated against disposable state before stopping the active service.
 
+## Release notes
+
+The draft body comes from a file that ships with the tagged commit, so notes are reviewed in pull requests alongside the code they describe:
+
+- Write `docs/release-notes/<tag>.md` from [`docs/release-notes/TEMPLATE.md`](release-notes/TEMPLATE.md). The file name is the exact tag, and the first line must be a heading that names the tag; a copied previous file fails validation. While the version is undecided, keep it as `docs/release-notes/next.md` and rename it in the release pull request.
+- The `source` job runs `node build/release-notes.ts` before any build and fails when the file is missing. A manual dispatch may set `allow_missing_notes` to publish a draft with a placeholder body instead; a pushed tag never can.
+- The `publish` job assembles the final body: the file, a generated appendix with the tag, source commit and archive checksums, then GitHub's categorized pull-request list ([`.github/release.yml`](../.github/release.yml)).
+- The release is still created as a **draft**. Publishing it in the GitHub UI is the confirmation step, and the body can be edited there; copy any edits back into the file in the next release pull request.
+
 ## Download and install
 
 Choose a published version from [GitHub Releases](https://github.com/ActivePeter/vibe-vscode/releases). Replace every `<placeholder>` below; download and verify as an unprivileged user before installing into an operator-owned directory.

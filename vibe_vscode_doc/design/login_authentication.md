@@ -452,7 +452,7 @@ stateDiagram-v2
 - **会话**:`expiresIn` 默认 12 小时(可配 60 秒到 7 天),`updateAge` 取 5 分钟与半个 TTL 的较小值;cookie 前缀 `vibe`,`Secure` / `HttpOnly` / `SameSite=Lax`,`Path` 限定到 server base path。
 - **限速**:存 SQLite,默认 100 次每分钟;`/sign-in/username`、`/sign-up/email` 各 5 次每分钟;`/get-session` 免限速,因为 Caddy 对每个 Workbench 资源都会调它。
 - **续租 cookie**:显式关闭 `session.cookieCache`,成功的 `/auth/verify` 最多发一个 `session_token` cookie;拒绝时允许多个清除 cookie。HTTP 请求与握手触发续租,单靠已建立 WebSocket 的帧不会续租。
-- **可信 Origin**:运维通过 `--public-origin` 指定唯一的浏览器可见 HTTPS Origin。`create` 在打开持久状态前验证并规范化它,Better Auth 的 `baseURL`、`trustedOrigins`、HTTP adapter 的 Request URL 与 Workbench 公开身份共用该值,不从请求头决定可信来源。
+- **可信 Origin**:运维通过 `--public-origin` 指定浏览器可见的 HTTPS Origin,可重复给出多个入口(不同局域网 IP、`localhost`、VPN 地址,不需要域名),整张表构成显式白名单;每个请求按 `Host` 精确匹配其中一项作为本次请求的 origin,匹配不到的表单提交一律 403,cookie 按 host 隔离。多入口的用户侧说明见[安装与启动](install_and_start.md)。`create` 在打开持久状态前验证并规范化它,Better Auth 的 `baseURL`、`trustedOrigins`、HTTP adapter 的 Request URL 与 Workbench 公开身份共用该值,不从请求头决定可信来源。
 - **basePath**:`create` 同时验证并规范化 base path,根路径 `/` 转为空前缀,HTTP adapter 直接使用服务的 `basePath`,不维护第二份校验或独立配置。
 - **取舍**:嵌入进程而不是 sidecar,是为了一个进程、一个 socket、一次生命周期;用 Better Auth 而不是自研,是为了不自己维护密码哈希、会话与限速。使用 Node 内置 `node:sqlite` 的 `DatabaseSync`,不新增原生 SQLite 构建依赖;数据库文件与 secret 格式保持不变。
 

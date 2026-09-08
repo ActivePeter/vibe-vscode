@@ -34,28 +34,33 @@
 				width: min(420px, 100%);
 			}
 
+			.vscode-workbench-startup-brand {
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				gap: var(--vscode-spacing-size240, 24px);
+				margin-bottom: var(--vscode-spacing-size400, 40px);
+			}
+
 			.vscode-workbench-startup-logo {
 				display: block;
-				margin-bottom: var(--vscode-spacing-size240, 24px);
+				width: 40px;
+				height: 40px;
+				flex-shrink: 0;
 				filter: drop-shadow(0 4px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, .14)));
 			}
 
-			.vscode-workbench-startup-mode {
-				display: inline-flex;
-				align-items: center;
-				min-height: 20px;
-				box-sizing: border-box;
+			.vscode-workbench-startup-brand-name {
 				margin: 0;
-				padding: var(--vscode-spacing-size20, 2px) var(--vscode-spacing-size80, 8px);
-				border-radius: var(--vscode-cornerRadius-circle, 9999px);
-				color: var(--vscode-textLink-foreground, LinkText);
-				background: color-mix(in srgb, currentColor 12%, Canvas);
-				font-size: var(--vscode-fontSize-label2, 11px);
+				color: #2864F0;
+				font-size: 24px;
 				font-weight: var(--vscode-fontWeight-semiBold, 600);
+				line-height: 1.25;
+				letter-spacing: -.02em;
 			}
 
 			.vscode-workbench-startup-title {
-				margin: var(--vscode-spacing-size120, 12px) 0 0;
+				margin: 0;
 				font-size: var(--vscode-fontSize-heading2, 18px);
 				font-weight: var(--vscode-fontWeight-semiBold, 600);
 				line-height: 1.4;
@@ -162,9 +167,11 @@
 <!-- WORKBENCH_STARTUP_BODY -->
 		<div id="vscode-workbench-startup" data-settings="{{WORKBENCH_STARTUP_CONFIGURATION}}" aria-busy="true">
 			<div class="vscode-workbench-startup-content">
-				<img class="vscode-workbench-startup-logo" src="{{WORKBENCH_BRAND_ICON}}" width="64" height="64" alt="" />
-				<p id="vscode-workbench-startup-mode" class="vscode-workbench-startup-mode"></p>
-				<h1 id="vscode-workbench-startup-title" class="vscode-workbench-startup-title"></h1>
+				<div class="vscode-workbench-startup-brand">
+					<img class="vscode-workbench-startup-logo" src="{{WORKBENCH_BRAND_ICON}}" width="40" height="40" alt="" />
+					<h1 class="vscode-workbench-startup-brand-name">{{WORKBENCH_BRAND_NAME}}</h1>
+				</div>
+				<h2 id="vscode-workbench-startup-title" class="vscode-workbench-startup-title"></h2>
 				<p id="vscode-workbench-startup-detail" class="vscode-workbench-startup-detail" aria-live="polite"></p>
 				<div id="vscode-workbench-startup-progress" class="vscode-workbench-startup-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100">
 					<div class="vscode-workbench-startup-progress-value"></div>

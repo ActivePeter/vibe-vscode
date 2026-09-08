@@ -24,6 +24,7 @@ import { URI } from '../../base/common/uri.js';
 import { streamToBuffer } from '../../base/common/buffer.js';
 import { IProductConfiguration } from '../../base/common/product.js';
 import { isString, Mutable } from '../../base/common/types.js';
+import { escape } from '../../base/common/strings.js';
 import { CharCode } from '../../base/common/charCode.js';
 import { IExtensionManifest } from '../../platform/extensions/common/extensions.js';
 import { ITranslations, localizeManifest } from '../../platform/extensionManagement/common/extensionNls.js';
@@ -656,6 +657,7 @@ export class WebClientServer {
 			WORKBENCH_AUTH_SESSION: authSessionInfo ? asJSON(authSessionInfo) : '',
 			WORKBENCH_STARTUP_CONFIGURATION: asJSON(startupConfiguration),
 			WORKBENCH_BRAND_ICON: vibeLogoDataUri,
+			WORKBENCH_BRAND_NAME: escape(startupConfiguration.messages.brandName),
 			WORKBENCH_BRAND_VERSION: vibeLogoRevision,
 			WORKBENCH_WEB_BASE_URL: staticRoute,
 			WORKBENCH_MAIN_SCRIPT_TYPE: this._cacheVersion ? 'application/json' : 'module',

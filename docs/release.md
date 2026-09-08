@@ -25,7 +25,7 @@ The archive preserves Gulp's production layout: dependencies originally built in
 | `out/`, `extensions/` | Built server, browser workbench, and extensions |
 | `out/vs/code/browser/workbench/cache/` | Manifest, loader, and verified gzip chunks |
 | `bin/vibe-vscode-server` | Shared runtime launcher; applies immutable release metadata |
-| `vibe-release.json` | Version, exact source commit, runtime mode, platform, and architecture |
+| `vibe-release.json` | Version, exact source commit, runtime mode, platform, architecture, and authentication launcher contract |
 | `resources/server/vibe-vscode/` | Caddy, systemd, and operator configuration templates |
 
 ### Source builds and development deployments
@@ -48,7 +48,16 @@ node build/web-release.ts package '<gulp-package-root>' '<artifact-directory>' '
 
 There is one cache implementation in `build/lib/webClientCache.ts` and one compression implementation in `build/lib/precompress.ts`, shared by Gulp, `build/next`, and staged development preparation. The cache always reads the explicit `workbench.css` entry and ignores CSS imports when bundling JavaScript. Source staging first materializes that stylesheet and the standalone startup module from copied source output; it never rewrites the live checkout's output. Production builds already emit those entries.
 
-The always-latest development service remains source-based. Its deployment script builds a staged snapshot and starts the same [metadata-driven launcher](#configure-and-start) as the systemd template. The existing single-writer lock, process-ownership checks, private backend, health gates, and rollback transaction stay in the deployment coordinator. A healthy pre-launcher runtime may be retained only as the exact rollback anchor during migration; new candidates and selected snapshot restarts must pass the shared launcher's `--version` preflight.
+The always-latest development service remains source-based. Its deployment script builds a staged snapshot and starts the same [metadata-driven launcher](#configure-and-start) as the systemd template. The existing single-writer lock, process-ownership checks, private backend, health gates, and rollback transaction stay in the deployment coordinator. A healthy embedded runtime predating the authentication CLI may be retained only as the exact rollback anchor during migration; new candidates and selected snapshot restarts must declare `authentication: "embedded-cli-v1"` and pass the shared launcher's `--version` preflight. Candidate authentication configuration is validated against disposable state before stopping the active service.
+
+## Release notes
+
+The draft body comes from a file that ships with the tagged commit, so notes are reviewed in pull requests alongside the code they describe:
+
+- Write `docs/releases/<tag>.md` from [`docs/releases/TEMPLATE.md`](releases/TEMPLATE.md). The file name is the exact tag, and the first line must be a heading that names the tag; a copied previous file fails validation. While the version is undecided, keep it as `docs/releases/next.md` and rename it in the release pull request.
+- The `source` job runs `node build/release-notes.ts` before any build and fails when the file is missing. A manual dispatch may set `allow_missing_notes` to publish a draft with a placeholder body instead; a pushed tag never can.
+- The `publish` job assembles the final body: the file, a generated appendix with the tag, source commit and archive checksums, then GitHub's categorized pull-request list ([`.github/release.yml`](../.github/release.yml)).
+- The release is still created as a **draft**. Publishing it in the GitHub UI is the confirmation step, and the body can be edited there; copy any edits back into the file in the next release pull request.
 
 ## Download and install
 
@@ -63,7 +72,7 @@ curl -fL -o "$ASSET.sha256" "https://github.com/ActivePeter/vibe-vscode/releases
 sha256sum --check "$ASSET.sha256"
 ```
 
-Use a new directory for each release. Keep mutable server state, installed user extensions, connection tokens, and TLS material outside that tree. The service account should be able to read releases, but not rewrite them or the `current` pointer.
+Use a new directory for each release. Keep mutable server and authentication state, installed user extensions, and TLS material outside that tree. The service account should be able to read releases, but not rewrite them or the `current` pointer.
 
 ```bash
 set -euo pipefail
@@ -96,7 +105,7 @@ The shared launcher reads `version` and `mode` from `vibe-release.json` and supp
 | `production` | `NODE_ENV=production`, `VSCODE_DEV` unset | Release archive |
 | `development` | `NODE_ENV=development`, `VSCODE_DEV=1` | Staged source snapshot |
 
-Missing `mode` defaults to production for older release metadata; an unknown mode fails before the server starts. Operators configure sockets, state, and authentication through launch arguments, not by editing immutable metadata.
+Missing `mode` defaults to production for older release metadata; an unknown mode fails before the server starts. Operators configure sockets, state, and authentication through launch arguments, not by editing immutable metadata. Except for `--version` and `--help`, the Vibe launcher requires `--auth-state-dir`. The Remote Server validates the public origin and other authentication options and refuses authentication without a private socket or with a connection token.
 
 For a private backend, the equivalent operator-facing launch is:
 
@@ -105,7 +114,11 @@ For a private backend, the equivalent operator-facing launch is:
   --socket-path '<private-unix-socket>' \
   --server-data-dir '<state-root>/server' \
   --extensions-dir '<state-root>/extensions' \
-  --connection-token-file '<connection-token-file>'
+  --auth-state-dir '<state-root>/auth' \
+  --public-origin 'https://<browser-visible-host>:<public-port>' \
+  --auth-session-ttl-seconds 43200 \
+  --without-connection-token \
+  --accept-server-license-terms
 ```
 
 | Argument | Meaning |
@@ -113,21 +126,26 @@ For a private backend, the equivalent operator-facing launch is:
 | `--socket-path` | Private backend socket; it is not exposed as a public TCP listener |
 | `--server-data-dir` | Mutable settings, sessions, and server databases outside releases |
 | `--extensions-dir` | Mutable user-installed extensions outside releases |
-| `--connection-token-file` | Owner-readable file containing a random connection token |
+| `--auth-state-dir` | Persistent Better Auth SQLite database and signing secret outside releases |
+| `--public-origin` | One browser-visible HTTPS origin, without a URL path; used for trusted origins and Workbench remote authority |
+| `--auth-session-ttl-seconds` | Sliding-session lifetime; validated by the authentication service |
+| `--without-connection-token` | Required behind the mandatory Caddy login boundary and private socket |
 | `--web-client-cache-version` | Immutable tag/commit identity; supplied by the launcher |
 
-For loopback-only diagnostics, `--host 127.0.0.1 --port 8080` can replace `--socket-path`. Public HTTPS belongs to Caddy, not the VS Code backend. Do not use `--without-connection-token` on a remotely accessible instance. That option is appropriate only behind a separately enforced authentication gateway that protects **all HTTP and WebSocket traffic**, with the backend remaining private.
+Public HTTPS belongs to Caddy, not the VS Code backend. Do not replace the private socket with a TCP listener when authentication is enabled. Caddy protects all HTTP and WebSocket handshakes; only the explicit authentication routes bypass `forward_auth`. Account, session, and renewal semantics are canonical in [Full-screen login and instance authentication](../vibe_vscode_doc/design/login_authentication.md).
 
 ### systemd and Caddy/TLS
 
 Install Caddy separately, and create a dedicated `vibe-vscode` service account. The supplied templates use standard Linux systemd locations:
 
 - Copy `resources/server/vibe-vscode/service.env.example` from the archive to `/etc/vibe-vscode/service.env`, and replace every placeholder. This is the shared operator configuration for the backend and proxy.
-- Create the configured state directory, owned by `vibe-vscode`, with permissions that deny other users. Create a cryptographically random connection-token file readable only by that account. Give the Caddy account access to the configured certificate and private key; it does not need access to the token or state databases.
+- Create the configured state directory, owned by `vibe-vscode`, with permissions that deny other users. Better Auth initializes its database and signing secret under `<state-root>/auth`; keep both across upgrades. Give the Caddy account access to the configured certificate and private key; it does not need access to authentication state.
 - Install `resources/server/vibe-vscode/vibe-vscode.service` as `/etc/systemd/system/vibe-vscode.service`.
 - Install `resources/server/vibe-vscode/caddy.service.conf` as `/etc/systemd/system/caddy.service.d/vibe-vscode.conf`. It assumes the distribution's Caddy executable is `/usr/bin/caddy`; adjust the installed drop-in if necessary.
 
-The backend unit creates the private socket under `/run/vibe-vscode`. The Caddy drop-in joins its group so it can reach that socket. Caddy binds public HTTPS to `0.0.0.0` on `VIBE_VSCODE_PUBLIC_PORT` (18080 by default), using the configured TLS files. No private backend TCP port is opened.
+The backend unit creates the private socket under `/run/vibe-vscode`. The Caddy drop-in joins its group so it can reach that socket. Both `VIBE_VSCODE_AUTH_ADDRESS` and `VIBE_VSCODE_BACKEND_ADDRESS` name this same socket; `VIBE_VSCODE_AUTH_PATH` defaults to `/auth`. Caddy binds public HTTPS to `0.0.0.0` on `VIBE_VSCODE_PUBLIC_PORT` (18080 by default), using the configured TLS files. No private backend TCP port is opened.
+
+Set `VIBE_VSCODE_PUBLIC_ORIGIN` to the exact HTTPS origin in the browser's address bar, including a non-default port. An outer proxy may change `Host`, but client-supplied forwarding headers never change the configured identity. A URL prefix belongs in `--server-base-path` and the matching `VIBE_VSCODE_AUTH_PATH`, not in the origin. The default systemd template serves at `/`.
 
 ```bash
 sudo systemctl daemon-reload
@@ -136,7 +154,7 @@ sudo systemctl enable caddy
 sudo systemctl restart caddy
 ```
 
-The bundled Caddyfile disables its admin API, so use a restart, not `caddy reload`, after changing proxy configuration. The public certificate must be trusted by the browser. Open the HTTPS workbench using the connection token for initial authentication; do not share token-bearing URLs or include them in logs or screenshots.
+The bundled Caddyfile disables its admin API, so use a restart, not `caddy reload`, after changing proxy configuration. The public certificate must be trusted by the browser. Restrict initial access to the intended administrator until the first account has been created. Opening the configured HTTPS address then shows the full-screen login page; no token-bearing URL is needed.
 
 ## Upgrade, health checks, and rollback
 
@@ -145,8 +163,10 @@ Hold the same stable `deploy.lock` from candidate preparation through verificati
 Atomically point `current` at the new release, then restart only the recognized `vibe-vscode` systemd service. Verify all of the following before releasing the lock:
 
 - The private socket responds to `/version` with the expected source commit.
-- The public HTTPS `/version` responds through the configured TLS endpoint.
-- An unauthenticated workbench request is denied, and an authenticated browser can open the workbench and connect its extension host.
+- The private socket's `/auth/health` returns `204`.
+- The public HTTPS `/auth/api/status` returns `200` through the configured TLS endpoint.
+- An unauthenticated workbench navigation (`Accept: text/html`) returns `303` to login or first-time registration; resources and WebSocket handshakes return `401`. Public `/version` is also protected.
+- An authenticated browser can open the workbench and connect its extension host.
 - The public listener belongs to Caddy and the backend remains on its private socket.
 
 For a private health probe, an operator with socket access can use:

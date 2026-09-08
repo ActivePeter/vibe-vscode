@@ -16,72 +16,15 @@
   "extensionKind": [
     "ui"
   ],
-  "enabledApiProposals": [
-    "vibeVscodeFullscreenPanel"
-  ],
   "activationEvents": [
-    "onCommand:vibe-vscode.openSim",
-    "onCommand:vibe-vscode.openSimFullscreen",
-    "onCommand:vibe-vscode.openFullscreenPanel",
-    "onCommand:vibe-vscode.closeFullscreenPanel",
-    "onWebviewPanel:vibe-vscode.sim.editor",
-    "onView:vibe-vscode.sim.sidebar"
+    "onCommand:_vibe-vscode.sim.getContext",
+    "onCommand:_vibe-vscode.sim.resource",
+    "onWebviewPanel:vibe-vscode.sim.editor"
   ],
   "capabilities": {
     "virtualWorkspaces": true,
     "untrustedWorkspaces": {
       "supported": true
-    }
-  },
-  "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "vibe-vscode-sim",
-          "title": "%viewContainer.sim%",
-          "icon": "resources/sim.svg"
-        }
-      ]
-    },
-    "views": {
-      "vibe-vscode-sim": [
-        {
-          "id": "vibe-vscode.sim.sidebar",
-          "name": "%view.sim%",
-          "type": "webview"
-        }
-      ]
-    },
-    "commands": [
-      {
-        "command": "vibe-vscode.openSim",
-        "title": "%command.openSim%",
-        "category": "vibe vscode"
-      },
-      {
-        "command": "vibe-vscode.openSimFullscreen",
-        "title": "%command.openSimFullscreen%",
-        "category": "vibe vscode"
-      }
-    ],
-    "menus": {
-      "menubar/view": [
-        {
-          "command": "vibe-vscode.openSim",
-          "group": "1_vibe"
-        }
-      ]
-    },
-    "configuration": {
-      "title": "vibe vscode",
-      "properties": {
-        "vibe-vscode.sim.baseUrl": {
-          "type": "string",
-          "default": "",
-          "scope": "window",
-          "markdownDescription": "%configuration.sim.baseUrl%"
-        }
-      }
     }
   },
   "scripts": {

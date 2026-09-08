@@ -1,9 +1,4 @@
 {
 	"displayName": "vibe vscode",
-	"description": "Hosts Vibe subplugins in editor tabs with optional fullscreen presentation.",
-	"viewContainer.sim": "Sim",
-	"view.sim": "Development Orchestration",
-	"command.openSim": "Open Sim Development Orchestration",
-	"command.openSimFullscreen": "Open Sim Development Orchestration Fullscreen",
-	"configuration.sim.baseUrl": "Optional Sim root URL. Leave empty to use the current Vibe VS Code HTTPS gateway."
+	"description": "Provides file context and editor capabilities to hosted Sim surfaces."
 }

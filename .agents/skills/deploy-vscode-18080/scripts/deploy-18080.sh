@@ -231,9 +231,19 @@ service_backend_socket() {
 
 is_runtime_healthy() {
 	local backend_socket="${1:-}"
+	local legacy_runtime_root="${2:-}"
 
 	if [[ -z "$backend_socket" ]]; then
 		backend_socket="$(service_backend_socket)" || return 1
+	fi
+	# This optional root is supplied only for a recognized live rollback anchor.
+	# New candidates and selected snapshot restarts always use the authenticated gates.
+	if [[ -n "$legacy_runtime_root" ]] && runtime_predates_authentication "$legacy_runtime_root"; then
+		[[ "$(authentication_public_health_status)" == '404' ]] \
+			&& [[ "$(root_health_status)" == '200' ]] \
+			&& [[ "$(authentication_backend_health_status "$backend_socket")" == '404' ]] \
+			&& [[ "$(backend_health_status "$backend_socket")" == '200' ]]
+		return $?
 	fi
 	[[ "$(authentication_public_health_status)" == '200' ]] \
 		&& [[ "$(root_health_status)" == '303' ]] \
@@ -379,6 +389,13 @@ runtime_uses_authentication_cli() {
 
 	[[ -f "$runtime_root/vibe-release.json" ]] || return 1
 	"$runtime_root/node" -e 'process.exit(require(process.argv[1]).authentication === "embedded-cli-v1" ? 0 : 1)' "$runtime_root/vibe-release.json"
+}
+
+runtime_predates_authentication() {
+	local runtime_root="$1"
+
+	[[ -f "$runtime_root/vibe-release.json" && ! -e "$runtime_root/$EMBEDDED_AUTH_SERVER_RELATIVE_PATH" ]] || return 1
+	"$runtime_root/node" -e 'process.exit(Object.hasOwn(require(process.argv[1]), "authentication") ? 1 : 0)' "$runtime_root/vibe-release.json"
 }
 
 validate_candidate_runtime_startup() {
@@ -683,7 +700,11 @@ run_gateway_stack() {
 	if [[ -n "$SERVER_BASE_PATH" ]]; then
 		backend_arguments+=(--server-base-path "$SERVER_BASE_PATH")
 	fi
-	if [[ "$allow_legacy_runtime" == true ]] && ! runtime_uses_authentication_cli "$runtime_root"; then
+	if [[ "$allow_legacy_runtime" == true ]] && runtime_predates_authentication "$runtime_root"; then
+		# Restore only the exact verified pre-authentication process after a failed migration.
+		# It is never accepted as a new candidate or a selected snapshot restart.
+		log 'Restoring the verified pre-authentication rollback anchor; login is not available in this old release.'
+	elif [[ "$allow_legacy_runtime" == true ]] && ! runtime_uses_authentication_cli "$runtime_root"; then
 		# Only the exact healthy embedded release predating the CLI contract may use
 		# its old environment inputs during rollback. No sidecar is ever started.
 		backend_environment+=(
@@ -722,7 +743,7 @@ run_gateway_stack() {
 	is_backend_socket_listening && fail "backend socket is already owned by another process: $SERVICE_BACKEND_SOCKET"
 	rm -f -- "$SERVICE_BACKEND_SOCKET"
 	exec >> "$SERVICE_LOG" 2>&1
-	log "Starting Caddy HTTPS and the Better Auth-enabled VS Code Remote Server on 0.0.0.0:$SERVICE_PORT from $runtime_root."
+	log "Starting Caddy HTTPS and the VS Code Remote Server on 0.0.0.0:$SERVICE_PORT from $runtime_root."
 	cd -- "$runtime_root"
 	trap cleanup_stack EXIT
 	trap 'cleanup_stack; exit 129' HUP
@@ -811,9 +832,14 @@ wait_until_ready() {
 	local backend_socket
 	local runtime_label="$1"
 	local expected_runtime_root="$2"
+	local allow_legacy_runtime="${3:-false}"
+	local legacy_runtime_root=
 	local running_runtime_root
 	local deadline=$((SECONDS + DEPLOY_TIMEOUT_SECONDS))
 	expected_runtime_root="$(realpath -e -- "$expected_runtime_root")"
+	if [[ "$allow_legacy_runtime" == true ]]; then
+		legacy_runtime_root="$expected_runtime_root"
+	fi
 
 	while (( SECONDS < deadline )); do
 		if ! tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
@@ -831,13 +857,13 @@ wait_until_ready() {
 			return 1
 		}
 
-		if is_runtime_healthy "$backend_socket"; then
+		if is_runtime_healthy "$backend_socket" "$legacy_runtime_root"; then
 			if ! has_public_listener; then
 				printf 'Observed listener addresses:\n%s\n' "$(listener_addresses)" >&2
 				printf 'Service is healthy on localhost but has no public wildcard listener on port %s.\n' "$SERVICE_PORT" >&2
 				return 1
 			fi
-			printf 'Vibe VS Code runtime is ready: %s (%s, Caddy HTTPS, login required, embedded Better Auth, private VS Code socket, 0.0.0.0:%s)\n' "$runtime_label" "$SERVICE_URL" "$SERVICE_PORT"
+			printf 'Vibe VS Code runtime is ready: %s (%s, Caddy HTTPS, private VS Code socket, 0.0.0.0:%s)\n' "$runtime_label" "$SERVICE_URL" "$SERVICE_PORT"
 			return 0
 		fi
 
@@ -870,8 +896,9 @@ prepare_active_runtime() {
 		validate_caddy_runtime_root "$running_runtime" || fail "running service is not a complete Caddy runtime: $running_runtime"
 	fi
 
-	if ! is_runtime_healthy || ! has_public_listener; then
+	if ! is_runtime_healthy '' "$running_runtime" || ! has_public_listener; then
 		ACTIVE_RUNTIME_ROOT="$(resolve_runtime_link "$SERVICE_CURRENT_LINK" || true)"
+		[[ -n "$ACTIVE_RUNTIME_ROOT" ]] || fail 'running service has no verified healthy rollback anchor; leaving it untouched'
 		return 0
 	fi
 
@@ -880,7 +907,7 @@ prepare_active_runtime() {
 		if validate_candidate_runtime_root "$running_runtime"; then
 			set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
 		else
-			# A pre-CLI, pre-launcher, or pre-invariant embedded release may remain the rollback anchor only
+			# A pre-authentication, pre-CLI, or pre-launcher release may remain the rollback anchor only
 			# because this exact process passed its applicable health boundaries. New candidates
 			# and snapshot restarts stay strict, and a successful promotion removes this path.
 			ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=true
@@ -973,7 +1000,7 @@ activate_candidate_runtime() {
 	print_log_tail
 	printf 'Candidate runtime failed; restoring last-known-good runtime...\n' >&2
 	stop_service
-	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]] && start_service "$ACTIVE_RUNTIME_ROOT" "$workspace_path" "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME" && wait_until_ready 'restored last-known-good runtime' "$ACTIVE_RUNTIME_ROOT"; then
+	if [[ -n "$ACTIVE_RUNTIME_ROOT" ]] && start_service "$ACTIVE_RUNTIME_ROOT" "$workspace_path" "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME" && wait_until_ready 'restored last-known-good runtime' "$ACTIVE_RUNTIME_ROOT" "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME"; then
 		if [[ "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME" != true ]]; then
 			set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
 		fi

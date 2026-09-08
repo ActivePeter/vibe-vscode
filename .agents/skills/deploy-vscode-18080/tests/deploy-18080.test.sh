@@ -179,6 +179,21 @@ assert_equal "$(printf '%s\n' \
 	'authentication-backend:/test/backend.sock' \
 	'backend:/test/backend.sock')" "$(cat "$proxy_health_calls")"
 
+(
+	runtime_predates_authentication() { [[ "$1" == /test/anonymous ]]; }
+	authentication_public_health_status() { printf '404'; }
+	root_health_status() { printf '200'; }
+	authentication_backend_health_status() { printf '404'; }
+	backend_health_status() { printf '200'; }
+	if is_runtime_healthy /test/backend.sock; then
+		fail_test 'new candidate passed health checks without authentication'
+	fi
+	is_runtime_healthy /test/backend.sock /test/anonymous || fail_test 'verified pre-authentication rollback could not pass its original health gates'
+	if is_runtime_healthy /test/backend.sock /test/authenticated; then
+		fail_test 'broken authenticated runtime was downgraded to anonymous health checks'
+	fi
+)
+
 grep -Fq -- 'local -a server=("$runtime_root/bin/vibe-vscode-server")' "$DEPLOY_SCRIPT" || fail_test 'deployment does not use the shared runtime launcher'
 grep -Fq -- '"$SOURCE_ROOT/build/web-release.ts" prepare' "$DEPLOY_SCRIPT" || fail_test 'deployment does not use the consolidated preparation command'
 grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" --development' "$DEPLOY_SCRIPT" || fail_test 'deployment does not stamp source identity and the development profile inside staging'
@@ -246,19 +261,25 @@ legacy_gateway_call="$(
 )"
 assert_equal '/test/pre-launcher-runtime|/test/workspace.code-workspace|true' "$legacy_gateway_call"
 
-# The real two-process startup uses CLI inputs for candidates and preserves the
-# old embedded server's environment contract only for a verified rollback.
+# The real two-process startup uses CLI inputs for candidates and restores the
+# original contract of a verified embedded or pre-authentication rollback anchor.
 gateway_fixture="$temporary_root/gateway"
-mkdir -p "$gateway_fixture/bin" "$gateway_fixture/out"
+mkdir -p "$gateway_fixture/bin" "$gateway_fixture/out/vs/server/node"
 ln -s "$(command -v node)" "$gateway_fixture/node"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "$TEST_ARGUMENTS"\nprintf "%%s|%%s\\n" "${VIBE_VSCODE_AUTH_STATE_DIR-}" "${VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS-}" > "$TEST_ENVIRONMENT"\n' > "$gateway_fixture/bin/vibe-vscode-server"
 printf '#!/bin/sh\nexec sleep 30\n' > "$gateway_fixture/caddy"
 chmod +x "$gateway_fixture/bin/vibe-vscode-server" "$gateway_fixture/caddy"
-for legacy in false true; do
-	if [[ "$legacy" == true ]]; then
+for authentication in cli embedded anonymous; do
+	legacy=true
+	touch "$gateway_fixture/$EMBEDDED_AUTH_SERVER_RELATIVE_PATH"
+	if [[ "$authentication" != cli ]]; then
 		printf '{}\n' > "$gateway_fixture/vibe-release.json"
 	else
+		legacy=false
 		printf '{"authentication":"embedded-cli-v1"}\n' > "$gateway_fixture/vibe-release.json"
+	fi
+	if [[ "$authentication" == anonymous ]]; then
+		rm "$gateway_fixture/$EMBEDDED_AUTH_SERVER_RELATIVE_PATH"
 	fi
 	set +e
 	VIBE_VSCODE_SERVICE_STATE_ROOT="$gateway_fixture/state" \
@@ -272,10 +293,15 @@ for legacy in false true; do
 	gateway_status=$?
 	set -e
 	assert_equal 1 "$gateway_status"
-	if [[ "$legacy" == true ]]; then
+	if [[ "$authentication" == embedded ]]; then
 		assert_equal "$gateway_fixture/state/auth|43200" "$(cat "$gateway_fixture/environment")"
 		if grep -Fxq -- '--auth-state-dir' "$gateway_fixture/arguments"; then
 			fail_test 'rollback passed new CLI flags to the older embedded server'
+		fi
+	elif [[ "$authentication" == anonymous ]]; then
+		assert_equal '|43200' "$(cat "$gateway_fixture/environment")"
+		if grep -Fxq -- '--auth-state-dir' "$gateway_fixture/arguments"; then
+			fail_test 'pre-authentication rollback received unsupported authentication flags'
 		fi
 	else
 		assert_equal '|43200' "$(cat "$gateway_fixture/environment")"
@@ -372,13 +398,31 @@ assert_equal '/test/running|true' "$legacy_anchor"
 set +e
 (
 	trap - EXIT
+	tmux() { [[ "$1" == has-session ]]; }
+	is_recognized_service_session() { :; }
+	service_runtime_root() { printf '/test/running\n'; }
+	validate_caddy_runtime_root() { :; }
+	is_runtime_healthy() { return 1; }
+	resolve_runtime_link() { return 1; }
+	stop_service() { touch "$temporary_root/stopped-without-rollback"; }
+	prepare_real_active_runtime /test/workspace.code-workspace
+) >"$temporary_root/no-rollback.log" 2>&1
+no_rollback_status=$?
+set -e
+assert_equal 1 "$no_rollback_status"
+[[ ! -e "$temporary_root/stopped-without-rollback" ]] || fail_test 'unverified running service was stopped without a rollback anchor'
+grep -Fq 'leaving it untouched' "$temporary_root/no-rollback.log" || fail_test 'missing rollback did not explain the pre-stop failure'
+
+set +e
+(
+	trap - EXIT
 	ACTIVE_RUNTIME_ROOT=/test/running
 	ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=true
 	validate_candidate_runtime_root() { :; }
 	stop_service() { printf 'stop\n' >> "$temporary_root/rollback.calls"; }
 	start_service() { printf 'start:%s:%s\n' "$1" "${3:-false}" >> "$temporary_root/rollback.calls"; }
 	wait_until_ready() {
-		printf 'wait:%s:%s\n' "$1" "$2" >> "$temporary_root/rollback.calls"
+		printf 'wait:%s:%s:%s\n' "$1" "$2" "${3:-false}" >> "$temporary_root/rollback.calls"
 		[[ "$1" == 'restored last-known-good runtime' ]]
 	}
 	print_log_tail() { :; }
@@ -389,6 +433,8 @@ rollback_status=$?
 set -e
 assert_equal 1 "$rollback_status"
 grep -Fxq 'start:/test/running:true' "$temporary_root/rollback.calls" || fail_test 'rollback did not restart the verified legacy runtime through the bounded compatibility path'
+grep -Fxq 'wait:candidate runtime:/test/candidate:false' "$temporary_root/rollback.calls" || fail_test 'candidate health checks allowed the legacy contract'
+grep -Fxq 'wait:restored last-known-good runtime:/test/running:true' "$temporary_root/rollback.calls" || fail_test 'rollback health checks lost the verified legacy contract'
 if grep -Fq "link:$SERVICE_CURRENT_LINK:/test/running" "$temporary_root/rollback.calls"; then
 	fail_test 'legacy rollback runtime became the strict selected snapshot'
 fi

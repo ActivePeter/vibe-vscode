@@ -76,6 +76,13 @@ The server module also exists in that pre-CLI release, so its presence alone can
 CLI support. This bridge is limited to the live, verified rollback anchor; there is no separate
 compatibility snapshot-building mode.
 
+For the first migration from a pre-authentication release, the same rollback-only bridge may
+retain the exact recognized live runtime when its metadata has no authentication contract, its
+embedded authentication module is absent, and both its original public/private health gates pass
+(Workbench `200`, authentication paths `404`). Only restoration of that anchor may use those old
+gates. New candidates and selected snapshot restarts still require authentication. A running
+service with no verified rollback anchor is left untouched; no candidate is activated without one.
+
 A running pre-launcher or source-linked release may remain only the verified rollback anchor after
 passing both health boundaries. New candidates and selected snapshot restarts must satisfy the
 shared launcher and self-contained release contract. Do not use the legacy bridge for a new build.

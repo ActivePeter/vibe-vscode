@@ -1,0 +1,47 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.sim-surface {
+	position: relative;
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	background: var(--vscode-editor-background);
+}
+
+.sim-surface > iframe {
+	display: block;
+	width: 100%;
+	height: 100%;
+	border: 0;
+}
+
+.sim-surface > .sim-connection {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: var(--vscode-spacing-size120, 12px);
+	padding: var(--vscode-spacing-size200, 20px);
+	background: var(--vscode-editor-background);
+	color: var(--vscode-descriptionForeground);
+}
+
+.sim-surface > .sim-connection[hidden],
+.sim-surface .monaco-button[hidden] {
+	display: none;
+}
+
+.sim-connection > p {
+	max-width: 40em;
+	margin: 0;
+	line-height: 1.5;
+}
+
+.sim-connection > .monaco-button {
+	width: auto;
+}

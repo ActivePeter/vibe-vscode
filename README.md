@@ -24,7 +24,7 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
   # Open https://dev.example.com:18080; register the administrator, then add projects in the workbench.
   ```
 
-  Node and Caddy are bundled; root and systemd are optional. Without your own TLS certificate, trust the Caddy root certificate printed at startup. Restrict initial access until the administrator is registered. Multiple addresses, persistent configuration, optional services, upgrades and rollback are covered by [Releases and installation](docs/release.md#quick-start).
+  Node and Caddy are bundled; root and systemd are optional. Without your own TLS certificate, trust the Caddy root certificate printed at startup. Restrict initial access until the administrator is registered. Multiple addresses, persistent configuration, optional services, upgrades and rollback are covered by [Install and start](docs/install.md#quick-start).
 
   For source development, install dependencies and start the environment in two terminals:
 

@@ -472,7 +472,7 @@ stateDiagram-v2
 - **会话**:`expiresIn` 默认 12 小时(可配 60 秒到 7 天),`updateAge` 取 5 分钟与半个 TTL 的较小值;cookie 前缀 `vibe`,`Secure` / `HttpOnly` / `SameSite=Lax`,`Path` 限定到 server base path。
 - **限速**:存 SQLite,默认 100 次每分钟;`/sign-in/username`、`/sign-up/email` 各 5 次每分钟;`/get-session` 免限速,因为 Caddy 对每个 Workbench 资源都会调它。
 - **续租 cookie**:显式关闭 `session.cookieCache`,成功的 `/auth/verify` 最多发一个 `session_token` cookie;拒绝时允许多个清除 cookie。HTTP 请求与握手触发续租,单靠已建立 WebSocket 的帧不会续租。
-- **可信 Origin**:`--public-origin` 可重复或逗号分隔,每项必须是完整 HTTPS Origin,不能含凭据、非根路径、查询、片段、控制字符或通配符。`create` 在打开持久状态前规范化、去重并冻结为只读 `publicOrigins`;Better Auth 的 `trustedOrigins` 使用全表,`baseURL` 使用第一项。请求头只能选中表内地址,不能新增可信来源。面向用户的域名/IP 多入口配置见[发布与安装](../../docs/release.md#configuration-and-browser-addresses)。
+- **可信 Origin**:`--public-origin` 可重复或逗号分隔,每项必须是完整 HTTPS Origin,不能含凭据、非根路径、查询、片段、控制字符或通配符。`create` 在打开持久状态前规范化、去重并冻结为只读 `publicOrigins`;Better Auth 的 `trustedOrigins` 使用全表,`baseURL` 使用第一项。请求头只能选中表内地址,不能新增可信来源。面向用户的域名/IP 多入口配置见[安装与启动](../../docs/install.md#configuration-and-browser-addresses)。
 - **cookie 的主机边界**:不设置 `Domain`,不同 hostname/IP 通常各有浏览器会话,各自登录和退出;同一 hostname 的不同端口不隔离 cookie。token 本身不是按入口绑定的凭据,手动复制的有效 cookie 仍须按泄露凭据处理。
 - **basePath**:`create` 同时验证并规范化 base path,根路径 `/` 转为空前缀,HTTP adapter 直接使用服务的 `basePath`,不维护第二份校验或独立配置。
 - **取舍**:嵌入进程而不是 sidecar,是为了一个进程、一个 socket、一次生命周期;用 Better Auth 而不是自研,是为了不自己维护密码哈希、会话与限速。使用 Node 内置 `node:sqlite` 的 `DatabaseSync`,不新增原生 SQLite 构建依赖;数据库文件与 secret 格式保持不变。
@@ -550,7 +550,7 @@ Caddy 将认证路由直接转发到同一个 Remote Server socket;其他路径�
 
 ## 10. 部署、健康与回滚
 
-本节描述托管开发部署的事务;发行包安装只切换版本指针、运行需单独重启,其契约见[发布与安装](../../docs/release.md#upgrade-health-checks-and-rollback)。
+本节描述托管开发部署的事务;发行包安装只切换版本指针、运行需单独重启,其契约见[安装与启动](../../docs/install.md#upgrade-health-checks-and-rollback)。
 
 新不可变 release 同时包含声明 `embedded-cli-v1` 的 metadata、Caddyfile、Node runtime、Better Auth 依赖、登录 JSON 文案和 VS Code 构建输出。可变认证状态位于 release 与 checkout 之外,运行时只启动 Remote Server 与 Caddy。部署健康门要求:
 

@@ -13,7 +13,7 @@
 
 ## 安装 / Install
 
-按 [Releases and installation](../release.md) 下载、校验、解包并切换 `current`。
+按 [Install and start](../install.md) 安装并启动;README 里有同样的快速开始。
 
 ## 已知问题 / Known issues
 

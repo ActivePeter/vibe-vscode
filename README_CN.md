@@ -24,7 +24,7 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
   # 浏览器打开 https://dev.example.com:18080，注册管理员，然后在界面中添加项目。
   ```
 
-  Node 与 Caddy 随包提供，无需 root 或 systemd。没有自有 TLS 证书时，按启动日志信任 Caddy 根证书；管理员注册完成前请限制初始访问。多入口、持久配置、可选服务化、升级与回滚见[发布与安装文档](docs/release.md#quick-start)。
+  Node 与 Caddy 随包提供，无需 root 或 systemd。没有自有 TLS 证书时，按启动日志信任 Caddy 根证书；管理员注册完成前请限制初始访问。多入口、持久配置、可选服务化、升级与回滚见[安装与启动文档](docs/install.md#quick-start)。
 
   若从源码开发，安装依赖后可用两个终端启动环境：
 

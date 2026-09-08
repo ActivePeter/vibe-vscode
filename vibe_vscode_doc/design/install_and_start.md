@@ -29,7 +29,7 @@ systemctl --user enable --now vibe-vscode
 loginctl enable-linger "$(id -un)"
 ```
 
-用不用服务由用户决定,产品保证前台命令本身完整可用。正式操作步骤以 [发布与安装文档](../../docs/release.md#quick-start) 为准;本文维护实现职责与生命周期。首次注册完成前必须限制入口只对预期管理员开放。
+用不用服务由用户决定,产品保证前台命令本身完整可用。正式操作步骤以 [安装与启动文档](../../docs/install.md#quick-start) 为准;本文维护实现职责与生命周期。首次注册完成前必须限制入口只对预期管理员开放。
 
 ## 3. 部件
 
@@ -109,7 +109,7 @@ EOF
 
 文件键只有 `VIBE_VSCODE_ORIGIN`、`VIBE_VSCODE_PORT`、`VIBE_VSCODE_TLS_CERT`、`VIBE_VSCODE_TLS_KEY`、`VIBE_VSCODE_SESSION_TTL`;**没有 `VIBE_VSCODE_STATE_DIR`**,避免配置文件重定向自己。CLI 的 `--origin` 替换文件里的整张表。文件内相对证书路径以状态目录为基准,CLI 相对路径以调用目录为基准;生成 systemd 时 CLI 证书路径固化为绝对路径。
 
-安装、升级、回滚和服务化命令见 [发布与安装文档](../../docs/release.md#upgrade-health-checks-and-rollback)。自定义安装目录必须对当前用户可写。
+安装、升级、回滚和服务化命令见 [安装与启动文档](../../docs/install.md#upgrade-health-checks-and-rollback)。自定义安装目录必须对当前用户可写。
 
 启动首先回显访问地址和自签信任提示,只有通过健康门后才输出 ready,不能先宣布启动成功:
 

@@ -18,6 +18,7 @@ import { installWebClientLauncher, packageWebClientRelease } from '../webClientR
 const run = promisify(execFile);
 const commit = 'a'.repeat(40);
 const linuxOnly = { skip: process.platform !== 'linux' || process.arch !== 'x64' };
+const authenticationArguments = ['--auth-state-dir', '/test/state/auth', '--public-origin', 'https://vscode.example', '--auth-session-ttl-seconds', '43200', '--without-connection-token'];
 
 test('the shared launcher uses stamped metadata for both runtime profiles, regardless of directory name or inherited environment', linuxOnly, async () => {
 	const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'web-launcher-'));
@@ -28,12 +29,13 @@ test('the shared launcher uses stamped metadata for both runtime profiles, regar
 		const results = [];
 		for (const mode of ['production', 'development'] as const) {
 			await installWebClientLauncher(temporary, 'v1.2.3', commit, mode);
-			const result = await run(path.join(temporary, 'bin/vibe-vscode-server'), ['--socket-path', '/test/backend.sock'], { env: { ...process.env, NODE_ENV: 'test', VSCODE_DEV: 'inherited' } });
+			const result = await run(path.join(temporary, 'bin/vibe-vscode-server'), ['--socket-path', '/test/backend.sock', ...authenticationArguments], { env: { ...process.env, NODE_ENV: 'test', VSCODE_DEV: 'inherited' } });
 			results.push(JSON.parse(result.stdout));
+			await assert.rejects(run(path.join(temporary, 'bin/vibe-vscode-server'), ['--socket-path', '/test/backend.sock']), /requires --auth-state-dir/);
 		}
 		assert.deepStrictEqual(results, [
-			{ mode: 'production', dev: null, args: ['--web-client-cache-version', 'v1.2.3', '--socket-path', '/test/backend.sock'] },
-			{ mode: 'development', dev: '1', args: ['--web-client-cache-version', 'v1.2.3', '--socket-path', '/test/backend.sock'] },
+			{ mode: 'production', dev: null, args: ['--web-client-cache-version', 'v1.2.3', '--socket-path', '/test/backend.sock', ...authenticationArguments] },
+			{ mode: 'development', dev: '1', args: ['--web-client-cache-version', 'v1.2.3', '--socket-path', '/test/backend.sock', ...authenticationArguments] },
 		]);
 		await fs.writeFile(path.join(temporary, 'vibe-release.json'), '{"version":"v1.2.3","mode":"unknown"}');
 		await assert.rejects(run(path.join(temporary, 'bin/vibe-vscode-server'), []), /Unsupported runtime mode/);
@@ -52,12 +54,15 @@ async function createFixture(root: string): Promise<string> {
 	await Promise.all([
 		fs.mkdir(workbench, { recursive: true }),
 		fs.mkdir(path.join(source, 'out/vs/platform/remote/common'), { recursive: true }),
+		fs.mkdir(path.join(source, 'out/vs/server/node'), { recursive: true }),
 		fs.mkdir(path.join(source, 'extensions/vibe-vscode/dist/browser'), { recursive: true }),
 		fs.mkdir(path.join(source, 'node_modules'), { recursive: true }),
 	]);
 	await Promise.all([
 		fs.writeFile(path.join(source, 'product.json'), JSON.stringify({ commit })),
 		fs.writeFile(path.join(source, 'out/vs/platform/remote/common/workbench-startup.nls.en.json'), '{}'),
+		fs.writeFile(path.join(source, 'out/vs/server/node/vibe-authentication.nls.en.json'), '{}'),
+		fs.writeFile(path.join(source, 'out/vs/server/node/vibe-authentication.nls.zh-cn.json'), '{}'),
 		fs.writeFile(path.join(source, 'package.json'), '{"type":"module"}'),
 		// A controllable native-loading boundary keeps archive tests independent of native addons.
 		fs.writeFile(path.join(source, 'node'), `#!/bin/sh\nif [ "$1" = "-p" ]; then\n  exec ${JSON.stringify(process.execPath)} "$@"\nelif [ "$1" = "--input-type=module" ]; then\n  test -z "$VSCODE_DEV" && test "$NODE_ENV" = production\nelse\n  test -z "$VSCODE_DEV" && test "$NODE_ENV" = production || exit 1\n  printf "%s\\n" "$@"\nfi\n`, { mode: 0o755 }),
@@ -94,26 +99,31 @@ test('packages an immutable, checksummed release with a production launcher and 
 	try {
 		const source = await createFixture(temporary);
 		const output = path.join(temporary, 'artifacts');
-		const archive = await packageWebClientRelease(source, output, 'v1.2.3', commit);
+		const archive = await packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy);
 		const contents = await fs.readFile(archive);
 		const destination = path.join(temporary, 'installed');
 		await fs.mkdir(destination);
 		await extract({ cwd: destination, file: archive });
-		const launch = await run('bash', [path.join(destination, 'bin/vibe-vscode-server'), '--port', '8080'], { env: { ...process.env, VSCODE_DEV: '1' } });
+		const launch = await run('bash', [path.join(destination, 'bin/vibe-vscode-server'), '--socket-path', '/test/backend.sock', ...authenticationArguments], { env: { ...process.env, VSCODE_DEV: '1' } });
 		assert.deepStrictEqual({
 			metadata: JSON.parse(await fs.readFile(path.join(destination, 'vibe-release.json'), 'utf8')),
 			checksum: await fs.readFile(`${archive}.sha256`, 'utf8'),
 			arguments: launch.stdout.trim().split('\n').slice(1),
 			inputUnchanged: !(await fs.readdir(source)).includes('vibe-release.json'),
 			files: (await fs.readdir(output)).sort(),
+			installerMatches: (await fs.readFile(path.join(output, 'install.sh'))).equals(await fs.readFile(path.resolve(import.meta.dirname, '../../../install.sh'))),
+			installedScriptMatches: (await fs.readFile(path.join(destination, 'bin/install.sh'))).equals(await fs.readFile(path.join(output, 'install.sh'))),
+			caddyPresent: (await fs.stat(path.join(destination, 'caddy'))).isFile(),
+			caddyLicense: await fs.readFile(path.join(destination, 'caddy.LICENSE'), 'utf8'),
 		}, {
-			metadata: { version: 'v1.2.3', commit, platform: 'linux', arch: 'x64', mode: 'production' },
+			metadata: { version: 'v1.2.3', commit, platform: 'linux', arch: 'x64', mode: 'production', authentication: 'embedded-cli-v1' },
 			checksum: `${createHash('sha256').update(contents).digest('hex')}  ${path.basename(archive)}\n`,
-			arguments: ['--web-client-cache-version', 'v1.2.3', '--port', '8080'],
+			arguments: ['--web-client-cache-version', 'v1.2.3', '--socket-path', '/test/backend.sock', ...authenticationArguments],
 			inputUnchanged: true,
-			files: [path.basename(archive), `${path.basename(archive)}.sha256`],
+			files: ['install.sh', path.basename(archive), `${path.basename(archive)}.sha256`],
+			installerMatches: true, installedScriptMatches: true, caddyPresent: true, caddyLicense: 'Caddy license fixture',
 		});
-		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit), /EEXIST/);
+		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy), /EEXIST/);
 		assert.deepStrictEqual(await fs.readFile(archive), contents);
 	} finally {
 		await fs.rm(temporary, { recursive: true, force: true });
@@ -134,7 +144,7 @@ test('rejects mismatched identity and non-self-contained packages before publish
 		assert.ok(!(await fs.readdir(source)).includes('new'));
 		await fs.writeFile(path.join(temporary, 'external.js'), 'export {};');
 		await fs.symlink(path.join(temporary, 'external.js'), path.join(source, 'node_modules/external.js'));
-		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit), /link escapes/);
+		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy), /link escapes/);
 		assert.deepStrictEqual(await fs.readdir(output), []);
 	} finally {
 		await fs.rm(temporary, { recursive: true, force: true });
@@ -149,13 +159,18 @@ test('rejects broken compression and native loading without publishing partial r
 		const gzipPath = path.join(source, 'out/vs/code/browser/workbench/workbench.js.gz');
 		const gzip = await fs.readFile(gzipPath);
 		await fs.writeFile(gzipPath, 'corrupt');
-		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit));
+		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy));
 		assert.deepStrictEqual(await fs.readdir(output), []);
 		await fs.writeFile(gzipPath, gzip);
 		await fs.writeFile(path.join(source, 'node'), '#!/bin/sh\nexit 23\n');
-		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit), /Command failed/);
+		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy), /Command failed/);
 		assert.deepStrictEqual(await fs.readdir(output), []);
 	} finally {
 		await fs.rm(temporary, { recursive: true, force: true });
 	}
 });
+
+async function installTestCaddy(root: string): Promise<void> {
+	await fs.writeFile(path.join(root, 'caddy'), '#!/bin/sh\n[ "$1" = version ]\n', { mode: 0o755 });
+	await fs.writeFile(path.join(root, 'caddy.LICENSE'), 'Caddy license fixture');
+}

@@ -13,17 +13,8 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
 - ✅ **Web-first operation**: vibe vscode is designed for the browser first. We recommend hosting the development environment on an always-on machine or in the cloud, with the workbench always a web page away. Projects, terminals, and Agent tasks run on the server, while the browser handles interaction and state projection—no desktop client required.
 
   - ✅ **Cached page loading and resumable downloads**: Core startup resources are compressed, chunked, verified, and cached in the browser with visible download progress. Refreshing or reopening the browser reuses cached chunks, interrupted downloads resume only missing chunks, and new releases reuse unchanged content to reduce repeated downloads and improve loading on slow or unreliable connections.
+  - ✅ **Sign-in required**: Every hosted HTTP request and WebSocket handshake must pass sign-in before it reaches any VS Code route. The first visitor registers the single administrator account, after which registration closes. Sessions survive server restarts, renew while in use, and can be revoked from the Accounts menu or the Command Palette. Authentication is embedded in the remote server with Node's built-in SQLite and enforced by Caddy at the gateway; see the [design document](vibe_vscode_doc/design/login_authentication.md).
   - 🚧 **Non-blocking remote connectivity**: Replace modal interruption with status-bar reconnect state, immediate retry after network recovery, and uninterrupted access to the current work. This is not yet included in the current implementation.
-
-  See [Releases and installation](docs/release.md) for production packages, systemd/Caddy setup, upgrades, and rollback. For source development, install dependencies and start the environment in two terminals:
-
-  ```bash
-  # Terminal 1: continuously compile changes
-  npm run watch
-
-  # Terminal 2: start the web workbench at http://localhost:8080
-  ./scripts/code-web.sh .
-  ```
 
 - ✅ **Logical Workspace**: Create and select logical workspaces from the status bar or Command Palette without reloading the page. Switching saves and restores the visibility, size, and active view of the primary sidebar, panel, and secondary sidebar.
   - **Remote authoritative state**: The workspace catalog, layouts, and editor working sets are stored in remote SQLite. Other pages read the latest snapshot after refresh or reconnect, while each page keeps its active Workspace selection locally.
@@ -34,6 +25,65 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
 - 🚧 **Sim Agent workbench**: Mount Sim in the Activity Bar, editor, and fullscreen surface. Sim Mothership will ultimately be the single authority for Agent Session identity, messages, and run state; Vibe VS Code does not keep a second Session catalog. The current phase delivers the host, file/selection context, and editor/terminal bridge. Workspace and Project context follows through [#12](https://github.com/ActivePeter/vibe-vscode/issues/12), with product entry-point cutover handled separately. See [Sim integration and Agent Session authority](vibe_vscode_doc/design/sim_agent_session_authority.md).
 - ⬜ **Document-driven development**: Select document content in the editor and create a new Agent session from the context menu, using the selection as context so requirements and design documents can directly drive implementation.
 - ⬜ **Codex Agent-first interaction**: Treat Codex Agent as the primary session experience, with priority given to session creation, interaction, status visibility, and restoration.
+
+## Install
+
+Linux x64, no root, no systemd; Node and Caddy are bundled. Replace `<tag>` with a [published release](https://github.com/ActivePeter/vibe-vscode/releases):
+
+```bash
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+```
+
+The installer verifies the archive and selects it as `~/.vibe-vscode/current`; it never starts anything. Custom install root, upgrades and rollback: [Install and start](docs/install.md#quick-start).
+
+## Start
+
+Use the hostname or IP you will type into the browser:
+
+```bash
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
+# Open https://dev.example.com:18080; register the administrator, then add projects in the workbench.
+```
+
+Without your own TLS certificate, trust the Caddy root certificate printed at startup. Restrict access until the administrator is registered. Ctrl-C stops everything.
+
+| Option | Default | Use |
+| --- | --- | --- |
+| `--origin` | `https://<hostname>:<port>` | The exact HTTPS address typed into the browser; repeat it for several entries, no domain needed |
+| `--port` | `18080` | Public HTTPS port |
+| `--state-dir` | `~/.vibe-vscode/state` | Accounts, settings, extensions and the workspace; keep it across upgrades |
+| `--tls-cert` / `--tls-key` | self-signed | Your own certificate and key |
+| `--session-ttl` | `43200` | Session lifetime in seconds |
+
+```bash
+# LAN, VPN and local entries at once
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://192.168.1.5:18080 --origin https://100.64.0.7:18080 --origin https://localhost:18080
+
+# Your own certificate on port 443
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com --port 443 --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem
+
+# After the first start has created ~/.vibe-vscode/state, persist defaults so later starts need no options
+printf 'VIBE_VSCODE_ORIGIN=https://dev.example.com:18080\n' > ~/.vibe-vscode/state/vibe-vscode.env
+~/.vibe-vscode/current/bin/vibe-vscode start
+
+# Optional: run as a user service
+~/.vibe-vscode/current/bin/vibe-vscode systemd --install
+systemctl --user daemon-reload && systemctl --user enable --now vibe-vscode
+```
+
+Details, health checks, upgrades and rollback: [Install and start](docs/install.md).
+
+## Develop from source
+
+Install dependencies and use two terminals:
+
+```bash
+# Terminal 1: continuously compile changes
+npm run watch
+
+# Terminal 2: start the web workbench at http://localhost:8080
+./scripts/code-web.sh .
+```
 
 ## Non-goals
 

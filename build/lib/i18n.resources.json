@@ -595,6 +595,10 @@
 			"project": "vscode-workbench"
 		},
 		{
+			"name": "vs/workbench/contrib/vibeAuthentication",
+			"project": "vscode-workbench"
+		},
+		{
 			"name": "vs/workbench/contrib/replNotebook",
 			"project": "vscode-workbench"
 		},

@@ -154,6 +154,9 @@ import './contrib/debug/browser/extensionHostDebugService.js';
 // Welcome Banner
 import './contrib/welcomeBanner/browser/welcomeBanner.contribution.js';
 
+// Hosted instance authentication
+import './contrib/vibeAuthentication/browser/vibeAuthentication.contribution.js';
+
 // Webview
 import './contrib/webview/browser/webview.web.contribution.js';
 

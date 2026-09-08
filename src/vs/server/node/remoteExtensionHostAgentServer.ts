@@ -38,6 +38,7 @@ import { determineServerConnectionToken, requestHasValidConnectionToken as httpR
 import { IServerEnvironmentService, ServerParsedArgs } from './serverEnvironmentService.js';
 import { IServerLifetimeService } from './serverLifetimeService.js';
 import { setupServerServices, SocketServer } from './serverServices.js';
+import { createVibeAuthenticationServer, VibeAuthenticationServer } from './vibeAuthenticationServer.js';
 import { CacheControl, serveError, serveFile, WebClientServer } from './webClientServer.js';
 const require = createRequire(import.meta.url);
 
@@ -84,6 +85,7 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
 		private readonly _vsdaMod: typeof vsda | null,
 		hasWebClient: boolean,
 		serverBasePath: string | undefined,
+		private readonly _authenticationServer: VibeAuthenticationServer | undefined,
 		@IServerEnvironmentService private readonly _environmentService: IServerEnvironmentService,
 		@IProductService private readonly _productService: IProductService,
 		@ILogService private readonly _logService: ILogService,
@@ -91,6 +93,9 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
 		@IServerLifetimeService private readonly _serverLifetimeService: IServerLifetimeService,
 	) {
 		super();
+		if (this._authenticationServer) {
+			this._register(this._authenticationServer);
+		}
 		this._webEndpointOriginChecker = WebEndpointOriginChecker.create(this._productService);
 
 		if (serverBasePath !== undefined && serverBasePath.charCodeAt(serverBasePath.length - 1) === CharCode.Slash) {
@@ -104,7 +109,7 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
 		this._allReconnectionTokens = new Set<string>();
 		this._webClientServer = (
 			hasWebClient
-				? this._instantiationService.createInstance(WebClientServer, this._connectionToken, serverBasePath ?? '/', this._serverProductPath, this._vsdaMod !== null)
+				? this._instantiationService.createInstance(WebClientServer, this._connectionToken, serverBasePath ?? '/', this._serverProductPath, this._vsdaMod !== null, this._authenticationServer?.publicOrigins)
 				: null
 		);
 		this._logService.info(`Extension host agent started.`);
@@ -112,6 +117,10 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
 	}
 
 	public async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+		if (this._authenticationServer && await this._authenticationServer.handle(req, res)) {
+			return;
+		}
+
 		// Only serve GET requests
 		if (req.method !== 'GET') {
 			return serveError(req, res, 405, `Unsupported method ${req.method}`);
@@ -728,6 +737,10 @@ export async function createServer(address: string | net.AddressInfo | null, arg
 	if (serverBasePath && !serverBasePath.startsWith('/')) {
 		serverBasePath = `/${serverBasePath}`;
 	}
+	if (args['auth-state-dir'] && (connectionToken.type !== ServerConnectionTokenType.None || !args['socket-path'])) {
+		throw new Error('Vibe authentication requires --socket-path and --without-connection-token behind its private Caddy gateway.');
+	}
+	const authenticationServer = await createVibeAuthenticationServer(args, serverBasePath ?? '');
 
 	const hasWebClient = fs.existsSync(FileAccess.asFileUri(`vs/code/browser/workbench/workbench.html`).fsPath);
 
@@ -737,7 +750,13 @@ export async function createServer(address: string | net.AddressInfo | null, arg
 		console.log(`Web UI available at http://localhost${address.port === 80 ? '' : `:${address.port}`}${serverBasePath ?? ''}${queryPart}`);
 	}
 
-	const remoteExtensionHostAgentServer = instantiationService.createInstance(RemoteExtensionHostAgentServer, socketServer, connectionToken, vsdaMod, hasWebClient, serverBasePath);
+	let remoteExtensionHostAgentServer: RemoteExtensionHostAgentServer;
+	try {
+		remoteExtensionHostAgentServer = instantiationService.createInstance(RemoteExtensionHostAgentServer, socketServer, connectionToken, vsdaMod, hasWebClient, serverBasePath, authenticationServer);
+	} catch (error) {
+		authenticationServer?.dispose();
+		throw error;
+	}
 
 	perf.mark('code/server/ready');
 	const currentTime = performance.now();

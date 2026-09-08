@@ -20,4 +20,19 @@ development)
 	exit 1
 	;;
 esac
+
+# Service starts use the same explicit authentication CLI contract in both profiles.
+# Version/help preflight must work without opening state or requiring deployment inputs.
+authentication_state=false
+informational=false
+for argument in "$@"; do
+	case "$argument" in
+	--auth-state-dir | --auth-state-dir=*) authentication_state=true ;;
+	--version | --help | -h) informational=true ;;
+	esac
+done
+if [[ "$informational" == false && "$authentication_state" == false ]]; then
+	printf 'Vibe VS Code requires --auth-state-dir behind its private Caddy gateway.\n' >&2
+	exit 1
+fi
 exec "$ROOT/node" "$ROOT/out/server-main.js" --web-client-cache-version "$VERSION" "$@"

@@ -20,7 +20,7 @@ import { webClientCacheDirectory } from '../../../platform/remote/common/webClie
 import { IWebClientStartupConfiguration, IWebClientStartupMessages } from '../../../platform/remote/common/webClientStartup.js';
 import { NoneServerConnectionToken } from '../../node/serverConnectionToken.js';
 import { IServerEnvironmentService } from '../../node/serverEnvironmentService.js';
-import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientPreferredEncodings, getWebClientProductConfiguration, getWebClientResourceScheme, getWebClientStartupLocaleCandidates, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRoute, parseWebClientStartupTemplate, serveFile, WebClientServer, WebClientStartupMessages } from '../../node/webClientServer.js';
+import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientPreferredEncodings, getWebClientProductConfiguration, getWebClientRemoteAuthority, getWebClientResourceScheme, getWebClientStartupLocaleCandidates, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRoute, parseWebClientStartupTemplate, serveFile, WebClientServer, WebClientStartupMessages } from '../../node/webClientServer.js';
 
 suite('WebClientServer', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -151,6 +151,26 @@ suite('WebClientServer', () => {
 			remoteConnectionSigning: false,
 			voiceWsUrl: 'wss://example.com/voice',
 			nativeAgentSessionsUIEnabled: false,
+		});
+	});
+
+	test('uses configured authority before proxy headers and retains the token-server fallback', () => {
+		assert.deepStrictEqual({
+			preserved: getWebClientRemoteAuthority(['https://public.example', 'https://100.64.0.7:8443'], 'attacker.invalid', '127.0.0.1:18080'),
+			secondEntry: getWebClientRemoteAuthority(['https://public.example', 'https://100.64.0.7:8443'], '100.64.0.7:8443, proxy.invalid', '127.0.0.1:18080'),
+			directEntry: getWebClientRemoteAuthority(['https://public.example', 'https://[::1]:8443'], undefined, '[::1]:8443'),
+			forgedFirst: getWebClientRemoteAuthority(['https://public.example'], 'attacker.invalid, public.example', 'public.example'),
+			forwarded: getWebClientRemoteAuthority(undefined, 'public.example, internal-proxy.invalid', '127.0.0.1:18080'),
+			direct: getWebClientRemoteAuthority(undefined, undefined, 'localhost:18080'),
+			missing: getWebClientRemoteAuthority(undefined, undefined, undefined),
+		}, {
+			preserved: 'public.example',
+			secondEntry: '100.64.0.7:8443',
+			directEntry: '[::1]:8443',
+			forgedFirst: 'public.example',
+			forwarded: 'public.example',
+			direct: 'localhost:18080',
+			missing: undefined,
 		});
 	});
 
@@ -367,8 +387,9 @@ suite('WebClientServer', () => {
 							await fs.mkdir(manifestPath);
 						}
 						const logService = store.add(new NullLogService());
+						const publicOrigin = versioned ? 'https://public.example:8443' : undefined;
 						const createWebClient = () => new WebClientServer(
-							new NoneServerConnectionToken(), '/base', '/oss-release', false,
+							new NoneServerConnectionToken(), '/base', '/oss-release', false, publicOrigin ? [publicOrigin] : undefined,
 							upcastPartial<IServerEnvironmentService>({ appRoot: directory, isBuilt, args: upcastPartial<IServerEnvironmentService['args']>({ _: [], 'web-client-cache-version': versioned ? 'release' : undefined }) }),
 							logService,
 							upcastPartial<IRequestService>({}),
@@ -407,6 +428,9 @@ suite('WebClientServer', () => {
 						const prefixes = [undefined, '/forwarded'];
 						const responses = await Promise.all(prefixes.map(async prefix => {
 							const headers: Record<string, string> = { 'accept-language': 'zh-Hant-HK' };
+							if (publicOrigin) {
+								Object.assign(headers, { 'x-original-host': 'attacker.invalid', 'x-forwarded-host': 'attacker.invalid', 'x-forwarded-port': '9999', 'x-forwarded-proto': 'http' });
+							}
 							if (prefix) {
 								headers['x-forwarded-prefix'] = prefix;
 							}
@@ -415,8 +439,12 @@ suite('WebClientServer', () => {
 							const settings = /id="vscode-workbench-startup" data-settings="(?<settings>[^"]*)"/.exec(html)?.groups?.settings;
 							assert.ok(settings, html);
 							const configuration: IWebClientStartupConfiguration = JSON.parse(settings.replace(/&quot;/g, '"').replace(/&#39;/g, '\'').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+							const workbenchSettings = /id="vscode-workbench-web-configuration" data-settings="(?<settings>[^"]*)"/.exec(html)?.groups?.settings;
+							assert.ok(workbenchSettings);
+							const workbenchConfiguration: { remoteAuthority: string } = JSON.parse(workbenchSettings.replace(/&quot;/g, '"').replace(/&#39;/g, '\'').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
 							return {
 								status: response.status,
+								remoteAuthority: workbenchConfiguration.remoteAuthority,
 								cache: configuration.resourceCache,
 								title: configuration.messages.firstTitle,
 								templatesFromRoot: html.includes(`<!-- ${workbenchFile} from test root -->`) && html.includes('<!-- workbench-startup.html from test root -->'),
@@ -431,6 +459,7 @@ suite('WebClientServer', () => {
 								const staticRoot = `${prefix ?? '/base'}/oss-release${getWebClientStaticAssetRoute(versioned ? 'release' : undefined)}`;
 								return {
 									status: 200,
+									remoteAuthority: new URL(publicOrigin ?? origin).host,
 									cache: versioned ? `${staticRoot}/out/vs/code/browser/workbench/cache/manifest.json` : undefined,
 									title, templatesFromRoot: true,
 									startupScripts: [`${staticRoot}/out/vs/code/browser/workbench/workbenchStartup.js`],

@@ -65,14 +65,14 @@ sequenceDiagram
     participant Caddy as Caddy(随包)
 
     User->>CLI: start --origin … --workspace …
-    CLI->>CLI: 读取 <state-dir>/vibe-vscode.env,命令行覆盖;校验 origin 是 HTTPS 且无路径
-    CLI->>CLI: 创建 <state-dir>/{auth,server,extensions,caddy}(0700),生成私有 socket 路径
+    CLI->>CLI: 读取 state-dir 下的 vibe-vscode.env,命令行覆盖,校验 origin 是 HTTPS 且无路径
+    CLI->>CLI: 创建 state-dir 下的 auth、server、extensions、caddy 子目录(0700),生成私有 socket 路径
     CLI->>Remote: 启动,传 --socket-path、--auth-state-dir、--public-origin、--auth-session-ttl-seconds、--without-connection-token、--default-workspace
     CLI->>Caddy: 启动,注入 PUBLIC_PORT、AUTH_ADDRESS、AUTH_PATH、BACKEND_ADDRESS 与 TLS 参数
     CLI->>Remote: 私有 socket GET /auth/health 期望 204,GET / 期望 200
     CLI->>Caddy: 公开 GET /auth/api/status 期望 200,GET /(无 cookie)期望 303
-    CLI-->>User: 第一行打印"请用 <origin> 打开";自签时再打印如何信任根证书
-    Note over CLI,Caddy: 任一子进程退出则停掉另一个并以非零退出;Ctrl-C 两个一起停
+    CLI-->>User: 第一行打印"请用 origin 打开",自签时再打印如何信任根证书
+    Note over CLI,Caddy: 任一子进程退出则停掉另一个并以非零退出,Ctrl-C 两个一起停
 ```
 
 第 6、7 步就是 `deploy-18080.sh` 的 `is_runtime_healthy`;第 4、5 步就是 `run_gateway_stack` 去掉 tmux 之后的部分。

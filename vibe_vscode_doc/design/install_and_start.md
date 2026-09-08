@@ -131,8 +131,8 @@ sequenceDiagram
     participant Caddy as Caddy(随包)
 
     User->>CLI: start --origin …
-    CLI->>CLI: 一次解析当前 release,读取数据配置并校验;持有 state-dir/run.lock
-    CLI->>CLI: 创建状态子目录(0700),保留物理工作区;分配本次私有 socket 目录
+    CLI->>CLI: 一次解析当前 release,读取数据配置并校验,持有 state-dir/run.lock
+    CLI->>CLI: 创建状态子目录(0700),保留物理工作区,分配本次私有 socket 目录
     CLI-->>User: 首先回显访问地址,自签时提示需要信任的根证书路径
     CLI->>Remote: 启动,传 --socket-path、--auth-state-dir、--public-origin、--auth-session-ttl-seconds、--without-connection-token,--default-workspace 指向状态目录里的工作区文件,不存在则先创建空的多根工作区
     CLI->>Caddy: 启动,注入 PUBLIC_PORT、AUTH_ADDRESS、AUTH_PATH、BACKEND_ADDRESS 与 TLS 参数
@@ -145,7 +145,7 @@ sequenceDiagram
         CLI->>Caddy: 停止本次进程组
         CLI-->>User: 清理本次 socket 后非零退出
     end
-    Note over CLI,Caddy: Ctrl-C 或任一组件退出均清理两组;清理完成才释放运行锁
+    Note over CLI,Caddy: Ctrl-C 或任一组件退出均清理两组,清理完成才释放运行锁
 ```
 
 健康边界沿用 `is_runtime_healthy`:两个私有探针加每个 origin 的两个公开探针。公开探针保留真实 Host/SNI,仅将连接定向本机并跳过证书信任校验;它不能替代浏览器端的 DNS、网络与 CA 信任验证。状态目录只记录 `backend.sock` 符号链接,实际 socket 位于 `XDG_RUNTIME_DIR`/临时目录下本次创建的 `0700` 目录,避免长状态路径与旧进程清理冲突。清理只处理本次子进程组和 socket,不按端口或外部 PID 文件杀进程。

@@ -516,7 +516,7 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 		body { margin: 0; background: var(--page); color: var(--text); font: 400 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 		.shell { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
 		.card { width: min(100%, 400px); padding: 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 20px 60px rgba(0, 0, 0, .24); }
-		.brand { display: flex; align-items: center; gap: var(--vscode-spacing-size240, 24px); margin-bottom: 32px; }
+		.brand { display: flex; align-items: center; justify-content: center; gap: var(--vscode-spacing-size240, 24px); margin-bottom: 32px; }
 		.brand-name { margin: 0; color: #2864F0; font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: -.02em; }
 		.mark { display: block; width: 40px; height: 40px; flex-shrink: 0; filter: drop-shadow(0 4px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, .14))); }
 		.eyebrow { margin: 0 0 6px; color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }

@@ -61,6 +61,8 @@ The draft body comes from a file that ships with the tagged commit, so notes are
 
 ## Download and install
 
+> The install script, the single `vibe-vscode start` entry point, and optional service generation described in [安装与启动](../vibe_vscode_doc/design/install_and_start.md) replace the manual steps below once implemented; until then this section is the procedure.
+
 Choose a published version from [GitHub Releases](https://github.com/ActivePeter/vibe-vscode/releases). Replace every `<placeholder>` below; download and verify as an unprivileged user before installing into an operator-owned directory.
 
 ```bash

@@ -6,28 +6,6 @@
 
 vibe vscode is built on Code - OSS. It evolves the portable development editor of the pre-Agent era into a long-running workbench that can switch instantly between multiple task contexts. The goal is not to replace VS Code's editing, terminal, or extension capabilities, but to add stable context management so projects, terminals, and Agent sessions remain continuous across context switches and network interruptions.
 
-## Quick start
-
-Linux x64, no root, no systemd; Node and Caddy are bundled. Replace `<tag>` with a [published release](https://github.com/ActivePeter/vibe-vscode/releases) and use the hostname or IP you will type into the browser:
-
-```bash
-curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
-~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
-# Open https://dev.example.com:18080; register the administrator, then add projects in the workbench.
-```
-
-Without your own TLS certificate, trust the Caddy root certificate printed at startup. Restrict access until the administrator is registered. Multiple addresses, persistent configuration, running as a service, upgrades and rollback: [Install and start](docs/install.md). How a tag becomes a release: [Releases](docs/release.md).
-
-To run from source, install dependencies and use two terminals:
-
-```bash
-# Terminal 1: continuously compile changes
-npm run watch
-
-# Terminal 2: start the web workbench at http://localhost:8080
-./scripts/code-web.sh .
-```
-
 ## Features Roadmap
 
 Status: ✅ Available　🚧 In progress　⬜ Planned
@@ -49,6 +27,39 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
 - ⬜ **Fullscreen session management panel**: Provide a workbench-wide interface for viewing, creating, switching, and managing Agent sessions in one place.
 - ⬜ **Document-driven development**: Select document content in the editor and create a new Agent session from the context menu, using the selection as context so requirements and design documents can directly drive implementation.
 - ⬜ **Codex Agent-first interaction**: Treat Codex Agent as the primary session experience, with priority given to session creation, interaction, status visibility, and restoration.
+
+## Install
+
+Linux x64, no root, no systemd; Node and Caddy are bundled. Replace `<tag>` with a [published release](https://github.com/ActivePeter/vibe-vscode/releases):
+
+```bash
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+```
+
+The installer verifies the archive and selects it as `~/.vibe-vscode/current`; it never starts anything. Custom install root, upgrades and rollback: [Install and start](docs/install.md#quick-start).
+
+## Start
+
+Use the hostname or IP you will type into the browser:
+
+```bash
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
+# Open https://dev.example.com:18080; register the administrator, then add projects in the workbench.
+```
+
+Without your own TLS certificate, trust the Caddy root certificate printed at startup. Restrict access until the administrator is registered. Multiple addresses, persistent configuration and running as a service: [Configuration and browser addresses](docs/install.md#configuration-and-browser-addresses), [Run as a service](docs/install.md#run-as-a-service-optional). How a tag becomes a release: [Releases](docs/release.md).
+
+## Develop from source
+
+Install dependencies and use two terminals:
+
+```bash
+# Terminal 1: continuously compile changes
+npm run watch
+
+# Terminal 2: start the web workbench at http://localhost:8080
+./scripts/code-web.sh .
+```
 
 ## Non-goals
 

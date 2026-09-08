@@ -6,28 +6,6 @@
 
 vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的便携开发编辑器”演进为可长期运行、可在多个任务上下文之间即时切换的开发工作台。当前工作的重点不是替换 VS Code 已有的编辑、终端和扩展能力，而是在其上增加一层稳定的工作上下文管理，让项目、终端和 Agent 会话在切换与网络波动中保持连续。
 
-## 快速开始
-
-Linux x64，不需要 root 和 systemd，Node 与 Caddy 随包提供。把 `<tag>` 换成[已发布的版本](https://github.com/ActivePeter/vibe-vscode/releases)，地址换成浏览器里实际输入的主机名或 IP：
-
-```bash
-curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
-~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
-# 浏览器打开 https://dev.example.com:18080，注册管理员，然后在界面中添加项目。
-```
-
-没有自有 TLS 证书时，按启动日志信任 Caddy 根证书；管理员注册完成前请限制访问。多入口、持久配置、做成服务、升级与回滚见[安装与启动](docs/install.md)；tag 如何变成发布包见[发布流程](docs/release.md)。
-
-从源码运行，安装依赖后用两个终端：
-
-```bash
-# 终端 1：持续编译
-npm run watch
-
-# 终端 2：启动 Web 工作台，访问 http://localhost:8080
-./scripts/code-web.sh .
-```
-
 ## 功能路线图
 
 状态标识：✅ 已实现　🚧 进行中　⬜ 未实现
@@ -49,6 +27,39 @@ npm run watch
 - ⬜ **全屏会话管理面板**：提供覆盖整个工作台的会话管理界面，用于集中查看、创建、切换和管理 Agent 会话。
 - ⬜ **文档驱动开发**：支持在编辑器中选中文档内容，通过右键菜单以选区作为上下文创建新的 Agent 会话，让需求和设计文档直接驱动开发。
 - ⬜ **Codex Agent 优先交互**：以 Codex Agent 作为首要会话形态，优先完善会话创建、交互、状态呈现与恢复体验。
+
+## 安装
+
+Linux x64，不需要 root 和 systemd，Node 与 Caddy 随包提供。把 `<tag>` 换成[已发布的版本](https://github.com/ActivePeter/vibe-vscode/releases)：
+
+```bash
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+```
+
+安装器校验压缩包并把它选为 `~/.vibe-vscode/current`，不启动任何进程。自定义安装目录、升级与回滚见[安装与启动](docs/install.md#quick-start)。
+
+## 启动
+
+地址换成浏览器里实际输入的主机名或 IP：
+
+```bash
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
+# 浏览器打开 https://dev.example.com:18080，注册管理员，然后在界面中添加项目。
+```
+
+没有自有 TLS 证书时，按启动日志信任 Caddy 根证书；管理员注册完成前请限制访问。多入口、持久配置与做成服务见[配置与浏览器地址](docs/install.md#configuration-and-browser-addresses)、[做成服务](docs/install.md#run-as-a-service-optional)；tag 如何变成发布包见[发布流程](docs/release.md)。
+
+## 开发启动
+
+从源码运行，安装依赖后用两个终端：
+
+```bash
+# 终端 1：持续编译
+npm run watch
+
+# 终端 2：启动 Web 工作台，访问 http://localhost:8080
+./scripts/code-web.sh .
+```
 
 ## 非目标
 

@@ -46,7 +46,7 @@ systemctl --user enable --now vibe-vscode
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--origin` | `https://<hostname -f>:<port>` | 浏览器地址栏里的 HTTPS 地址,即 Remote Server 的 `--public-origin`。可以给多个,逗号分隔,每个都是完整的 `https://主机或IP[:端口]`;不需要域名,IP、`localhost`、Tailscale 地址都行。唯一真正需要用户想一下的参数 |
+| `--origin` | `https://<hostname -f>:<port>` | 浏览器地址栏里的 HTTPS 地址,即 Remote Server 的 `--public-origin`。可以给多个:命令行重复该参数,env 文件里用逗号分隔;每个都是完整的 `https://主机或IP[:端口]`;不需要域名,IP、`localhost`、Tailscale 地址都行。唯一真正需要用户想一下的参数 |
 | `--port` | `18080` | Caddy 公开端口 |
 | `--state-dir` | `<root>/state` | 下面固定分 `auth/`、`server/`、`extensions/`、`caddy/`,升级不动它 |
 | `--tls-cert` / `--tls-key` | 无 | 不给则用 Caddy 内置 CA 自签;给了就用用户证书 |
@@ -71,6 +71,15 @@ systemctl --user enable --now vibe-vscode
   --tls-cert /etc/letsencrypt/live/dev.example.com/fullchain.pem \
   --tls-key /etc/letsencrypt/live/dev.example.com/privkey.pem \
   --workspace ~/projects/vibe.code-workspace
+```
+
+多个访问入口,办公室局域网、Tailscale 与本机各一个,`--origin` 重复给出:
+
+```bash
+~/.vibe-vscode/current/bin/vibe-vscode start \
+  --origin https://192.168.1.5:18080 \
+  --origin https://100.64.0.7:18080 \
+  --origin https://localhost:18080
 ```
 
 挂在外层反代的子路径下,会话 TTL 改为 7 天:
@@ -161,11 +170,19 @@ sequenceDiagram
 - 有证书:`--tls-cert` 与 `--tls-key` 两个路径,Caddyfile 使用 `tls <cert> <key>`。
 - `--origin` 缺省取 `https://$(hostname -f):<port>`,启动日志第一行回显。Origin 填错的后果是所有登录被当作跨源拒绝,这是现在最容易踩的坑,所以要在启动时就把它打印出来。
 
-**多个访问入口,不需要域名。** 一台机器常常同时有办公室局域网 IP、家里的 VPN 或 Tailscale IP 和 `localhost`。`--origin` 接受逗号分隔的多个地址:
+**多个访问入口,不需要域名。** 一台机器常常同时有办公室局域网 IP、家里的 VPN 或 Tailscale IP 和 `localhost`。`--origin` 重复给出即可,每个入口一次:
 
 ```bash
 ~/.vibe-vscode/current/bin/vibe-vscode start \
-  --origin https://192.168.1.5:18080,https://100.64.0.7:18080,https://localhost:18080
+  --origin https://192.168.1.5:18080 \
+  --origin https://100.64.0.7:18080 \
+  --origin https://localhost:18080
+```
+
+写在 env 文件里时用逗号分隔:
+
+```bash
+VIBE_VSCODE_ORIGIN=https://192.168.1.5:18080,https://100.64.0.7:18080,https://localhost:18080
 ```
 
 规则是显式白名单,而不是信任请求头:

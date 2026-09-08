@@ -50,7 +50,7 @@ systemctl --user enable --now vibe-vscode
 | `--port` | `18080` | Caddy 公开端口 |
 | `--state-dir` | `<root>/state` | 下面固定分 `auth/`、`server/`、`extensions/`、`caddy/` 和物理工作区文件 `vibe-vscode.code-workspace`,升级不动它 |
 | `--tls-cert` / `--tls-key` | 无 | 不给则用 Caddy 内置 CA 自签;给了就用用户证书 |
-| `--base-path` | `/` | 反代到子路径时用,同时决定 `VIBE_VSCODE_AUTH_PATH` |
+| `--base-path` | `/` | 高级,通常不需要。整个应用挂载的 URL 前缀,只在把它放到别的网关的子路径下时用,例如 `--base-path /vscode` 后 Workbench 在 `https://tools.example.com/vscode/`、登录页在 `/vscode/auth/login`。它一次性决定三处必须一致的值:Remote Server 的 `--server-base-path`、鉴权路由的 `VIBE_VSCODE_AUTH_PATH`、会话 cookie 的 `Path`。每个服务一个子域名或端口时不需要它 |
 | `--session-ttl` | `43200` | 透传给 `--auth-session-ttl-seconds` |
 
 **没有 `--workspace` 参数,用户不需要关心物理工作区在哪。** 有了 Logical Workspace 与 Project Context,物理工作区只是一个承载项目目录列表的多根 `.code-workspace` 文件,属于实例状态:`start` 在 `<state-dir>/vibe-vscode.code-workspace` 不存在时创建一个空的多根工作区并作为 `--default-workspace` 传给 Remote Server,和 `deploy-18080.sh` 的 `resolve_workspace_path` 一致。用户打开浏览器后在界面里用 Project Context 添加项目目录,项目本身在哪里都行,git 仓库或共享存储不受影响;逻辑工作区的布局、编辑器工作集和终端归属另存在服务端 SQLite。这样 secret、账号库和工作区文件都只在 `0700` 的状态目录里,不会落进任何项目目录。

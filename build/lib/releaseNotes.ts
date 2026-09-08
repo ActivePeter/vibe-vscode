@@ -25,7 +25,7 @@ export interface ReleaseNotes {
 const missingNotesPlaceholder = '本版本文案待补,发布前请在此填写本版内容与升级须知。\n\nRelease notes are missing for this tag; fill in the highlights and upgrade notes before publishing.';
 
 /**
- * Resolves the GitHub Release body for `tag` from `docs/releases/<tag>.md`.
+ * Resolves the GitHub Release body for `tag` from `docs/release-notes/<tag>.md`.
  * The file must start with a heading naming the tag, so a copied previous file cannot slip through.
  */
 export async function resolveReleaseNotes(tag: string, notesDirectory: string, options: ReleaseNotesOptions): Promise<ReleaseNotes> {

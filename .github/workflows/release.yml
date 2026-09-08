@@ -14,7 +14,7 @@ on:
         required: true
         type: string
       allow_missing_notes:
-        description: Publish a draft even though docs/releases/<tag>.md is missing (placeholder body)
+        description: Publish a draft even though docs/release-notes/<tag>.md is missing (placeholder body)
         required: false
         type: boolean
         default: false
@@ -62,8 +62,8 @@ jobs:
           ALLOW_MISSING_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_missing_notes }}
         run: |
           set -euo pipefail
-          # Fails before any build when docs/releases/<tag>.md is absent, unless a manual dispatch allowed it.
-          node build/release-notes.ts "$RELEASE_TAG" docs/releases "$SOURCE_COMMIT" "$RUNNER_TEMP/release-notes.md" \
+          # Fails before any build when docs/release-notes/<tag>.md is absent, unless a manual dispatch allowed it.
+          node build/release-notes.ts "$RELEASE_TAG" docs/release-notes "$SOURCE_COMMIT" "$RUNNER_TEMP/release-notes.md" \
             $([[ "$ALLOW_MISSING_NOTES" == true ]] && printf -- '--allow-missing')
 
   validate:
@@ -151,7 +151,7 @@ jobs:
             .nvmrc
             build/release-notes.ts
             build/lib/releaseNotes.ts
-            docs/releases
+            docs/release-notes
           sparse-checkout-cone-mode: false
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -169,8 +169,8 @@ jobs:
           ALLOW_MISSING_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_missing_notes }}
         run: |
           set -euo pipefail
-          # docs/releases/<tag>.md is the body; the checksum appendix is generated, never hand-written.
-          node build/release-notes.ts "$RELEASE_TAG" docs/releases "$SOURCE_COMMIT" release-notes.md --artifacts release \
+          # docs/release-notes/<tag>.md is the body; the checksum appendix is generated, never hand-written.
+          node build/release-notes.ts "$RELEASE_TAG" docs/release-notes "$SOURCE_COMMIT" release-notes.md --artifacts release \
             $([[ "$ALLOW_MISSING_NOTES" == true ]] && printf -- '--allow-missing')
       - name: Create draft release for the existing tag
         env:

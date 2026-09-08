@@ -1,5 +1,5 @@
 # Categories for the pull-request list that GitHub appends to each draft release body.
-# The curated body itself comes from docs/releases/<tag>.md (see docs/release.md).
+# The curated body itself comes from docs/release-notes/<tag>.md (see docs/release.md).
 changelog:
   exclude:
     labels:

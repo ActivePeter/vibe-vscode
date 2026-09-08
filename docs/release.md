@@ -54,7 +54,7 @@ The always-latest development service remains source-based. Its deployment scrip
 
 The draft body comes from a file that ships with the tagged commit, so notes are reviewed in pull requests alongside the code they describe:
 
-- Write `docs/releases/<tag>.md` from [`docs/releases/TEMPLATE.md`](releases/TEMPLATE.md). The file name is the exact tag, and the first line must be a heading that names the tag; a copied previous file fails validation. While the version is undecided, keep it as `docs/releases/next.md` and rename it in the release pull request.
+- Write `docs/release-notes/<tag>.md` from [`docs/release-notes/TEMPLATE.md`](releases/TEMPLATE.md). The file name is the exact tag, and the first line must be a heading that names the tag; a copied previous file fails validation. While the version is undecided, keep it as `docs/release-notes/next.md` and rename it in the release pull request.
 - The `source` job runs `node build/release-notes.ts` before any build and fails when the file is missing. A manual dispatch may set `allow_missing_notes` to publish a draft with a placeholder body instead; a pushed tag never can.
 - The `publish` job assembles the final body: the file, a generated appendix with the tag, source commit and archive checksums, then GitHub's categorized pull-request list ([`.github/release.yml`](../.github/release.yml)).
 - The release is still created as a **draft**. Publishing it in the GitHub UI is the confirmation step, and the body can be edited there; copy any edits back into the file in the next release pull request.

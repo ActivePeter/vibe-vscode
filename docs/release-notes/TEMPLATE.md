@@ -1,7 +1,7 @@
 # Vibe VS Code <tag>
 
-<!-- 复制为 docs/releases/<tag>.md,第一行标题必须包含 tag;CI 会自动追加产物与 commit,不要手写。 -->
-<!-- Copy to docs/releases/<tag>.md. The first line must be a heading naming the tag; CI appends artifacts and the commit. -->
+<!-- 复制为 docs/release-notes/<tag>.md,第一行标题必须包含 tag;CI 会自动追加产物与 commit,不要手写。 -->
+<!-- Copy to docs/release-notes/<tag>.md. The first line must be a heading naming the tag; CI appends artifacts and the commit. -->
 
 ## 本版内容 / Highlights
 

@@ -15,8 +15,8 @@
 
 ```bash
 curl -fsSL https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh | bash -s -- --tag <tag>
-~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080 --workspace ~/projects
-# 浏览器打开 https://dev.example.com:18080,第一次访问注册管理员
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
+# 浏览器打开 https://dev.example.com:18080,第一次访问注册管理员,然后在界面里添加项目目录
 ```
 
 要做成后台服务的人再多一步:
@@ -48,13 +48,12 @@ systemctl --user enable --now vibe-vscode
 |---|---|---|
 | `--origin` | `https://<hostname -f>:<port>` | 浏览器地址栏里的 HTTPS 地址,即 Remote Server 的 `--public-origin`。可以给多个:命令行重复该参数,env 文件里用逗号分隔;每个都是完整的 `https://主机或IP[:端口]`;不需要域名,IP、`localhost`、Tailscale 地址都行。唯一真正需要用户想一下的参数 |
 | `--port` | `18080` | Caddy 公开端口 |
-| `--state-dir` | `<root>/state` | 下面固定分 `auth/`、`server/`、`extensions/`、`caddy/`,升级不动它 |
+| `--state-dir` | `<root>/state` | 下面固定分 `auth/`、`server/`、`extensions/`、`caddy/` 和物理工作区文件 `vibe-vscode.code-workspace`,升级不动它 |
 | `--tls-cert` / `--tls-key` | 无 | 不给则用 Caddy 内置 CA 自签;给了就用用户证书 |
-| `--workspace` | 无 | 默认打开的目录或 `.code-workspace` |
 | `--base-path` | `/` | 反代到子路径时用,同时决定 `VIBE_VSCODE_AUTH_PATH` |
 | `--session-ttl` | `43200` | 透传给 `--auth-session-ttl-seconds` |
 
-**为什么 `--state-dir` 和 `--workspace` 分开。** `--state-dir` 是这个实例自己的状态:账号数据库与签名 secret、设置与服务端数据库、扩展、Caddy 的自签 CA。一个实例只有一份,权限 `0700`,升级回滚必须原样保留。`--workspace` 是用户要打开的项目目录或 `.code-workspace`,可以有很多个,在界面里随时切换,常常是 git 仓库或共享存储;它只是首次打开的默认位置,Workbench 会记住上次打开的。合在一起会把 secret 和账号库放进某个项目目录:容易提交进 git,换项目就丢登录态,权限也无法按 `0700` 管。和 VS Code 把 `--user-data-dir` 与打开的文件夹分开是同一个道理。
+**没有 `--workspace` 参数,用户不需要关心物理工作区在哪。** 有了 Logical Workspace 与 Project Context,物理工作区只是一个承载项目目录列表的多根 `.code-workspace` 文件,属于实例状态:`start` 在 `<state-dir>/vibe-vscode.code-workspace` 不存在时创建一个空的多根工作区并作为 `--default-workspace` 传给 Remote Server,和 `deploy-18080.sh` 的 `resolve_workspace_path` 一致。用户打开浏览器后在界面里用 Project Context 添加项目目录,项目本身在哪里都行,git 仓库或共享存储不受影响;逻辑工作区的布局、编辑器工作集和终端归属另存在服务端 SQLite。这样 secret、账号库和工作区文件都只在 `0700` 的状态目录里,不会落进任何项目目录。
 
 ### 4.1.1 示例
 
@@ -64,15 +63,14 @@ systemctl --user enable --now vibe-vscode
 ~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
 ```
 
-自有证书、指定端口与默认工作区:
+自有证书、指定端口:
 
 ```bash
 ~/.vibe-vscode/current/bin/vibe-vscode start \
   --origin https://dev.example.com \
   --port 443 \
   --tls-cert /etc/letsencrypt/live/dev.example.com/fullchain.pem \
-  --tls-key /etc/letsencrypt/live/dev.example.com/privkey.pem \
-  --workspace ~/projects/vibe.code-workspace
+  --tls-key /etc/letsencrypt/live/dev.example.com/privkey.pem
 ```
 
 多个访问入口,办公室局域网、Tailscale 与本机各一个,`--origin` 重复给出:
@@ -99,7 +97,6 @@ systemctl --user enable --now vibe-vscode
 cat > ~/.vibe-vscode/state/vibe-vscode.env <<'EOF'
 VIBE_VSCODE_ORIGIN=https://dev.example.com:18080
 VIBE_VSCODE_PORT=18080
-VIBE_VSCODE_WORKSPACE=/home/me/projects
 VIBE_VSCODE_TLS_CERT=/home/me/certs/fullchain.pem
 VIBE_VSCODE_TLS_KEY=/home/me/certs/privkey.pem
 EOF
@@ -151,10 +148,10 @@ sequenceDiagram
     participant Remote as Remote Server<br/>bin/vibe-vscode-server
     participant Caddy as Caddy(随包)
 
-    User->>CLI: start --origin … --workspace …
+    User->>CLI: start --origin …
     CLI->>CLI: 读取 state-dir 下的 vibe-vscode.env,命令行覆盖,校验 origin 是 HTTPS 且无路径
     CLI->>CLI: 创建 state-dir 下的 auth、server、extensions、caddy 子目录(0700),生成私有 socket 路径
-    CLI->>Remote: 启动,传 --socket-path、--auth-state-dir、--public-origin、--auth-session-ttl-seconds、--without-connection-token、--default-workspace
+    CLI->>Remote: 启动,传 --socket-path、--auth-state-dir、--public-origin、--auth-session-ttl-seconds、--without-connection-token,--default-workspace 指向状态目录里的工作区文件,不存在则先创建空的多根工作区
     CLI->>Caddy: 启动,注入 PUBLIC_PORT、AUTH_ADDRESS、AUTH_PATH、BACKEND_ADDRESS 与 TLS 参数
     CLI->>Remote: 私有 socket GET /auth/health 期望 204,GET / 期望 200
     CLI->>Caddy: 公开 GET /auth/api/status 期望 200,GET /(无 cookie)期望 303

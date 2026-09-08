@@ -152,7 +152,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 		let simOrigin = '';
 		let loadTimer;
 		let stopWatchingLocalNetworkPermission;
-		const frame = document.getElementById('sim');
+		let frame = document.getElementById('sim');
 		const overlay = document.getElementById('overlay');
 		const failureTitle = document.getElementById('failure-title');
 		const failureDescription = document.getElementById('failure-description');
@@ -299,7 +299,17 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			if (generation !== navigationGeneration) return;
 			if (!configuredBaseUrl && requestLocalNetworkAccess) void watchLocalNetworkPermission(generation);
 			simOrigin = new URL(url).origin;
-			frame.src = url;
+			// A hash-only retry keeps the old document and its bridge token unless the browsing context is replaced.
+			const previousFrame = frame;
+			const nextFrame = previousFrame.cloneNode(false);
+			nextFrame.addEventListener('load', () => {
+				if (generation !== navigationGeneration || frame !== nextFrame) return;
+				sendToSim('context', hostContext);
+				sendToSim('ping');
+			});
+			nextFrame.src = url;
+			frame = nextFrame;
+			previousFrame.replaceWith(nextFrame);
 			// Same-host fetches use VS Code's resource loader, so only the iframe handshake establishes readiness.
 			loadTimer = setTimeout(() => {
 				if (generation !== navigationGeneration || frameReady) return;
@@ -339,11 +349,6 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			}
 			void connect(generation, url, requestLocalNetworkAccess);
 		}
-
-		frame.addEventListener('load', () => {
-			sendToSim('context', hostContext);
-			sendToSim('ping');
-		});
 
 		window.addEventListener('message', event => {
 			const message = event.data;

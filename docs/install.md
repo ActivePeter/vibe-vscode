@@ -6,13 +6,15 @@ Vibe VS Code releases target Linux x64 and run the Web workbench with a remote s
 
 ## Quick start
 
-Choose a **published** tag from [GitHub Releases](https://github.com/ActivePeter/vibe-vscode/releases), replace `<tag>`, and use the HTTPS address you will open in the browser:
+Install [v1.135.0-vibe.1](https://github.com/ActivePeter/vibe-vscode/releases/tag/v1.135.0-vibe.1), and replace the example HTTPS address with the one you will open in the browser:
 
 ```bash
-curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/v1.135.0-vibe.1/install.sh' | bash -s -- --tag 'v1.135.0-vibe.1'
 ~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
 # Open https://dev.example.com:18080; register the administrator, then add projects in the workbench.
 ```
+
+Installation downloads are available only for **published** releases, not drafts.
 
 No root, systemd, separate Node installation, or separate Caddy installation is required. The host needs Bash, curl, tar, find, GNU coreutils (including sha256sum), and util-linux (flock and setsid). Use a port above 1023 for an unprivileged start. Add `--root '<absolute-install-root>'` to the installer for a custom installation.
 
@@ -71,6 +73,8 @@ loginctl enable-linger "$(id -un)"
 For an administrator-managed system service, run `systemd --install --user <service-account> --state-dir '<absolute-state-dir>'` as root; it writes `/etc/systemd/system/vibe-vscode.service`, then use `systemctl` without `--user`. Create the account and give it access to the installation, state and certificate files first; the generator does not change accounts or permissions. No separate Caddy service or hand-edited templates are needed.
 
 ## Upgrade, health checks, and rollback
+
+For future upgrades, replace `<new-tag>` with a newer **published** version from [GitHub Releases](https://github.com/ActivePeter/vibe-vscode/releases):
 
 ```bash
 ~/.vibe-vscode/current/bin/install.sh --tag '<new-tag>'

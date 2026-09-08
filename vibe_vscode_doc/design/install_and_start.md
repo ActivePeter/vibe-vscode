@@ -14,7 +14,7 @@
 三条命令,不需要 root,不需要 systemd:
 
 ```bash
-curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/v1.135.0-vibe.1/install.sh' | bash -s -- --tag 'v1.135.0-vibe.1'
 ~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
 # 浏览器打开 https://dev.example.com:18080,第一次访问注册管理员,然后在界面里添加项目目录
 ```

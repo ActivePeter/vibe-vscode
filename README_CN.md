@@ -30,10 +30,10 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
 
 ## 安装
 
-Linux x64，不需要 root 和 systemd，Node 与 Caddy 随包提供。把 `<tag>` 换成[已发布的版本](https://github.com/ActivePeter/vibe-vscode/releases)：
+Linux x64，不需要 root 和 systemd，Node 与 Caddy 随包提供。安装 [v1.135.0-vibe.1](https://github.com/ActivePeter/vibe-vscode/releases/tag/v1.135.0-vibe.1)：
 
 ```bash
-curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/v1.135.0-vibe.1/install.sh' | bash -s -- --tag 'v1.135.0-vibe.1'
 ```
 
 安装器校验压缩包并把它选为 `~/.vibe-vscode/current`，不启动任何进程。自定义安装目录、升级与回滚见[安装与启动](docs/install.md#quick-start)。

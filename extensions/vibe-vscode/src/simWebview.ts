@@ -59,6 +59,8 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 	const loading = escapeHtml(vscode.l10n.t('Connecting'));
 	const failureUi = {
 		allowAndOpen: vscode.l10n.t('Allow and open Sim'),
+		localNetworkAwaiting: vscode.l10n.t('Waiting for browser permission'),
+		localNetworkAwaitingHelp: vscode.l10n.t('Approve the browser permission request. If no request appears, open the site controls for this page, allow Local network access, then retry.'),
 		localNetworkBlocked: vscode.l10n.t('Chrome has blocked this permission. Open the site controls for this page, set Local network access to Allow, then return and retry.'),
 		localNetworkDescription: vscode.l10n.t('Sim is opened through the current IP address. This browser must allow local network access before the embedded view can connect.'),
 		localNetworkPrompt: vscode.l10n.t('Continue, then approve the browser permission request.'),
@@ -149,6 +151,9 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 		let navigationGeneration = 0;
 		let simOrigin = '';
 		let loadTimer;
+		let gatewayReached = false;
+		let gatewayController;
+		let stopWatchingLocalNetworkPermission;
 		const frame = document.getElementById('sim');
 		const overlay = document.getElementById('overlay');
 		const failureTitle = document.getElementById('failure-title');
@@ -228,14 +233,36 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			overlay.className = 'overlay failed';
 		}
 
-		function showLocalNetworkFailure(blocked) {
+		function showLocalNetworkFailure(blocked, awaitingPermission = false) {
 			overlay.dataset.failure = 'local-network';
-			failureTitle.textContent = failureUi.localNetworkTitle;
+			failureTitle.textContent = awaitingPermission ? failureUi.localNetworkAwaiting : failureUi.localNetworkTitle;
 			failureDescription.textContent = failureUi.localNetworkDescription;
-			failureHelp.textContent = blocked ? failureUi.localNetworkBlocked : failureUi.localNetworkPrompt;
+			failureHelp.textContent = blocked ? failureUi.localNetworkBlocked : awaitingPermission ? failureUi.localNetworkAwaitingHelp : failureUi.localNetworkPrompt;
 			failureHelp.className = '';
-			retryButton.textContent = blocked ? failureUi.refresh : failureUi.allowAndOpen;
+			retryButton.textContent = blocked || awaitingPermission ? failureUi.refresh : failureUi.allowAndOpen;
 			overlay.className = 'overlay failed';
+		}
+
+		function cancelConnectionChecks() {
+			clearTimeout(loadTimer);
+			gatewayController?.abort();
+			gatewayController = undefined;
+			stopWatchingLocalNetworkPermission?.();
+			stopWatchingLocalNetworkPermission = undefined;
+		}
+
+		async function checkGateway(generation, signal) {
+			try {
+				const response = await fetch(new URL('/sim/__vibe_status', simOrigin), { cache: 'no-store', credentials: 'omit', signal });
+				if (generation !== navigationGeneration || frameReady || signal.aborted) return;
+				gatewayReached = true;
+				if (!response.ok) {
+					clearTimeout(loadTimer);
+					showServiceFailure();
+				}
+			} catch {
+				// The connection deadline handles network failures without cancelling a pending permission request.
+			}
 		}
 
 		async function localNetworkPermissionState() {
@@ -251,15 +278,20 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			if (configuredBaseUrl || !navigator.permissions || typeof navigator.permissions.query !== 'function') return;
 			try {
 				const permission = await navigator.permissions.query({ name: 'local-network-access' });
-				permission.addEventListener('change', () => {
-					if (generation !== navigationGeneration) return;
-					if (permission.state === 'granted' && !frameReady) {
+				if (generation !== navigationGeneration || frameReady) return;
+				const onChange = () => {
+					if (generation !== navigationGeneration || frameReady) return;
+					if (permission.state === 'granted') {
 						load(currentPath, true);
 					} else if (permission.state === 'denied') {
+						cancelConnectionChecks();
+						currentFrameToken = '';
 						frame.src = 'about:blank';
 						showLocalNetworkFailure(true);
 					}
-				}, { once: true });
+				};
+				permission.addEventListener('change', onChange, { once: true });
+				stopWatchingLocalNetworkPermission = () => permission.removeEventListener('change', onChange);
 			} catch {}
 		}
 
@@ -286,14 +318,22 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			if (!configuredBaseUrl && requestLocalNetworkAccess) void watchLocalNetworkPermission(generation);
 			simOrigin = new URL(url).origin;
 			frame.src = url;
+			if (!configuredBaseUrl) {
+				gatewayController = new AbortController();
+				void checkGateway(generation, gatewayController.signal);
+			}
 			loadTimer = setTimeout(() => {
-				if (generation !== navigationGeneration) return;
+				if (generation !== navigationGeneration || frameReady) return;
 				void localNetworkPermissionState().then(permissionState => {
-					if (generation !== navigationGeneration) return;
-					if (permissionState === 'prompt') {
-						return; // Keep the browser permission request alive until the user decides.
+					if (generation !== navigationGeneration || frameReady) return;
+					if (permissionState === 'prompt' && !gatewayReached) {
+						// Keep the iframe request alive so a late permission grant can still connect.
+						showLocalNetworkFailure(false, true);
+						return;
 					}
 					if (permissionState === 'denied') {
+						cancelConnectionChecks();
+						currentFrameToken = '';
 						frame.src = 'about:blank';
 						showLocalNetworkFailure(true);
 					} else {
@@ -306,14 +346,15 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 		function load(path = currentPath, requestLocalNetworkAccess = false) {
 			if (!isSafePath(path)) return;
 			const generation = ++navigationGeneration;
+			cancelConnectionChecks();
 			const token = bridgeTokenSeed + ':' + generation;
 			const url = routeUrl(path, token);
 			currentPath = path;
 			currentFrameToken = token;
 			frameReady = false;
+			gatewayReached = false;
 			overlay.className = 'overlay';
 			overlay.dataset.failure = '';
-			clearTimeout(loadTimer);
 			if (!url) {
 				showServiceFailure();
 				return;
@@ -340,7 +381,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			if (event.source !== frame.contentWindow || event.origin !== simOrigin || !message || message.source !== 'sim' || message.token !== currentFrameToken) return;
 			if (message.type === 'ready') {
 				frameReady = true;
-				clearTimeout(loadTimer);
+				cancelConnectionChecks();
 				overlay.className = 'overlay hidden';
 				sendToSim('context', hostContext);
 				return;
@@ -361,6 +402,7 @@ export function renderSimWebview(options: RenderSimWebviewOptions): string {
 			}
 		});
 
+		window.addEventListener('pagehide', cancelConnectionChecks);
 		retryButton.addEventListener('click', () => load(currentPath, overlay.dataset.failure === 'local-network'));
 		const persistedState = vscode.getState();
 		if (persistedState && isSafePath(persistedState.path)) currentPath = persistedState.path;

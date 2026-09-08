@@ -21,6 +21,8 @@
 	"Continue, then approve the browser permission request.": "Continue, then approve the browser permission request.",
 	"Chrome has blocked this permission. Open the site controls for this page, set Local network access to Allow, then return and retry.": "Chrome has blocked this permission. Open the site controls for this page, set Local network access to Allow, then return and retry.",
 	"Allow and open Sim": "Allow and open Sim",
+	"Waiting for browser permission": "Waiting for browser permission",
+	"Approve the browser permission request. If no request appears, open the site controls for this page, allow Local network access, then retry.": "Approve the browser permission request. If no request appears, open the site controls for this page, allow Local network access, then retry.",
 	"Workspace": "Workspace",
 	"DAG Demo": "DAG Demo",
 	"Workflow and PR dependency DAG": "Workflow and PR dependency DAG",

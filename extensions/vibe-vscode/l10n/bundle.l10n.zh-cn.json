@@ -21,6 +21,8 @@
 	"Continue, then approve the browser permission request.": "点击继续，然后同意浏览器的权限请求。",
 	"Chrome has blocked this permission. Open the site controls for this page, set Local network access to Allow, then return and retry.": "Chrome 已阻止此权限。请打开本页面的站点设置，将“本地网络访问”设为“允许”，然后返回重试。",
 	"Allow and open Sim": "允许并打开 Sim",
+	"Waiting for browser permission": "正在等待浏览器授权",
+	"Approve the browser permission request. If no request appears, open the site controls for this page, allow Local network access, then retry.": "请同意浏览器的权限请求。如果没有弹出请求，请打开本页面的站点设置，允许“本地网络访问”，然后重试。",
 	"Workspace": "工作区",
 	"DAG Demo": "DAG 演示",
 	"Workflow and PR dependency DAG": "工作流与 PR 依赖 DAG",

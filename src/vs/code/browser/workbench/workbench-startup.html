@@ -34,6 +34,11 @@
 				width: min(420px, 100%);
 			}
 
+			.vscode-workbench-startup-logo {
+				display: block;
+				margin-bottom: var(--vscode-spacing-size240, 24px);
+			}
+
 			.vscode-workbench-startup-mode {
 				display: inline-flex;
 				align-items: center;
@@ -156,6 +161,7 @@
 <!-- WORKBENCH_STARTUP_BODY -->
 		<div id="vscode-workbench-startup" data-settings="{{WORKBENCH_STARTUP_CONFIGURATION}}" aria-busy="true">
 			<div class="vscode-workbench-startup-content">
+				<img class="vscode-workbench-startup-logo" src="{{WORKBENCH_BRAND_ICON}}" width="64" height="64" alt="" />
 				<p id="vscode-workbench-startup-mode" class="vscode-workbench-startup-mode"></p>
 				<h1 id="vscode-workbench-startup-title" class="vscode-workbench-startup-title"></h1>
 				<p id="vscode-workbench-startup-detail" class="vscode-workbench-startup-detail" aria-live="polite"></p>

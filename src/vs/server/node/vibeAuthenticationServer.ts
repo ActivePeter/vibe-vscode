@@ -12,6 +12,7 @@ import { isAbsolute } from '../../base/common/path.js';
 import { matchVibePublicOrigin } from '../common/vibeAuthentication.js';
 import type { ServerParsedArgs } from './serverEnvironmentService.js';
 import { VibeAuthenticationService } from './vibeAuthentication.js';
+import { vibeLogoDataUri } from './vibeBranding.js';
 
 const requestBodyMaximumBytes = 16 * 1024;
 const administratorEmail = 'administrator@vibe.invalid';
@@ -501,6 +502,7 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<meta name="color-scheme" content="dark light">
 	<title>${escapeHtml(title)} - ${escapeHtml(text.brand)}</title>
+	<link rel="icon" href="${vibeLogoDataUri}" type="image/svg+xml" sizes="any">
 	<style nonce="${styleNonce}">
 		:root { color-scheme: dark; --page: #0f1117; --surface: #181b22; --surface-raised: #20242d; --text: #f0f1f3; --muted: #a8adb7; --border: #343945; --accent: #8ab4f8; --accent-strong: #a8c7fa; --button-text: #101318; --danger-bg: #3a2024; --danger-border: #8c3943; --focus: #9cc2ff; }
 		* { box-sizing: border-box; }
@@ -509,7 +511,7 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 		.shell { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
 		.card { width: min(100%, 400px); padding: 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 20px 60px rgba(0, 0, 0, .24); }
 		.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; color: var(--muted); font-size: 12px; }
-		.mark { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 6px; background: var(--surface-raised); color: var(--accent-strong); font-size: 18px; font-weight: 600; }
+		.mark { display: block; width: 40px; height: 40px; flex-shrink: 0; }
 		.eyebrow { margin: 0 0 6px; color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 		h1 { margin: 0; font-size: 26px; line-height: 1.2; font-weight: 600; letter-spacing: -.02em; }
 		.description { margin: 12px 0 24px; color: var(--muted); }
@@ -535,7 +537,7 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 <body>
 	<main class="shell">
 		<section class="card" aria-labelledby="page-title">
-			<div class="brand"><span class="mark" aria-hidden="true">&lt;&gt;</span><span>${escapeHtml(text.brand)}</span></div>
+			<div class="brand"><img class="mark" src="${vibeLogoDataUri}" width="40" height="40" alt=""><span>${escapeHtml(text.brand)}</span></div>
 			<p class="eyebrow">${escapeHtml(label)}</p>
 			<h1 id="page-title">${escapeHtml(title)}</h1>
 			<p class="description">${escapeHtml(description)}</p>
@@ -558,7 +560,7 @@ function authenticationDocumentHeaders(styleNonce: string, locale: Locale): http
 	return {
 		'Cache-Control': 'no-store',
 		'Content-Language': locale,
-		'Content-Security-Policy': `default-src 'none'; style-src 'nonce-${styleNonce}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
+		'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'nonce-${styleNonce}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
 		'Content-Type': 'text/html; charset=utf-8',
 		'Referrer-Policy': 'no-referrer',
 		'X-Content-Type-Options': 'nosniff',

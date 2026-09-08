@@ -75,7 +75,7 @@ sequenceDiagram
         V-->>C: 204 放行,或 303 登录页,或 401
         C->>W: 只有 204 才把原请求转发过去
     else 入口不在表中
-        V-->>C: 导航 303 回第一入口,其他请求 401;不调用 Better Auth
+        V-->>C: 导航 303 回第一入口,其他请求 401,不调用 Better Auth
         C-->>B: 返回拒绝或规范化跳转,不转发 Workbench
     end
 ```

@@ -115,7 +115,7 @@ The archive preserves Gulp's production layout: dependencies originally built in
 | `node`, `node_modules/` | Matching Node runtime and production/native dependencies |
 | `out/`, `extensions/` | Built server, browser workbench, and extensions |
 | `out/vs/code/browser/workbench/cache/` | Manifest, loader, and verified gzip chunks |
-| `caddy` | Pinned HTTPS/WebSocket gateway, verified before packaging |
+| `caddy`, `caddy.LICENSE` | Pinned HTTPS/WebSocket gateway and its upstream license, verified before packaging |
 | `bin/vibe-vscode` | Foreground start, status and optional systemd generation |
 | `bin/install.sh` | Upgrade/rollback entry point, including custom-root detection |
 | `bin/vibe-vscode-server` | Shared low-level launcher; applies immutable release metadata |

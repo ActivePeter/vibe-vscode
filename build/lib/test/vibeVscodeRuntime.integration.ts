@@ -41,6 +41,7 @@ cp -- "$VIBE_TEST_ARTIFACTS/\${url##*/}" "$output"
 	});
 	const runtime = await fs.realpath(path.join(installRoot, 'current'));
 	assert.deepStrictEqual(await fs.readFile(path.join(runtime, 'bin/install.sh')), await fs.readFile(path.join(artifacts, 'install.sh')));
+	assert.match(await fs.readFile(path.join(runtime, 'caddy.LICENSE'), 'utf8'), /Apache License/);
 	// Isolate this disposable test from the network. Only the bind address changes; binaries,
 	// startup commands, TLS, origin selection and all authorization rules remain the shipped ones.
 	const template = path.join(runtime, 'resources/server/vibe-vscode/Caddyfile');

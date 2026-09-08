@@ -39,12 +39,13 @@ export async function installPinnedCaddy(root: string, architecture = process.ar
 	try {
 		const archive = path.join(temporary, name);
 		await fs.writeFile(archive, contents);
-		await extract({ file: archive, cwd: temporary, filter: name => name === 'caddy' || name === './caddy' });
+		await extract({ file: archive, cwd: temporary, filter: name => ['caddy', 'LICENSE'].includes(name.replace(/^\.\//, '')) });
 		const binary = path.join(temporary, 'caddy');
 		if (createHash('sha256').update(await fs.readFile(binary)).digest('hex') !== expected.binary) {
 			throw new Error('Caddy binary checksum mismatch.');
 		}
 		await fs.chmod(binary, 0o755);
+		await fs.copyFile(path.join(temporary, 'LICENSE'), path.join(root, 'caddy.LICENSE'));
 		await fs.rename(binary, path.join(root, 'caddy'));
 	} finally {
 		await fs.rm(temporary, { recursive: true, force: true });

@@ -114,13 +114,14 @@ test('packages an immutable, checksummed release with a production launcher and 
 			installerMatches: (await fs.readFile(path.join(output, 'install.sh'))).equals(await fs.readFile(path.resolve(import.meta.dirname, '../../../install.sh'))),
 			installedScriptMatches: (await fs.readFile(path.join(destination, 'bin/install.sh'))).equals(await fs.readFile(path.join(output, 'install.sh'))),
 			caddyPresent: (await fs.stat(path.join(destination, 'caddy'))).isFile(),
+			caddyLicense: await fs.readFile(path.join(destination, 'caddy.LICENSE'), 'utf8'),
 		}, {
 			metadata: { version: 'v1.2.3', commit, platform: 'linux', arch: 'x64', mode: 'production', authentication: 'embedded-cli-v1' },
 			checksum: `${createHash('sha256').update(contents).digest('hex')}  ${path.basename(archive)}\n`,
 			arguments: ['--web-client-cache-version', 'v1.2.3', '--socket-path', '/test/backend.sock', ...authenticationArguments],
 			inputUnchanged: true,
 			files: ['install.sh', path.basename(archive), `${path.basename(archive)}.sha256`],
-			installerMatches: true, installedScriptMatches: true, caddyPresent: true,
+			installerMatches: true, installedScriptMatches: true, caddyPresent: true, caddyLicense: 'Caddy license fixture',
 		});
 		await assert.rejects(packageWebClientRelease(source, output, 'v1.2.3', commit, installTestCaddy), /EEXIST/);
 		assert.deepStrictEqual(await fs.readFile(archive), contents);
@@ -171,4 +172,5 @@ test('rejects broken compression and native loading without publishing partial r
 
 async function installTestCaddy(root: string): Promise<void> {
 	await fs.writeFile(path.join(root, 'caddy'), '#!/bin/sh\n[ "$1" = version ]\n', { mode: 0o755 });
+	await fs.writeFile(path.join(root, 'caddy.LICENSE'), 'Caddy license fixture');
 }

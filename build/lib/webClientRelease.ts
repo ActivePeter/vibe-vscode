@@ -104,6 +104,9 @@ for (const name of ['@vscode/sqlite3', '@vscode/spdlog', '@vscode/native-watchdo
 
 		await installWebClientLauncher(root, version, commit, 'production');
 		await installCaddy(root);
+		if (!(await fs.stat(path.join(root, 'caddy.LICENSE'))).isFile()) {
+			throw new Error('The release is missing the bundled Caddy license.');
+		}
 		await run(path.join(root, 'caddy'), ['version'], { cwd: root, env });
 		await run(path.join(root, 'bin/vibe-vscode-server'), ['--version'], { cwd: root, env });
 

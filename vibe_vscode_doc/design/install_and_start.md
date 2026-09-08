@@ -54,6 +54,82 @@ systemctl --user enable --now vibe-vscode
 | `--base-path` | `/` | 反代到子路径时用,同时决定 `VIBE_VSCODE_AUTH_PATH` |
 | `--session-ttl` | `43200` | 透传给 `--auth-session-ttl-seconds` |
 
+### 4.1.1 示例
+
+最简:只给浏览器地址,其余全部默认(端口 18080、状态目录 `~/.vibe-vscode/state`、Caddy 自签证书):
+
+```bash
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
+```
+
+自有证书、指定端口与默认工作区:
+
+```bash
+~/.vibe-vscode/current/bin/vibe-vscode start \
+  --origin https://dev.example.com \
+  --port 443 \
+  --tls-cert /etc/letsencrypt/live/dev.example.com/fullchain.pem \
+  --tls-key /etc/letsencrypt/live/dev.example.com/privkey.pem \
+  --workspace ~/projects/vibe.code-workspace
+```
+
+挂在外层反代的子路径下,会话 TTL 改为 7 天:
+
+```bash
+~/.vibe-vscode/current/bin/vibe-vscode start \
+  --origin https://tools.example.com \
+  --base-path /vscode \
+  --session-ttl 604800
+```
+
+把参数固定在状态目录的 env 文件里,之后只需 `start`;命令行给出的参数覆盖文件里的同名项:
+
+```bash
+cat > ~/.vibe-vscode/state/vibe-vscode.env <<'EOF'
+VIBE_VSCODE_ORIGIN=https://dev.example.com:18080
+VIBE_VSCODE_PORT=18080
+VIBE_VSCODE_WORKSPACE=/home/me/projects
+VIBE_VSCODE_TLS_CERT=/home/me/certs/fullchain.pem
+VIBE_VSCODE_TLS_KEY=/home/me/certs/privkey.pem
+EOF
+~/.vibe-vscode/current/bin/vibe-vscode start
+~/.vibe-vscode/current/bin/vibe-vscode start --port 18081   # 临时换端口,其余仍来自文件
+```
+
+env 文件的键名与参数一一对应:`--origin` 对应 `VIBE_VSCODE_ORIGIN`,`--state-dir` 对应 `VIBE_VSCODE_STATE_DIR`,其余同理,全部大写、连字符换下划线。
+
+安装、升级与回滚:
+
+```bash
+# 安装到默认目录 ~/.vibe-vscode
+curl -fsSL https://github.com/ActivePeter/vibe-vscode/releases/download/v1.135.0-vibe.1/install.sh | bash -s -- --tag v1.135.0-vibe.1
+# 安装到自定义目录
+curl -fsSL … | bash -s -- --tag v1.135.0-vibe.1 --root /opt/vibe-vscode
+# 升级:再装一个 tag,自动切换 current
+curl -fsSL … | bash -s -- --tag v1.135.0-vibe.2
+# 回滚到上一个 release
+~/.vibe-vscode/current/bin/install.sh --rollback
+```
+
+做成服务:
+
+```bash
+# 用户级服务,不需要 root
+mkdir -p ~/.config/systemd/user
+~/.vibe-vscode/current/bin/vibe-vscode systemd --state-dir ~/.vibe-vscode/state > ~/.config/systemd/user/vibe-vscode.service
+systemctl --user daemon-reload
+systemctl --user enable --now vibe-vscode
+# 系统级服务
+~/.vibe-vscode/current/bin/vibe-vscode systemd --state-dir /var/lib/vibe-vscode --user vibe-vscode | sudo tee /etc/systemd/system/vibe-vscode.service
+```
+
+启动成功时前两行输出固定为:
+
+```text
+vibe vscode is ready: open https://dev.example.com:18080
+TLS is self-signed by Caddy; trust /home/me/.vibe-vscode/state/caddy/pki/authorities/local/root.crt in your browser or system
+```
+
 ### 4.2 启动时序
 
 ```mermaid

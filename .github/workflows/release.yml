@@ -137,6 +137,12 @@ jobs:
           cd release
           sha256sum --check ./*.sha256
           test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" = "$SOURCE_COMMIT"
+          # Hand-written notes live at docs/release-notes/<tag>.md on the tagged commit;
+          # GitHub's generated change list is appended after them.
+          notes=(--generate-notes)
+          if gh api "repos/$GITHUB_REPOSITORY/contents/docs/release-notes/$RELEASE_TAG.md?ref=$SOURCE_COMMIT" --jq .content 2>/dev/null | base64 -d > notes.md && [[ -s notes.md ]]; then
+            notes=(--notes-file notes.md --generate-notes)
+          fi
           gh release create "$RELEASE_TAG" ./*.tar.gz ./*.sha256 \
             --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
-            --title "Vibe VS Code $RELEASE_TAG" --generate-notes
+            --title "Vibe VS Code $RELEASE_TAG" "${notes[@]}"

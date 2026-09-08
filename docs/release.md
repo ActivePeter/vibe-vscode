@@ -15,7 +15,7 @@ The release job builds `gulp vscode-reh-web-linux-x64-min`, verifies native depe
 - `vibe-vscode-server-<tag>-linux-x64.tar.gz`
 - `vibe-vscode-server-<tag>-linux-x64.tar.gz.sha256`
 
-Only the final publication job has repository write permission. It creates a **draft GitHub Release** for the existing tag; a maintainer reviews and publishes that draft. Pull requests and branch pushes do not create tags or publish releases. Until a draft is published, its files are not public installation downloads. A rerun does not overwrite an existing release; use a new tag for changed code.
+Only the final publication job has repository write permission. It creates a **draft GitHub Release** for the existing tag; a maintainer reviews and publishes that draft. The release body starts with the hand-written notes in `docs/release-notes/<tag>.md` from the tagged commit when that file exists, followed by GitHub's generated change list; write those notes for users, not for reviewers, and update them in the same pull request as the feature. Pull requests and branch pushes do not create tags or publish releases. Until a draft is published, its files are not public installation downloads. A rerun does not overwrite an existing release; use a new tag for changed code.
 
 The archive preserves Gulp's production layout: dependencies originally built in `remote/node_modules` are packaged at the archive root as `node_modules`, not under `remote/`.
 

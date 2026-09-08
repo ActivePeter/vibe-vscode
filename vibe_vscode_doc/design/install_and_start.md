@@ -50,7 +50,6 @@ systemctl --user enable --now vibe-vscode
 | `--port` | `18080` | Caddy 公开端口 |
 | `--state-dir` | `<root>/state` | 下面固定分 `auth/`、`server/`、`extensions/`、`caddy/` 和物理工作区文件 `vibe-vscode.code-workspace`,升级不动它 |
 | `--tls-cert` / `--tls-key` | 无 | 不给则用 Caddy 内置 CA 自签;给了就用用户证书 |
-| `--base-path` | `/` | 高级,通常不需要。整个应用挂载的 URL 前缀,只在把它放到别的网关的子路径下时用,例如 `--base-path /vscode` 后 Workbench 在 `https://tools.example.com/vscode/`、登录页在 `/vscode/auth/login`。它一次性决定三处必须一致的值:Remote Server 的 `--server-base-path`、鉴权路由的 `VIBE_VSCODE_AUTH_PATH`、会话 cookie 的 `Path`。每个服务一个子域名或端口时不需要它 |
 | `--session-ttl` | `43200` | 透传给 `--auth-session-ttl-seconds` |
 
 **没有 `--workspace` 参数,用户不需要关心物理工作区在哪。** 有了 Logical Workspace 与 Project Context,物理工作区只是一个承载项目目录列表的多根 `.code-workspace` 文件,属于实例状态:`start` 在 `<state-dir>/vibe-vscode.code-workspace` 不存在时创建一个空的多根工作区并作为 `--default-workspace` 传给 Remote Server,和 `deploy-18080.sh` 的 `resolve_workspace_path` 一致。用户打开浏览器后在界面里用 Project Context 添加项目目录,项目本身在哪里都行,git 仓库或共享存储不受影响;逻辑工作区的布局、编辑器工作集和终端归属另存在服务端 SQLite。这样 secret、账号库和工作区文件都只在 `0700` 的状态目录里,不会落进任何项目目录。
@@ -82,12 +81,11 @@ systemctl --user enable --now vibe-vscode
   --origin https://localhost:18080
 ```
 
-挂在外层反代的子路径下,会话 TTL 改为 7 天:
+会话 TTL 改为 7 天:
 
 ```bash
 ~/.vibe-vscode/current/bin/vibe-vscode start \
-  --origin https://tools.example.com \
-  --base-path /vscode \
+  --origin https://dev.example.com:18080 \
   --session-ttl 604800
 ```
 
@@ -192,6 +190,8 @@ VIBE_VSCODE_ORIGIN=https://192.168.1.5:18080,https://100.64.0.7:18080,https://lo
 - 不提供"任意 host 都信任"的开关,那等于回到被伪造 `Host` 的老问题。改了 IP 就改 `--origin` 或 env 文件后重启。
 
 Caddyfile 模板按 TLS 来源二选一由 `start` 生成到 `<state-dir>/caddy/Caddyfile`,其余转发规则与 [`resources/server/vibe-vscode/Caddyfile`](../../resources/server/vibe-vscode/Caddyfile) 完全相同;鉴权语义不变,见[全屏登录与实例认证](login_authentication.md)。
+
+**子路径部署不在首版启动命令里。** 一个服务一个子域名或端口就够。技术上应用必须知道自己的前缀,因为静态资源地址、WebSocket 地址、登录跳转的 `Location` 和 cookie 的 `Path` 都是应用自己生成的绝对路径,外层网关剥掉前缀转进来容易,替应用把响应里的地址补回前缀不可靠。前缀要么静态声明(Remote Server 已有的 `--server-base-path`,保留给部署脚本与测试),要么由网关按标准的 `X-Forwarded-Prefix` 头动态告知,`webClientServer` 已支持后者。需要子路径时按后者补齐鉴权路由与 cookie `Path` 的处理即可,用户不需要在启动命令里声明。
 
 ## 5. 升级与回滚
 

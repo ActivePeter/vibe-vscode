@@ -162,14 +162,27 @@ jobs:
         if: steps.electron.outcome == 'success'
         continue-on-error: true
         run: |
-          # Discover new tests within each product area; never register individual test files.
+          # Discover tests by product area; the Node-only auth suite has its own runner below.
           xvfb-run -a ./scripts/test.sh \
-            --runGlob '{vs/base/test/{browser/ui/tree,node},vs/code/test/browser,vs/platform/sign/test,vs/server/test,vs/sessions/test,vs/workbench/api/test,vs/workbench/contrib/{chat,remote,files,terminal,update,workspace}/test,vs/workbench/services/{editor,accounts,authentication,environment,logicalWorkspace}/test,vs/workbench/test/browser}/**/*.test.js' \
+            --runGlob '{vs/base/test/{browser/ui/tree,node},vs/code/test/browser,vs/platform/sign/test,vs/server/test,vs/sessions/test,vs/workbench/api/test,vs/workbench/contrib/{chat,remote,files,terminal,update,vibeAuthentication,workspace}/test,vs/workbench/services/{editor,accounts,authentication,environment,logicalWorkspace}/test,vs/workbench/test/browser}/**/*.test.js' \
             --excludeRunGlob '**/electron-*/**/*.test.js' \
             --timeout 20000
         env:
           VSCODE_SKIP_PRELAUNCH: '1'
           TZ: UTC
+
+      - name: Run authentication tests in Node
+        id: node-auth-tests
+        continue-on-error: true
+        run: npm run test-node -- --run src/vs/server/test/node/vibeAuthentication.test.ts
+
+      - name: Test Caddy authentication boundary
+        id: auth-gateway-tests
+        continue-on-error: true
+        run: |
+          source ./.agents/skills/deploy-vscode-18080/scripts/deploy-18080.sh
+          ensure_caddy_binary
+          node ./.agents/skills/deploy-vscode-18080/tests/authentication-gateway.test.ts "$CADDY_BINARY"
 
       - name: Verify quality and tests
         if: always()
@@ -180,6 +193,8 @@ jobs:
           BUILD_TESTS_RESULT: ${{ steps.build-tests.outcome }}
           ELECTRON_RESULT: ${{ steps.electron.outcome }}
           UNIT_TESTS_RESULT: ${{ steps.unit-tests.outcome }}
+          NODE_AUTH_TESTS_RESULT: ${{ steps.node-auth-tests.outcome }}
+          AUTH_GATEWAY_TESTS_RESULT: ${{ steps.auth-gateway-tests.outcome }}
         run: |
           test "$HYGIENE_RESULT" = success
           test "$ESLINT_RESULT" = success
@@ -187,6 +202,8 @@ jobs:
           test "$BUILD_TESTS_RESULT" = success
           test "$ELECTRON_RESULT" = success
           test "$UNIT_TESTS_RESULT" = success
+          test "$NODE_AUTH_TESTS_RESULT" = success
+          test "$AUTH_GATEWAY_TESTS_RESULT" = success
 
   package:
     name: Clean Product Package (${{ matrix.variant }})
@@ -248,6 +265,9 @@ jobs:
 
       - name: Verify release archive and production launcher
         run: node build/web-release.ts package ../vscode-reh-web-linux-x64 .build/release-validation v0.0.0-ci "$(git rev-parse HEAD)"
+
+      - name: Smoke test installation and foreground runtime
+        run: node build/lib/test/vibeVscodeRuntime.integration.ts .build/release-validation
 
       - name: Verify packaged Vibe extension
         env:

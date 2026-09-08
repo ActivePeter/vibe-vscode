@@ -13,17 +13,8 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
 - ✅ **Web 优先运行**：vibe vscode 首先为浏览器而设计。我们推荐把开发环境放在一台常驻机器或云端，通过网页随时进入工作台。项目、终端和 Agent 任务运行在服务端，网页负责交互与状态投影，无需安装桌面客户端。
 
   - ✅ **页面加载缓存与续传**：核心启动资源压缩、分块并校验后缓存在浏览器中，加载时显示下载进度。刷新或重新打开浏览器可复用缓存，下载中断后只补齐缺失分块，版本更新时复用未变化的内容，减少重复下载并改善弱网加载体验。
+  - ✅ **登录后才能访问**：所有托管的 HTTP 请求和 WebSocket 握手在到达任何 VS Code 路由之前必须先通过登录。第一个访问者注册唯一的管理员账号，之后注册关闭。会话在服务重启后仍然有效，使用中自动续期，可在 Accounts 菜单或命令面板退出。认证内嵌在远程服务器进程中，使用 Node 自带的 SQLite，由 Caddy 在网关强制执行；见[设计文档](vibe_vscode_doc/design/login_authentication.md)。
   - 🚧 **非阻塞的远程连接体验**：计划用状态栏中的重连或不可用状态替代模态打断，在网络恢复后立即推动重试，并保持当前工作内容打开；当前实现尚未包含这项能力。
-
-  正式发布包、systemd/Caddy 配置、升级与回滚见[发布与安装文档](docs/release.md)。若从源码开发，安装依赖后可用两个终端启动环境：
-
-  ```bash
-  # 终端 1：持续编译
-  npm run watch
-
-  # 终端 2：启动 Web 工作台，访问 http://localhost:8080
-  ./scripts/code-web.sh .
-  ```
 
 - ✅ **Logical Workspace（逻辑工作区）**：可从状态栏或命令面板创建、选择逻辑工作区，无需重新加载页面。切换时会保存并恢复主侧栏、底部面板和辅助侧栏的显隐、尺寸及活动视图。
   - **远程权威状态**：Workspace catalog、布局和编辑器工作集保存在 Remote SQLite；其他页面刷新或重连后读取最新快照，每个页面只在本地保存自己的当前 Workspace 选择。
@@ -36,6 +27,65 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
 - ⬜ **全屏会话管理面板**：提供覆盖整个工作台的会话管理界面，用于集中查看、创建、切换和管理 Agent 会话。
 - ⬜ **文档驱动开发**：支持在编辑器中选中文档内容，通过右键菜单以选区作为上下文创建新的 Agent 会话，让需求和设计文档直接驱动开发。
 - ⬜ **Codex Agent 优先交互**：以 Codex Agent 作为首要会话形态，优先完善会话创建、交互、状态呈现与恢复体验。
+
+## 安装
+
+Linux x64，不需要 root 和 systemd，Node 与 Caddy 随包提供。把 `<tag>` 换成[已发布的版本](https://github.com/ActivePeter/vibe-vscode/releases)：
+
+```bash
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+```
+
+安装器校验压缩包并把它选为 `~/.vibe-vscode/current`，不启动任何进程。自定义安装目录、升级与回滚见[安装与启动](docs/install.md#quick-start)。
+
+## 启动
+
+地址换成浏览器里实际输入的主机名或 IP：
+
+```bash
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
+# 浏览器打开 https://dev.example.com:18080，注册管理员，然后在界面中添加项目。
+```
+
+没有自有 TLS 证书时，按启动日志信任 Caddy 根证书；管理员注册完成前请限制访问。Ctrl-C 停止全部进程。
+
+| 参数 | 默认 | 用途 |
+| --- | --- | --- |
+| `--origin` | `https://<主机名>:<端口>` | 浏览器里输入的 HTTPS 地址本身；多个入口就重复给出，不需要域名 |
+| `--port` | `18080` | 公开 HTTPS 端口 |
+| `--state-dir` | `~/.vibe-vscode/state` | 账号、设置、扩展与工作区，升级时保留 |
+| `--tls-cert` / `--tls-key` | 自签 | 自有证书与私钥 |
+| `--session-ttl` | `43200` | 会话有效期，秒 |
+
+```bash
+# 局域网、VPN 与本机三个入口
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://192.168.1.5:18080 --origin https://100.64.0.7:18080 --origin https://localhost:18080
+
+# 自有证书，443 端口
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com --port 443 --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem
+
+# 首次 start 会创建 ~/.vibe-vscode/state，之后把默认值写进配置文件，再启动就不用带参数
+printf 'VIBE_VSCODE_ORIGIN=https://dev.example.com:18080\n' > ~/.vibe-vscode/state/vibe-vscode.env
+~/.vibe-vscode/current/bin/vibe-vscode start
+
+# 可选：做成用户级服务
+~/.vibe-vscode/current/bin/vibe-vscode systemd --install
+systemctl --user daemon-reload && systemctl --user enable --now vibe-vscode
+```
+
+细节、健康检查、升级与回滚见[安装与启动](docs/install.md)。
+
+## 开发启动
+
+从源码运行，安装依赖后用两个终端：
+
+```bash
+# 终端 1：持续编译
+npm run watch
+
+# 终端 2：启动 Web 工作台，访问 http://localhost:8080
+./scripts/code-web.sh .
+```
 
 ## 非目标
 

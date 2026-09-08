@@ -7,7 +7,6 @@ import { mkdirSync } from 'fs';
 // The 'node:module' specifier is unresolvable by the Electron renderer
 // ESM loader (used by the unit test harness), so use the bare form.
 import { createRequire } from 'module';
-// eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import { dirname } from '../../../../base/common/path.js';
 import { createDecorator } from '../../../instantiation/common/instantiation.js';

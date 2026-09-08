@@ -17,6 +17,7 @@ assert_equal() {
 	[[ "$actual" == "$expected" ]] || fail_test "expected '$expected', got '$actual'"
 }
 
+export VIBE_VSCODE_PUBLIC_ORIGIN=https://public.example
 bash -n "$DEPLOY_SCRIPT"
 custom_configuration="$(
 	VIBE_VSCODE_DEPLOY_NAME=deploy-vscode-18084 \
@@ -38,6 +39,7 @@ custom_configuration="$(
 assert_equal "deploy-vscode-18084|vibe_vscode_18084|18084|/test/socket-18084|/test/socket-18084/backend-custom.sock|/test/state-18084|/test/log-18084.log|/test/runtime-18084|$DEPLOY_SCRIPT" "$custom_configuration"
 source "$DEPLOY_SCRIPT"
 assert_equal "$(cd -- "$TEST_ROOT/../../../.." && pwd -P)" "$SOURCE_ROOT"
+assert_equal https://public.example "$PUBLIC_ORIGIN"
 host_mount_prefix='/mnt/'"ceph"
 if grep -Fq "$host_mount_prefix" "$DEPLOY_SCRIPT"; then
 	fail_test 'deployment script contains a machine-specific mount path'
@@ -65,9 +67,8 @@ snapshot_selection="$(
 	tmux() { [[ "$1" == has-session ]]; }
 	is_recognized_service_session() { :; }
 	service_runtime_root() { printf '/test/running\n'; }
-	health_status() { printf '200\n'; }
+	is_runtime_healthy() { :; }
 	has_public_listener() { :; }
-	backend_health_status() { printf '200\n'; }
 	candidate_runtime=
 	prepare_real_snapshot_restart candidate_runtime
 	printf '%s|%s\n' "$candidate_runtime" "$ACTIVE_RUNTIME_ROOT"
@@ -75,6 +76,7 @@ snapshot_selection="$(
 assert_equal '/test/selected|/test/running' "$snapshot_selection"
 
 calls=()
+validate_runtime_dependencies() { calls+=("dependencies:$1"); }
 prepare_snapshot_restart() {
 	calls+=(prepare-snapshot)
 	printf -v "$1" '%s' /test/selected
@@ -83,7 +85,7 @@ activate_candidate_runtime() { calls+=("activate:$1:$2"); }
 for _ in {1..3}; do
 	run_deployment_action restart /test/workspace.code-workspace
 done
-assert_equal 'prepare-snapshot activate:/test/selected:/test/workspace.code-workspace prepare-snapshot activate:/test/selected:/test/workspace.code-workspace prepare-snapshot activate:/test/selected:/test/workspace.code-workspace' "${calls[*]}"
+assert_equal 'prepare-snapshot dependencies:/test/selected activate:/test/selected:/test/workspace.code-workspace prepare-snapshot dependencies:/test/selected activate:/test/selected:/test/workspace.code-workspace prepare-snapshot dependencies:/test/selected activate:/test/selected:/test/workspace.code-workspace' "${calls[*]}"
 
 calls=()
 require_update_commands() { calls+=(require-update); }
@@ -131,6 +133,28 @@ VIBE_VSCODE_SERVICE_RUNTIME_ROOT="$copy_test_root" bash -c '
 if grep -Eq -- 'run_legacy_server|--tls-(key|cert)-path' "$DEPLOY_SCRIPT"; then
 	fail_test 'deployment script still contains a direct-TLS server path'
 fi
+
+set +e
+VIBE_VSCODE_PUBLIC_ORIGIN= bash "$DEPLOY_SCRIPT" --internal-run /test/runtime /test/workspace.code-workspace >"$temporary_root/missing-origin.log" 2>&1
+missing_origin_status=$?
+set -e
+assert_equal 1 "$missing_origin_status"
+grep -Fq 'VIBE_VSCODE_PUBLIC_ORIGIN must specify the browser-visible HTTPS origin' "$temporary_root/missing-origin.log" || fail_test 'missing public identity did not fail before service startup'
+
+proxy_health_calls="$temporary_root/proxy-health.calls"
+(
+	authentication_public_health_status() { printf 'authentication-public\n' >> "$proxy_health_calls"; printf '200'; }
+	root_health_status() { printf 'root\n' >> "$proxy_health_calls"; printf '303'; }
+	authentication_backend_health_status() { printf 'authentication-backend:%s\n' "$1" >> "$proxy_health_calls"; printf '204'; }
+	backend_health_status() { printf 'backend:%s\n' "$1" >> "$proxy_health_calls"; printf '200'; }
+	is_runtime_healthy /test/backend.sock
+)
+assert_equal "$(printf '%s\n' \
+	'authentication-public' \
+	'root' \
+	'authentication-backend:/test/backend.sock' \
+	'backend:/test/backend.sock')" "$(cat "$proxy_health_calls")"
+
 grep -Fq -- 'local -a server=("$runtime_root/bin/vibe-vscode-server")' "$DEPLOY_SCRIPT" || fail_test 'deployment does not use the shared runtime launcher'
 grep -Fq -- '"$SOURCE_ROOT/build/web-release.ts" prepare' "$DEPLOY_SCRIPT" || fail_test 'deployment does not use the consolidated preparation command'
 grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" --development' "$DEPLOY_SCRIPT" || fail_test 'deployment does not stamp source identity and the development profile inside staging'
@@ -153,7 +177,13 @@ grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-
 	if validate_candidate_runtime_root "$runtime_root"; then
 		fail_test 'candidate without release metadata was accepted'
 	fi
+	printf '#!/bin/sh\nexec "%s" "$@"\n' "$(command -v node)" > "$runtime_root/node"
+	chmod +x "$runtime_root/node"
 	printf '{}\n' > "$runtime_root/vibe-release.json"
+	if validate_candidate_runtime_root "$runtime_root"; then
+		fail_test 'candidate without authentication metadata was accepted'
+	fi
+	printf '{"authentication":"embedded-cli-v1"}\n' > "$runtime_root/vibe-release.json"
 	validate_candidate_runtime_root "$runtime_root" || fail_test 'complete runtime failed the shared launcher preflight'
 	mv "$runtime_root/out/vs/code/browser/workbench/workbench.html" "$runtime_root/out/vs/code/browser/workbench/workbench-dev.html"
 	validate_candidate_runtime_root "$runtime_root" || fail_test 'source layout failed the shared runtime contract'
@@ -166,7 +196,8 @@ grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-
 set +e
 (
 	trap - EXIT
-	validate_candidate_runtime_root() { return 1; }
+	validate_candidate_runtime_startup() { return 1; }
+	validate_runtime_links() { fail_test 'internal service startup performed a full release link scan'; }
 	run_gateway_stack() { touch "$temporary_root/gateway-with-invalid-runtime"; }
 	run_service /test/missing-caddy /test/workspace.code-workspace
 ) >"$temporary_root/caddy-only.log" 2>&1
@@ -176,7 +207,8 @@ assert_equal 1 "$caddy_only_status"
 [[ ! -e "$temporary_root/gateway-with-invalid-runtime" ]] || fail_test 'invalid runtime reached the Caddy gateway'
 
 gateway_call="$(
-	validate_candidate_runtime_root() { :; }
+	validate_candidate_runtime_startup() { :; }
+	validate_runtime_links() { fail_test 'internal service startup performed a full release link scan'; }
 	run_gateway_stack() { printf '%s|%s|%s\n' "$1" "$2" "$3"; }
 	run_service /test/caddy-runtime /test/workspace.code-workspace
 )"
@@ -189,6 +221,86 @@ legacy_gateway_call="$(
 	run_service /test/pre-launcher-runtime /test/workspace.code-workspace true
 )"
 assert_equal '/test/pre-launcher-runtime|/test/workspace.code-workspace|true' "$legacy_gateway_call"
+
+# The real two-process startup uses CLI inputs for candidates and preserves the
+# old embedded server's environment contract only for a verified rollback.
+gateway_fixture="$temporary_root/gateway"
+mkdir -p "$gateway_fixture/bin" "$gateway_fixture/out"
+ln -s "$(command -v node)" "$gateway_fixture/node"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "$TEST_ARGUMENTS"\nprintf "%%s|%%s\\n" "${VIBE_VSCODE_AUTH_STATE_DIR-}" "${VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS-}" > "$TEST_ENVIRONMENT"\n' > "$gateway_fixture/bin/vibe-vscode-server"
+printf '#!/bin/sh\nexec sleep 30\n' > "$gateway_fixture/caddy"
+chmod +x "$gateway_fixture/bin/vibe-vscode-server" "$gateway_fixture/caddy"
+for legacy in false true; do
+	if [[ "$legacy" == true ]]; then
+		printf '{}\n' > "$gateway_fixture/vibe-release.json"
+	else
+		printf '{"authentication":"embedded-cli-v1"}\n' > "$gateway_fixture/vibe-release.json"
+	fi
+	set +e
+	VIBE_VSCODE_SERVICE_STATE_ROOT="$gateway_fixture/state" \
+	VIBE_VSCODE_SERVICE_LOG="$gateway_fixture/stack.log" \
+	VIBE_VSCODE_SOCKET_ROOT="$gateway_fixture/sockets" \
+	VIBE_VSCODE_AUTH_STATE_DIR= \
+	VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS=43200 \
+	TEST_ARGUMENTS="$gateway_fixture/arguments" \
+	TEST_ENVIRONMENT="$gateway_fixture/environment" \
+		bash -c 'source "$1"; is_backend_socket_listening() { return 1; }; run_gateway_stack "$2" /test/workspace.code-workspace "$3"' bash "$DEPLOY_SCRIPT" "$gateway_fixture" "$legacy"
+	gateway_status=$?
+	set -e
+	assert_equal 1 "$gateway_status"
+	if [[ "$legacy" == true ]]; then
+		assert_equal "$gateway_fixture/state/auth|43200" "$(cat "$gateway_fixture/environment")"
+		if grep -Fxq -- '--auth-state-dir' "$gateway_fixture/arguments"; then
+			fail_test 'rollback passed new CLI flags to the older embedded server'
+		fi
+	else
+		assert_equal '|43200' "$(cat "$gateway_fixture/environment")"
+		grep -Fxq -- '--auth-state-dir' "$gateway_fixture/arguments" || fail_test 'candidate did not enable authentication'
+		grep -Fxq "$gateway_fixture/state/auth" "$gateway_fixture/arguments" || fail_test 'candidate did not receive persistent authentication state'
+		grep -Fxq 'https://public.example' "$gateway_fixture/arguments" || fail_test 'candidate did not receive the configured public origin'
+	fi
+done
+
+socket_assignments="$(
+	validate_candidate_runtime_startup() { :; }
+	validate_runtime_links() { fail_test 'service launcher performed a full release link scan'; }
+	is_backend_socket_listening() { return 1; }
+	rm() { :; }
+	tmux() {
+		local argument
+		local previous=
+		for argument in "$@"; do
+			if [[ "$previous" == -e ]]; then
+				printf '%s\n' "$argument"
+			fi
+			previous="$argument"
+		done
+	}
+	BACKEND_SOCKET_GENERATION=0
+	start_service /test/candidate-one /test/workspace.code-workspace
+	start_service /test/candidate-two /test/workspace.code-workspace
+)"
+first_backend_assignment="$(sed -n '1p' <<<"$socket_assignments")"
+second_backend_assignment="$(sed -n '2p' <<<"$socket_assignments")"
+[[ "$first_backend_assignment" == VIBE_VSCODE_BACKEND_SOCKET="$SERVICE_SOCKET_ROOT"/backend-[0-9]*-1.sock ]] || fail_test "first service generation did not receive a private backend socket: $first_backend_assignment"
+[[ "$second_backend_assignment" == VIBE_VSCODE_BACKEND_SOCKET="$SERVICE_SOCKET_ROOT"/backend-[0-9]*-2.sock ]] || fail_test "second service generation did not receive a private backend socket: $second_backend_assignment"
+[[ "$first_backend_assignment" != "$second_backend_assignment" ]] || fail_test 'successive service generations reused one backend socket pathname'
+
+selected_backend_socket="${second_backend_assignment#VIBE_VSCODE_BACKEND_SOCKET=}"
+resolved_backend_socket="$(
+	tmux() {
+		[[ "$1" == show-environment ]] || return 1
+		printf 'VIBE_VSCODE_BACKEND_SOCKET=%s\n' "$selected_backend_socket"
+	}
+	service_backend_socket
+)"
+assert_equal "$selected_backend_socket" "$resolved_backend_socket"
+
+legacy_backend_socket="$(
+	tmux() { return 1; }
+	service_backend_socket
+)"
+assert_equal "$SERVICE_LEGACY_BACKEND_SOCKET" "$legacy_backend_socket"
 
 runtime_links_root="$temporary_root/runtime-links"
 external_links_root="$temporary_root/external-links"
@@ -216,24 +328,21 @@ fi
 rm "$runtime_links_root/broken-runtime-link"
 validate_runtime_links "$runtime_links_root"
 
-for valid_legacy_links in true false; do
-	legacy_anchor="$({
-		tmux() { [[ "$1" == has-session ]]; }
-		is_recognized_service_session() { :; }
-		service_runtime_root() { printf '/test/running\n'; }
-		validate_caddy_runtime_root() { :; }
-		validate_runtime_links() { "$valid_legacy_links"; }
-		health_status() { printf '200\n'; }
-		has_public_listener() { :; }
-		backend_health_status() { printf '200\n'; }
-		set_runtime_link() { fail_test 'legacy runtime became the strict selected snapshot'; }
-		ACTIVE_RUNTIME_ROOT=
-		ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=false
-		prepare_real_active_runtime /test/workspace.code-workspace
-		printf '%s|%s\n' "$ACTIVE_RUNTIME_ROOT" "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME"
-	} 2>/dev/null)"
-	assert_equal '/test/running|true' "$legacy_anchor"
-done
+legacy_anchor="$({
+	tmux() { [[ "$1" == has-session ]]; }
+	is_recognized_service_session() { :; }
+	service_runtime_root() { printf '/test/running\n'; }
+	validate_caddy_runtime_root() { :; }
+	validate_candidate_runtime_root() { return 1; }
+	is_runtime_healthy() { :; }
+	has_public_listener() { :; }
+	set_runtime_link() { fail_test 'legacy runtime became the strict selected snapshot'; }
+	ACTIVE_RUNTIME_ROOT=
+	ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=false
+	prepare_real_active_runtime /test/workspace.code-workspace
+	printf '%s|%s\n' "$ACTIVE_RUNTIME_ROOT" "$ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME"
+} 2>/dev/null | tail -n 1)"
+assert_equal '/test/running|true' "$legacy_anchor"
 
 set +e
 (
@@ -258,6 +367,7 @@ grep -Fxq 'start:/test/running:true' "$temporary_root/rollback.calls" || fail_te
 if grep -Fq "link:$SERVICE_CURRENT_LINK:/test/running" "$temporary_root/rollback.calls"; then
 	fail_test 'legacy rollback runtime became the strict selected snapshot'
 fi
+
 
 set +e
 (

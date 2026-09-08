@@ -7,12 +7,18 @@ readonly SOURCE_ROOT="$(cd -- "$SCRIPT_DIRECTORY/../../../.." && pwd -P)"
 readonly SERVICE_DEPLOY_NAME="${VIBE_VSCODE_DEPLOY_NAME:-deploy-vscode-18080}"
 readonly SERVICE_SESSION="${VIBE_VSCODE_SERVICE_SESSION:-vibe_vscode_latest}"
 readonly SERVICE_PORT="${VIBE_VSCODE_SERVICE_PORT:-18080}"
-readonly SERVICE_URL="https://127.0.0.1:${SERVICE_PORT}/"
+readonly SERVER_BASE_PATH="${VIBE_VSCODE_SERVER_BASE_PATH:-}"
+readonly PUBLIC_ORIGIN="${VIBE_VSCODE_PUBLIC_ORIGIN:-}"
+readonly SERVICE_URL="https://127.0.0.1:${SERVICE_PORT}${SERVER_BASE_PATH}/"
+readonly AUTH_PATH="${SERVER_BASE_PATH}/auth"
+readonly AUTH_STATUS_URL="https://127.0.0.1:${SERVICE_PORT}${AUTH_PATH}/api/status"
 readonly SERVICE_SOCKET_ROOT="${VIBE_VSCODE_SOCKET_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/vibe-vscode-${SERVICE_PORT}}"
-readonly SERVICE_BACKEND_SOCKET="${VIBE_VSCODE_BACKEND_SOCKET:-$SERVICE_SOCKET_ROOT/backend.sock}"
+readonly SERVICE_LEGACY_BACKEND_SOCKET="$SERVICE_SOCKET_ROOT/backend.sock"
+readonly SERVICE_BACKEND_SOCKET="${VIBE_VSCODE_BACKEND_SOCKET:-$SERVICE_LEGACY_BACKEND_SOCKET}"
 readonly SERVICE_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/vibe-vscode"
 readonly SERVICE_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/vibe-vscode"
 readonly SERVICE_STATE_ROOT="${VIBE_VSCODE_SERVICE_STATE_ROOT:-$SERVICE_STATE_HOME/services/${SERVICE_PORT}}"
+readonly SERVICE_AUTH_STATE_ROOT="$SERVICE_STATE_ROOT/auth"
 readonly SERVICE_LOG="${VIBE_VSCODE_SERVICE_LOG:-$SERVICE_STATE_HOME/logs/${SERVICE_PORT}.log}"
 readonly SERVICE_RUNTIME_ROOT="${VIBE_VSCODE_SERVICE_RUNTIME_ROOT:-$SOURCE_ROOT/.build/vibe-vscode-18080}"
 readonly SERVICE_RELEASES_ROOT="$SERVICE_RUNTIME_ROOT/releases"
@@ -25,6 +31,8 @@ readonly CADDY_VERSION=2.11.4
 readonly CADDY_CACHE_ROOT="$SERVICE_RUNTIME_ROOT/tools/caddy/$CADDY_VERSION"
 readonly CADDY_BINARY="$CADDY_CACHE_ROOT/caddy"
 readonly CADDY_CONFIG_RELATIVE_PATH=resources/server/vibe-vscode/Caddyfile
+readonly EMBEDDED_AUTH_SERVER_RELATIVE_PATH=out/vs/server/node/vibeAuthenticationServer.js
+readonly AUTH_SESSION_TTL_SECONDS="${VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS:-43200}"
 readonly DEPLOY_TIMEOUT_SECONDS="${VIBE_VSCODE_DEPLOY_TIMEOUT_SECONDS:-900}"
 readonly DEFAULT_DEPLOY_MODE="${VIBE_VSCODE_DEPLOY_MODE:-latest}"
 readonly SCRIPT_PATH="${VIBE_VSCODE_DEPLOY_ENTRYPOINT:-$SCRIPT_DIRECTORY/$(basename -- "${BASH_SOURCE[0]}")}"
@@ -37,6 +45,7 @@ ACTIVE_RUNTIME_ROOT=
 ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=false
 STAGING_RUNTIME_ROOT=
 DEPLOY_LOCK_FD=
+BACKEND_SOCKET_GENERATION=0
 
 fail() {
 	printf '%s: %s\n' "$SERVICE_DEPLOY_NAME" "$1" >&2
@@ -80,6 +89,15 @@ resolve_deploy_action() {
 		fail "invalid deployment mode: $mode (expected latest or snapshot)"
 		;;
 	esac
+}
+
+validate_authentication_configuration() {
+	if [[ -n "$SERVER_BASE_PATH" && ! "$SERVER_BASE_PATH" =~ ^(/[0-9A-Za-z._~-]+)+$ ]]; then
+		fail 'VIBE_VSCODE_SERVER_BASE_PATH must be empty or contain simple absolute path segments without a trailing slash'
+	fi
+	[[ -n "$PUBLIC_ORIGIN" ]] || fail 'VIBE_VSCODE_PUBLIC_ORIGIN must specify the browser-visible HTTPS origin'
+	# The authentication service owns origin and TTL validation. Candidate preflight
+	# exercises that same configuration against disposable state before stopping service.
 }
 
 acquire_deployment_lock() {
@@ -146,17 +164,73 @@ ensure_caddy_binary() {
 	rm -rf -- "$temporary_directory"
 }
 
-health_status() {
-	curl --insecure --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 2 "$SERVICE_URL" 2>/dev/null || true
+root_health_status() {
+	curl --insecure --silent --show-error --header 'Accept: text/html' --output /dev/null --write-out '%{http_code}' --max-time 2 "$SERVICE_URL" 2>/dev/null || true
+}
+
+authentication_public_health_status() {
+	curl --insecure --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 2 "$AUTH_STATUS_URL" 2>/dev/null || true
+}
+
+authentication_backend_health_status() {
+	local backend_socket="$1"
+
+	[[ -S "$backend_socket" ]] || return 0
+	curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 2 --unix-socket "$backend_socket" "http://localhost${AUTH_PATH}/health" 2>/dev/null || true
 }
 
 backend_health_status() {
-	[[ -S "$SERVICE_BACKEND_SOCKET" ]] || return 0
-	curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 2 --unix-socket "$SERVICE_BACKEND_SOCKET" http://localhost/ 2>/dev/null || true
+	local backend_socket="${1:-$SERVICE_BACKEND_SOCKET}"
+
+	[[ -S "$backend_socket" ]] || return 0
+	curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 2 --unix-socket "$backend_socket" "http://localhost${SERVER_BASE_PATH}/" 2>/dev/null || true
 }
 
 is_backend_socket_listening() {
-	ss -H -xl | awk '$1 == "u_str" && $2 == "LISTEN" { print $5 }' | grep -Fxq "$SERVICE_BACKEND_SOCKET"
+	local backend_socket="${1:-$SERVICE_BACKEND_SOCKET}"
+
+	ss -H -xl | awk '$1 == "u_str" && $2 == "LISTEN" { print $5 }' | grep -Fxq "$backend_socket"
+}
+
+is_any_backend_socket_listening() {
+	ss -H -xl | awk '$1 == "u_str" && $2 == "LISTEN" { print $5 }' | grep -Fq "$SERVICE_SOCKET_ROOT/"
+}
+
+service_backend_socket() {
+	local backend_socket
+	local session_environment
+
+	session_environment="$(tmux show-environment -t "$SERVICE_SESSION" VIBE_VSCODE_BACKEND_SOCKET 2>/dev/null || true)"
+	if [[ "$session_environment" == VIBE_VSCODE_BACKEND_SOCKET=* ]]; then
+		backend_socket="${session_environment#VIBE_VSCODE_BACKEND_SOCKET=}"
+	else
+		# Releases started before per-generation sockets used this stable pathname.
+		backend_socket="$SERVICE_LEGACY_BACKEND_SOCKET"
+	fi
+	case "$backend_socket" in
+	"$SERVICE_LEGACY_BACKEND_SOCKET" | "$SERVICE_SOCKET_ROOT"/backend-[0-9]*-[0-9]*.sock)
+		printf '%s\n' "$backend_socket"
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+is_runtime_healthy() {
+	local backend_socket="${1:-}"
+
+	if [[ -z "$backend_socket" ]]; then
+		backend_socket="$(service_backend_socket)" || return 1
+	fi
+	[[ "$(authentication_public_health_status)" == '200' ]] \
+		&& [[ "$(root_health_status)" == '303' ]] \
+		&& [[ "$(authentication_backend_health_status "$backend_socket")" == '204' ]] \
+		&& [[ "$(backend_health_status "$backend_socket")" == '200' ]]
+}
+
+cleanup_stale_backend_sockets() {
+	find "$SERVICE_SOCKET_ROOT" -maxdepth 1 -type s \( -name backend.sock -o -name 'backend-[0-9]*-[0-9]*.sock' \) -delete
 }
 
 listener_addresses() {
@@ -195,6 +269,8 @@ require_source_tree() {
 		"$SOURCE_ROOT/extensions/node_modules/esbuild"
 		"$SOURCE_ROOT/extensions/markdown-language-features/node_modules/@vscode/markdown-editor"
 		"$SOURCE_ROOT/extensions/vibe-vscode/esbuild.browser.mts"
+		"$SOURCE_ROOT/src/vs/server/node/vibeAuthentication.ts"
+		"$SOURCE_ROOT/src/vs/server/node/vibeAuthenticationServer.ts"
 		"$SOURCE_ROOT/$CADDY_CONFIG_RELATIVE_PATH"
 	)
 
@@ -225,8 +301,8 @@ require_service_state() {
 	[[ -d "$SERVICE_STATE_ROOT" ]] || fail "service state directory is missing: $SERVICE_STATE_ROOT"
 	[[ -r "$TLS_KEY_PATH" ]] || fail "HTTPS private key is not readable: $TLS_KEY_PATH"
 	[[ -r "$TLS_CERT_PATH" ]] || fail "HTTPS certificate is not readable: $TLS_CERT_PATH"
-	mkdir -p -- "$SERVICE_SOCKET_ROOT"
-	chmod 0700 "$SERVICE_SOCKET_ROOT"
+	mkdir -p -- "$SERVICE_AUTH_STATE_ROOT" "$SERVICE_SOCKET_ROOT"
+	chmod 0700 "$SERVICE_AUTH_STATE_ROOT" "$SERVICE_SOCKET_ROOT"
 	resolve_workspace_path >/dev/null
 }
 
@@ -264,15 +340,31 @@ validate_caddy_runtime_root() {
 	VIBE_VSCODE_PUBLIC_PORT="$SERVICE_PORT" \
 		VIBE_VSCODE_TLS_CERT_PATH="$TLS_CERT_PATH" \
 		VIBE_VSCODE_TLS_KEY_PATH="$TLS_KEY_PATH" \
+		VIBE_VSCODE_AUTH_ADDRESS="unix/$SERVICE_BACKEND_SOCKET" \
+		VIBE_VSCODE_AUTH_PATH="$AUTH_PATH" \
 		VIBE_VSCODE_BACKEND_ADDRESS="unix/$SERVICE_BACKEND_SOCKET" \
 		"$runtime_root/caddy" validate --config "$runtime_root/$CADDY_CONFIG_RELATIVE_PATH" --adapter caddyfile >/dev/null || return 1
+}
+
+runtime_uses_authentication_cli() {
+	local runtime_root="$1"
+
+	[[ -f "$runtime_root/vibe-release.json" ]] || return 1
+	"$runtime_root/node" -e 'process.exit(require(process.argv[1]).authentication === "embedded-cli-v1" ? 0 : 1)' "$runtime_root/vibe-release.json"
+}
+
+validate_candidate_runtime_startup() {
+	local runtime_root="$1"
+
+	validate_caddy_runtime_root "$runtime_root" || return 1
+	runtime_uses_authentication_cli "$runtime_root" || return 1
+	[[ -x "$runtime_root/bin/vibe-vscode-server" && -f "$runtime_root/vibe-release.json" ]]
 }
 
 validate_candidate_runtime_root() {
 	local runtime_root="$1"
 
-	validate_caddy_runtime_root "$runtime_root" || return 1
-	[[ -x "$runtime_root/bin/vibe-vscode-server" && -f "$runtime_root/vibe-release.json" ]] || return 1
+	validate_candidate_runtime_startup "$runtime_root" || return 1
 	validate_runtime_links "$runtime_root" || return 1
 	# Exercise the same metadata and bootstrap as the service, without opening its databases.
 	"$runtime_root/bin/vibe-vscode-server" --version >/dev/null
@@ -283,8 +375,10 @@ validate_runtime_dependencies() {
 
 	# Exercise both loading paths with the candidate's Node and bootstrap before
 	# stopping the active service. Do not open or mutate any user databases.
-	VSCODE_DEV=1 "$runtime_root/node" --input-type=module - "$runtime_root" <<'NODE'
+	VSCODE_DEV=1 "$runtime_root/node" --input-type=module - "$runtime_root" "$PUBLIC_ORIGIN" "$AUTH_SESSION_TTL_SECONDS" "$SERVER_BASE_PATH" <<'NODE'
 import { createRequire } from 'node:module';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -296,7 +390,24 @@ for (const name of ['@vscode/sqlite3', '@vscode/spdlog', '@vscode/native-watchdo
 	await import(name);
 	require(name);
 }
-console.log('Runtime dependencies loaded successfully through ESM and CommonJS.');
+const { VibeAuthenticationService } = await import(pathToFileURL(join(root, 'out/vs/server/node/vibeAuthentication.js')));
+const stateDirectory = await mkdtemp(join(tmpdir(), 'vibe-auth-preflight-'));
+try {
+	const authentication = await VibeAuthenticationService.create({
+		stateDirectory,
+		publicOrigins: [process.argv[3]],
+		sessionTtlSeconds: Number(process.argv[4]),
+		basePath: process.argv[5],
+	});
+	try {
+		authentication.checkHealth();
+	} finally {
+		authentication.dispose();
+	}
+} finally {
+	await rm(stateDirectory, { recursive: true, force: true });
+}
+console.log('Runtime dependencies and authentication configuration validated without opening user state.');
 NODE
 }
 
@@ -446,25 +557,27 @@ is_recognized_service_session() {
 
 stop_service() {
 	local deadline=$((SECONDS + 10))
+	local running_backend_socket
 	local running_runtime_root
 
 	if ! tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
 		is_port_listening && fail "port $SERVICE_PORT is owned by an unrecognized process"
-		is_backend_socket_listening && fail "backend socket is owned by an unrecognized process: $SERVICE_BACKEND_SOCKET"
-		rm -f -- "$SERVICE_BACKEND_SOCKET"
+		is_any_backend_socket_listening && fail "backend socket root is owned by an unrecognized process: $SERVICE_SOCKET_ROOT"
+		cleanup_stale_backend_sockets
 		return 0
 	fi
 	is_recognized_service_session || fail "tmux session $SERVICE_SESSION is not owned by this deployment entry point"
 	running_runtime_root="$(service_runtime_root)"
 	validate_runtime_root "$running_runtime_root" || fail "tmux session $SERVICE_SESSION uses an incomplete runtime: $running_runtime_root"
+	running_backend_socket="$(service_backend_socket)" || fail "tmux session $SERVICE_SESSION has an invalid backend socket"
 
 	printf 'Stopping existing Vibe VS Code service on port %s...\n' "$SERVICE_PORT"
 	tmux kill-session -t "$SERVICE_SESSION"
-	while is_port_listening || is_backend_socket_listening; do
+	while is_port_listening || is_backend_socket_listening "$running_backend_socket"; do
 		(( SECONDS < deadline )) || fail "service endpoint remained active after stopping tmux session: $SERVICE_PORT"
 		sleep 0.1
 	done
-	rm -f -- "$SERVICE_BACKEND_SOCKET"
+	rm -f -- "$running_backend_socket"
 }
 
 build_current() {
@@ -478,6 +591,7 @@ build_current() {
 		"$NPM_BIN" run compile-web
 		"$NPM_BIN" run compile-vibe-vscode
 		[[ -f "$SOURCE_ROOT/out/server-main.js" ]] || fail 'compile completed without out/server-main.js'
+		[[ -f "$SOURCE_ROOT/$EMBEDDED_AUTH_SERVER_RELATIVE_PATH" ]] || fail "compile completed without $EMBEDDED_AUTH_SERVER_RELATIVE_PATH"
 		[[ -f "$SOURCE_ROOT/extensions/vibe-vscode/dist/browser/extension.js" ]] || fail 'vibe-vscode browser extension bundle is missing'
 		log 'Compilation completed.'
 	} 2>&1 | tee -a "$SERVICE_LOG"
@@ -489,15 +603,43 @@ run_gateway_stack() {
 	local allow_legacy_runtime="${3:-false}"
 	local -a server=("$runtime_root/bin/vibe-vscode-server")
 	local backend_pid=
-	local exited_component
 	local gateway_pid=
+	local exited_component
 	local pid
+	local -a backend_environment=(NODE_ENV=development VSCODE_DEV=1)
+	local -a backend_arguments=(
+		--socket-path "$SERVICE_BACKEND_SOCKET"
+		--without-connection-token
+		--server-data-dir "$SERVICE_STATE_ROOT/server"
+		--default-workspace "$workspace_path"
+		--disable-telemetry
+		--disable-experiments
+		--accept-server-license-terms
+	)
 
-	# Only a previously healthy pre-launcher release may use this bounded rollback
-	# bridge. New candidates and selected snapshots must carry their own launcher.
+	if [[ -n "$SERVER_BASE_PATH" ]]; then
+		backend_arguments+=(--server-base-path "$SERVER_BASE_PATH")
+	fi
+	if [[ "$allow_legacy_runtime" == true ]] && ! runtime_uses_authentication_cli "$runtime_root"; then
+		# Only the exact healthy embedded release predating the CLI contract may use
+		# its old environment inputs during rollback. No sidecar is ever started.
+		backend_environment+=(
+			VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS="$AUTH_SESSION_TTL_SECONDS"
+			VIBE_VSCODE_AUTH_STATE_DIR="$SERVICE_AUTH_STATE_ROOT"
+		)
+	else
+		backend_arguments+=(
+			--auth-state-dir "$SERVICE_AUTH_STATE_ROOT"
+			--public-origin "$PUBLIC_ORIGIN"
+			--auth-session-ttl-seconds "$AUTH_SESSION_TTL_SECONDS"
+		)
+	fi
+
+	# The existing pre-launcher bridge is restricted to a verified rollback anchor.
 	if [[ ! -x "${server[0]}" || ! -f "$runtime_root/vibe-release.json" ]]; then
 		[[ "$allow_legacy_runtime" == true ]] || fail 'runtime is missing its shared launcher'
-		server=(env NODE_ENV=development VSCODE_DEV=1 "$runtime_root/node" "$runtime_root/out/server-main.js" --web-client-cache-version "$(basename -- "$runtime_root")")
+		server=("$runtime_root/node" "$runtime_root/out/server-main.js")
+		backend_arguments+=(--web-client-cache-version "$(basename -- "$runtime_root")")
 	fi
 
 	cleanup_stack() {
@@ -511,31 +653,27 @@ run_gateway_stack() {
 		rm -f -- "$SERVICE_BACKEND_SOCKET"
 	}
 
-	mkdir -p -- "$SERVICE_STATE_ROOT/server" "$SERVICE_SOCKET_ROOT" "$(dirname -- "$SERVICE_LOG")"
-	chmod 0700 "$SERVICE_SOCKET_ROOT"
+	mkdir -p -- "$SERVICE_AUTH_STATE_ROOT" "$SERVICE_STATE_ROOT/server" "$SERVICE_SOCKET_ROOT" "$(dirname -- "$SERVICE_LOG")"
+	chmod 0700 "$SERVICE_AUTH_STATE_ROOT" "$SERVICE_SOCKET_ROOT"
+	umask 0077
 	is_backend_socket_listening && fail "backend socket is already owned by another process: $SERVICE_BACKEND_SOCKET"
 	rm -f -- "$SERVICE_BACKEND_SOCKET"
 	exec >> "$SERVICE_LOG" 2>&1
-	log "Starting Caddy HTTPS gateway on 0.0.0.0:$SERVICE_PORT with a private VS Code Unix-socket backend from $runtime_root."
+	log "Starting Caddy HTTPS and the Better Auth-enabled VS Code Remote Server on 0.0.0.0:$SERVICE_PORT from $runtime_root."
 	cd -- "$runtime_root"
 	trap cleanup_stack EXIT
 	trap 'cleanup_stack; exit 129' HUP
 	trap 'cleanup_stack; exit 130' INT
 	trap 'cleanup_stack; exit 143' TERM
-	"${server[@]}" \
-		--socket-path "$SERVICE_BACKEND_SOCKET" \
-		--without-connection-token \
-		--server-data-dir "$SERVICE_STATE_ROOT/server" \
-		--default-workspace "$workspace_path" \
-		--disable-telemetry \
-		--disable-experiments \
-		--accept-server-license-terms &
+	env "${backend_environment[@]}" "${server[@]}" "${backend_arguments[@]}" &
 	backend_pid=$!
 
 	env \
 		VIBE_VSCODE_PUBLIC_PORT="$SERVICE_PORT" \
 		VIBE_VSCODE_TLS_CERT_PATH="$TLS_CERT_PATH" \
 		VIBE_VSCODE_TLS_KEY_PATH="$TLS_KEY_PATH" \
+		VIBE_VSCODE_AUTH_ADDRESS="unix/$SERVICE_BACKEND_SOCKET" \
+		VIBE_VSCODE_AUTH_PATH="$AUTH_PATH" \
 		VIBE_VSCODE_BACKEND_ADDRESS="unix/$SERVICE_BACKEND_SOCKET" \
 		"$runtime_root/caddy" run --config "$runtime_root/$CADDY_CONFIG_RELATIVE_PATH" --adapter caddyfile &
 	gateway_pid=$!
@@ -543,10 +681,10 @@ run_gateway_stack() {
 	set +e
 	wait -n "$backend_pid" "$gateway_pid"
 	set -e
-	if kill -0 "$backend_pid" 2>/dev/null; then
-		exited_component='Caddy gateway'
-	else
+	if ! kill -0 "$backend_pid" 2>/dev/null; then
 		exited_component='VS Code backend'
+	else
+		exited_component='Caddy gateway'
 	fi
 	log "$exited_component exited unexpectedly; stopping the service stack."
 	cleanup_stack
@@ -559,9 +697,9 @@ run_service() {
 	local allow_legacy_runtime="${3:-false}"
 
 	if [[ "$allow_legacy_runtime" == true ]]; then
-		validate_caddy_runtime_root "$runtime_root" || fail "legacy rollback runtime cannot start without its pinned Caddy gateway: $runtime_root"
+		validate_caddy_runtime_root "$runtime_root" || fail "rollback runtime cannot start without its pinned Caddy gateway: $runtime_root"
 	else
-		validate_candidate_runtime_root "$runtime_root" || fail "runtime cannot start without its pinned Caddy gateway: $runtime_root"
+		validate_candidate_runtime_startup "$runtime_root" || fail "runtime cannot start without its pinned Caddy gateway: $runtime_root"
 	fi
 	run_gateway_stack "$runtime_root" "$workspace_path" "$allow_legacy_runtime"
 }
@@ -570,6 +708,7 @@ start_service() {
 	local runtime_root="$1"
 	local workspace_path="$2"
 	local allow_legacy_runtime="${3:-false}"
+	local backend_socket
 	local internal_mode=--internal-run
 	local tmux_command
 
@@ -577,15 +716,22 @@ start_service() {
 		validate_caddy_runtime_root "$runtime_root" || return 1
 		internal_mode=--internal-run-legacy-runtime
 	else
-		validate_candidate_runtime_root "$runtime_root" || return 1
+		validate_candidate_runtime_startup "$runtime_root" || return 1
 	fi
-	printf -v tmux_command 'exec env VIBE_VSCODE_DEPLOY_NAME=%q VIBE_VSCODE_SERVICE_SESSION=%q VIBE_VSCODE_SERVICE_PORT=%q VIBE_VSCODE_SOCKET_ROOT=%q VIBE_VSCODE_BACKEND_SOCKET=%q VIBE_VSCODE_SERVICE_STATE_ROOT=%q VIBE_VSCODE_SERVICE_LOG=%q VIBE_VSCODE_SERVICE_RUNTIME_ROOT=%q VIBE_VSCODE_TLS_CERT_PATH=%q VIBE_VSCODE_TLS_KEY_PATH=%q VIBE_VSCODE_DEPLOY_ENTRYPOINT=%q %q %q %q %q' \
-		"$SERVICE_DEPLOY_NAME" "$SERVICE_SESSION" "$SERVICE_PORT" "$SERVICE_SOCKET_ROOT" "$SERVICE_BACKEND_SOCKET" "$SERVICE_STATE_ROOT" "$SERVICE_LOG" "$SERVICE_RUNTIME_ROOT" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$SCRIPT_PATH" \
+	# tmux removes its session before the old shell's HUP/EXIT trap finishes.
+	# A late cleanup must only unlink its own generation, never the new backend.
+	(( BACKEND_SOCKET_GENERATION += 1 ))
+	backend_socket="$SERVICE_SOCKET_ROOT/backend-$$-$BACKEND_SOCKET_GENERATION.sock"
+	is_backend_socket_listening "$backend_socket" && fail "candidate backend socket is already owned by another process: $backend_socket"
+	rm -f -- "$backend_socket"
+	printf -v tmux_command 'exec env VIBE_VSCODE_DEPLOY_NAME=%q VIBE_VSCODE_SERVICE_SESSION=%q VIBE_VSCODE_SERVICE_PORT=%q VIBE_VSCODE_SOCKET_ROOT=%q VIBE_VSCODE_BACKEND_SOCKET=%q VIBE_VSCODE_SERVICE_STATE_ROOT=%q VIBE_VSCODE_SERVICE_LOG=%q VIBE_VSCODE_SERVICE_RUNTIME_ROOT=%q VIBE_VSCODE_TLS_CERT_PATH=%q VIBE_VSCODE_TLS_KEY_PATH=%q VIBE_VSCODE_SERVER_BASE_PATH=%q VIBE_VSCODE_PUBLIC_ORIGIN=%q VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS=%q VIBE_VSCODE_DEPLOY_ENTRYPOINT=%q %q %q %q %q' \
+		"$SERVICE_DEPLOY_NAME" "$SERVICE_SESSION" "$SERVICE_PORT" "$SERVICE_SOCKET_ROOT" "$backend_socket" "$SERVICE_STATE_ROOT" "$SERVICE_LOG" "$SERVICE_RUNTIME_ROOT" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "$SERVER_BASE_PATH" "$PUBLIC_ORIGIN" "$AUTH_SESSION_TTL_SECONDS" "$SCRIPT_PATH" \
 		"$SCRIPT_PATH" "$internal_mode" "$runtime_root" "$workspace_path"
-	tmux new-session -d -s "$SERVICE_SESSION" -c "$runtime_root" "$tmux_command"
+	tmux new-session -d -s "$SERVICE_SESSION" -c "$runtime_root" -e "VIBE_VSCODE_BACKEND_SOCKET=$backend_socket" "$tmux_command"
 }
 
 wait_until_ready() {
+	local backend_socket
 	local runtime_label="$1"
 	local expected_runtime_root="$2"
 	local running_runtime_root
@@ -603,17 +749,18 @@ wait_until_ready() {
 			return 1
 		fi
 
-		if [[ "$(health_status)" == '200' ]]; then
+		backend_socket="$(service_backend_socket)" || {
+			printf 'Service session has no valid private backend socket.\n' >&2
+			return 1
+		}
+
+		if is_runtime_healthy "$backend_socket"; then
 			if ! has_public_listener; then
 				printf 'Observed listener addresses:\n%s\n' "$(listener_addresses)" >&2
 				printf 'Service is healthy on localhost but has no public wildcard listener on port %s.\n' "$SERVICE_PORT" >&2
 				return 1
 			fi
-			if [[ "$(backend_health_status)" != '200' ]]; then
-				printf 'Caddy is healthy but the private VS Code backend is not reachable through %s.\n' "$SERVICE_BACKEND_SOCKET" >&2
-				return 1
-			fi
-			printf 'Vibe VS Code runtime is ready: %s (%s, Caddy HTTPS, anonymous access, private Unix-socket backend, 0.0.0.0:%s)\n' "$runtime_label" "$SERVICE_URL" "$SERVICE_PORT"
+			printf 'Vibe VS Code runtime is ready: %s (%s, Caddy HTTPS, login required, embedded Better Auth, private VS Code socket, 0.0.0.0:%s)\n' "$runtime_label" "$SERVICE_URL" "$SERVICE_PORT"
 			return 0
 		fi
 
@@ -631,8 +778,8 @@ prepare_active_runtime() {
 
 	if ! tmux has-session -t "$SERVICE_SESSION" 2>/dev/null; then
 		is_port_listening && fail "port $SERVICE_PORT is owned by an unrecognized process"
-		is_backend_socket_listening && fail "backend socket is owned by an unrecognized process: $SERVICE_BACKEND_SOCKET"
-		rm -f -- "$SERVICE_BACKEND_SOCKET"
+		is_any_backend_socket_listening && fail "backend socket root is owned by an unrecognized process: $SERVICE_SOCKET_ROOT"
+		cleanup_stale_backend_sockets
 		ACTIVE_RUNTIME_ROOT="$(resolve_runtime_link "$SERVICE_CURRENT_LINK" || true)"
 		return 0
 	fi
@@ -646,21 +793,21 @@ prepare_active_runtime() {
 		validate_caddy_runtime_root "$running_runtime" || fail "running service is not a complete Caddy runtime: $running_runtime"
 	fi
 
-	if [[ "$(health_status)" != '200' ]] || ! has_public_listener || [[ "$(backend_health_status)" != '200' ]]; then
+	if ! is_runtime_healthy || ! has_public_listener; then
 		ACTIVE_RUNTIME_ROOT="$(resolve_runtime_link "$SERVICE_CURRENT_LINK" || true)"
 		return 0
 	fi
 
 	if [[ "$running_runtime" != "$SOURCE_ROOT" ]]; then
 		ACTIVE_RUNTIME_ROOT="$running_runtime"
-		if validate_runtime_links "$running_runtime" && [[ -x "$running_runtime/bin/vibe-vscode-server" && -f "$running_runtime/vibe-release.json" ]]; then
+		if validate_candidate_runtime_root "$running_runtime"; then
 			set_runtime_link "$SERVICE_CURRENT_LINK" "$ACTIVE_RUNTIME_ROOT"
 		else
-			# A pre-invariant or pre-launcher release is a rollback anchor only because this exact
-			# process passed both health boundaries. New candidates and snapshot restarts stay
-			# strict, and a successful promotion removes this compatibility path.
+			# A pre-CLI, pre-launcher, or pre-invariant embedded release may remain the rollback anchor only
+			# because this exact process passed its applicable health boundaries. New candidates
+			# and snapshot restarts stay strict, and a successful promotion removes this path.
 			ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=true
-			printf 'Running release predates the current runtime contract; retaining it only as the verified rollback anchor.\n' >&2
+			printf 'Running release predates the current authenticated launcher contract; retaining it only as the verified rollback anchor.\n' >&2
 		fi
 		return 0
 	fi
@@ -703,12 +850,13 @@ prepare_snapshot_restart() {
 		is_recognized_service_session || fail "tmux session $SERVICE_SESSION is not owned by this deployment entry point"
 		running_runtime="$(service_runtime_root)"
 		is_release_runtime "$running_runtime" || fail "running snapshot is not an immutable Caddy release: $running_runtime"
-		if [[ "$(health_status)" == '200' ]] && has_public_listener && [[ "$(backend_health_status)" == '200' ]]; then
+		if is_runtime_healthy && has_public_listener; then
 			ACTIVE_RUNTIME_ROOT="$running_runtime"
 		fi
 	else
 		is_port_listening && fail "port $SERVICE_PORT is owned by an unrecognized process"
-		is_backend_socket_listening && fail "backend socket is owned by an unrecognized process: $SERVICE_BACKEND_SOCKET"
+		is_any_backend_socket_listening && fail "backend socket root is owned by an unrecognized process: $SERVICE_SOCKET_ROOT"
+		cleanup_stale_backend_sockets
 	fi
 	printf -v "$result_variable" '%s' "$selected_runtime"
 }
@@ -785,6 +933,7 @@ run_deployment_action() {
 	case "$action" in
 	restart)
 		prepare_snapshot_restart candidate_runtime
+		validate_runtime_dependencies "$candidate_runtime" || fail "snapshot authentication configuration or dependencies could not be loaded: $candidate_runtime"
 		activate_candidate_runtime "$candidate_runtime" "$workspace_path"
 		;;
 	update)
@@ -813,11 +962,13 @@ main() {
 
 	if [[ "${1:-}" == '--internal-run' ]]; then
 		[[ "$#" -eq 3 ]] || fail 'invalid internal service arguments'
+		validate_authentication_configuration
 		run_service "$2" "$3" false
 		return $?
 	fi
 	if [[ "${1:-}" == '--internal-run-legacy-runtime' ]]; then
 		[[ "$#" -eq 3 ]] || fail 'invalid internal legacy service arguments'
+		validate_authentication_configuration
 		run_service "$2" "$3" true
 		return $?
 	fi
@@ -849,6 +1000,7 @@ main() {
 
 	action="$(resolve_deploy_action "$deploy_mode" "$update_snapshot")"
 	[[ "$DEPLOY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'VIBE_VSCODE_DEPLOY_TIMEOUT_SECONDS must be a positive integer'
+	validate_authentication_configuration
 	require_common_commands
 	acquire_deployment_lock || return $?
 	trap cleanup_staging_runtime EXIT

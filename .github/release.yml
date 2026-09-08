@@ -1,0 +1,25 @@
+# Categories for the pull-request list that GitHub appends to each draft release body.
+# The curated body itself comes from docs/release-notes/<tag>.md (see docs/release.md).
+changelog:
+  exclude:
+    labels:
+      - dependencies
+      - skip-changelog
+  categories:
+    - title: 新功能 / Features
+      labels:
+        - feat
+        - feature
+        - enhancement
+    - title: 修复 / Fixes
+      labels:
+        - fix
+        - bug
+    - title: 文档与 CI / Docs and CI
+      labels:
+        - docs
+        - documentation
+        - ci
+    - title: 其他 / Other
+      labels:
+        - "*"

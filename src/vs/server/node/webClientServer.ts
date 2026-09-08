@@ -30,6 +30,7 @@ import { ITranslations, localizeManifest } from '../../platform/extensionManagem
 import { ICSSDevelopmentService } from '../../platform/cssDev/node/cssDevService.js';
 import { webClientCacheDirectory } from '../../platform/remote/common/webClientCache.js';
 import { IWebClientStartupConfiguration, IWebClientStartupMessages } from '../../platform/remote/common/webClientStartup.js';
+import { matchVibePublicOrigin } from '../common/vibeAuthentication.js';
 
 const textMimeType: { [ext: string]: string | undefined } = {
 	'.html': 'text/html',
@@ -310,6 +311,20 @@ export function getWebClientResourceScheme(forwardedProto: string | undefined): 
 	return publicScheme === Schemas.https ? Schemas.https : Schemas.http;
 }
 
+/** Authentication selects only configured identities; token-based servers retain their proxy host contract. */
+export function getWebClientRemoteAuthority(publicOrigins: readonly string[] | undefined, forwardedHost: string | undefined, host: string | undefined): string | undefined {
+	if (publicOrigins) {
+		return new URL(matchVibePublicOrigin(publicOrigins, forwardedHost, host) ?? publicOrigins[0]).host;
+	}
+	for (const candidate of [forwardedHost, host]) {
+		const authority = candidate?.split(',', 1)[0].trim();
+		if (authority) {
+			return authority;
+		}
+	}
+	return undefined;
+}
+
 async function readBuiltinExtensionPackageNLS(extensionPath: string, locale: string): Promise<ITranslations> {
 	for (const candidate of getBuiltinExtensionPackageNLSCandidates(locale)) {
 		try {
@@ -337,6 +352,7 @@ export class WebClientServer {
 		private readonly _basePath: string,
 		private readonly _productPath: string,
 		private readonly _remoteConnectionSigning: boolean,
+		private readonly _publicOrigins: readonly string[] | undefined,
 		@IServerEnvironmentService private readonly _environmentService: IServerEnvironmentService,
 		@ILogService private readonly _logService: ILogService,
 		@IRequestService private readonly _requestService: IRequestService,
@@ -533,13 +549,13 @@ export class WebClientServer {
 		let remoteAuthority = (
 			useTestResolver
 				? 'test+test'
-				: (getFirstHeader('x-original-host') || getFirstHeader('x-forwarded-host') || req.headers.host)
+				: getWebClientRemoteAuthority(this._publicOrigins, getFirstHeader('x-forwarded-host'), req.headers.host)
 		);
 		if (!remoteAuthority) {
 			return serveError(req, res, 400, `Bad request.`);
 		}
 		const forwardedPort = getFirstHeader('x-forwarded-port');
-		if (forwardedPort) {
+		if (forwardedPort && !this._publicOrigins) {
 			remoteAuthority = replacePort(remoteAuthority, forwardedPort);
 		}
 
@@ -560,7 +576,7 @@ export class WebClientServer {
 		}
 
 		if (this._logService.getLevel() === LogLevel.Trace) {
-			['x-original-host', 'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-proto', 'host'].forEach(header => {
+			['x-forwarded-host', 'x-forwarded-port', 'x-forwarded-proto', 'host'].forEach(header => {
 				const value = getFirstHeader(header);
 				if (value) {
 					this._logService.trace(`[WebClientServer] ${header}: ${value}`);
@@ -591,7 +607,7 @@ export class WebClientServer {
 			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
 				...this._productService.extensionsGallery,
 				resourceUrlTemplate: this._webExtensionResourceUrlTemplate.with({
-					scheme: getWebClientResourceScheme(getFirstHeader('x-forwarded-proto')),
+					scheme: this._publicOrigins ? Schemas.https : getWebClientResourceScheme(getFirstHeader('x-forwarded-proto')),
 					authority: remoteAuthority,
 					path: `${webExtensionRoute}/${this._webExtensionResourceUrlTemplate.authority}${this._webExtensionResourceUrlTemplate.path}`
 				}).toString(true)

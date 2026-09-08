@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { create as createTar } from 'tar';
 import { validateWebClientCache } from './webClientCache.ts';
+import { installPinnedCaddy } from './caddy.ts';
 
 const run = promisify(execFile);
 
@@ -47,11 +48,15 @@ export async function installWebClientLauncher(root: string, version: string, co
 	await fs.mkdir(path.join(root, 'bin'), { recursive: true });
 	await fs.copyFile(path.join(resources, 'vibe-vscode-server.sh'), path.join(root, 'bin/vibe-vscode-server'));
 	await fs.chmod(path.join(root, 'bin/vibe-vscode-server'), 0o755);
-	await fs.writeFile(path.join(root, 'vibe-release.json'), `${JSON.stringify({ version, commit, platform: process.platform, arch: process.arch, mode }, null, '\t')}\n`);
+	await fs.copyFile(path.join(resources, 'vibe-vscode.sh'), path.join(root, 'bin/vibe-vscode'));
+	await fs.chmod(path.join(root, 'bin/vibe-vscode'), 0o755);
+	await fs.copyFile(path.resolve(import.meta.dirname, '../../install.sh'), path.join(root, 'bin/install.sh'));
+	await fs.chmod(path.join(root, 'bin/install.sh'), 0o755);
+	await fs.writeFile(path.join(root, 'vibe-release.json'), `${JSON.stringify({ version, commit, platform: process.platform, arch: process.arch, mode, authentication: 'embedded-cli-v1' }, null, '\t')}\n`);
 }
 
 /** Stamps and archives a verified Linux package without modifying the Gulp output or an existing release. */
-export async function packageWebClientRelease(packageRoot: string, outputDirectory: string, version: string, commit: string): Promise<string> {
+export async function packageWebClientRelease(packageRoot: string, outputDirectory: string, version: string, commit: string, installCaddy: (root: string) => Promise<void> = installPinnedCaddy): Promise<string> {
 	if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) || !/^[0-9a-f]{40}$/.test(commit)) {
 		throw new Error('A release requires a vMAJOR.MINOR.PATCH tag and a full commit hash.');
 	}
@@ -74,7 +79,7 @@ export async function packageWebClientRelease(packageRoot: string, outputDirecto
 	try {
 		await fs.cp(source, root, { recursive: true, verbatimSymlinks: true });
 		await validateRuntimeLinks(root);
-		for (const file of ['node', 'package.json', 'out/server-main.js', 'out/vs/code/browser/workbench/workbench.html', 'extensions/vibe-vscode/dist/browser/extension.js']) {
+		for (const file of ['node', 'package.json', 'out/server-main.js', 'out/vs/server/node/vibe-authentication.nls.en.json', 'out/vs/server/node/vibe-authentication.nls.zh-cn.json', 'out/vs/code/browser/workbench/workbench.html', 'extensions/vibe-vscode/dist/browser/extension.js']) {
 			if (!(await fs.stat(path.join(root, file))).isFile()) {
 				throw new Error(`The release is missing ${file}.`);
 			}
@@ -98,6 +103,11 @@ for (const name of ['@vscode/sqlite3', '@vscode/spdlog', '@vscode/native-watchdo
 }`], { cwd: root, env });
 
 		await installWebClientLauncher(root, version, commit, 'production');
+		await installCaddy(root);
+		if (!(await fs.stat(path.join(root, 'caddy.LICENSE'))).isFile()) {
+			throw new Error('The release is missing the bundled Caddy license.');
+		}
+		await run(path.join(root, 'caddy'), ['version'], { cwd: root, env });
 		await run(path.join(root, 'bin/vibe-vscode-server'), ['--version'], { cwd: root, env });
 
 		const name = `vibe-vscode-server-${version}-linux-x64.tar.gz`;
@@ -110,12 +120,17 @@ for (const name of ['@vscode/sqlite3', '@vscode/spdlog', '@vscode/native-watchdo
 		const checksum = path.join(temporary, `${name}.sha256`);
 		await fs.writeFile(checksum, `${hash.digest('hex')}  ${name}\n`);
 		const archive = path.join(output, name);
-		// Exclusive links publish completed files without replacing a previously built release.
-		await fs.link(candidate, archive);
+		const installer = path.join(temporary, 'install.sh');
+		await fs.copyFile(path.join(root, 'bin/install.sh'), installer);
+		// Exclusive links publish all completed attachments without replacing an existing release.
+		const published: string[] = [];
 		try {
-			await fs.link(checksum, `${archive}.sha256`);
+			for (const [source, destination] of [[candidate, archive], [checksum, `${archive}.sha256`], [installer, path.join(output, 'install.sh')]]) {
+				await fs.link(source, destination);
+				published.push(destination);
+			}
 		} catch (error) {
-			await fs.unlink(archive);
+			await Promise.all(published.map(file => fs.unlink(file)));
 			throw error;
 		}
 		return archive;

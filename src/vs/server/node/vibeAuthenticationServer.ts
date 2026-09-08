@@ -483,11 +483,17 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 	const alternateLocale: Locale = options.locale === 'en' ? 'zh-cn' : 'en';
 	const alternateLabel = text.alternateLanguage;
 	const localeTarget = `${authPath}/${options.kind}?lang=${alternateLocale}&return_to=${encodeURIComponent(options.returnTo)}`;
-	const title = options.kind === 'register' ? text.registerTitle : options.kind === 'login' ? text.loginTitle : text.logoutTitle;
-	const description = options.kind === 'register' ? text.registerDescription : options.kind === 'login' ? text.loginDescription : text.logoutDescription;
-	const label = options.kind === 'register' ? text.setupLabel : options.kind === 'login' ? text.loginLabel : text.logoutLabel;
+	const title = options.kind === 'register' ? text.registerTitle : options.kind === 'login' ? text.loginAction : text.logoutTitle;
+	const description = options.kind === 'register' ? text.registerDescription : text.logoutDescription;
+	const label = options.kind === 'register' ? text.setupLabel : text.logoutLabel;
 	const action = options.kind === 'register' ? text.registerAction : options.kind === 'login' ? text.loginAction : text.logoutAction;
 	const username = escapeHtml(options.username ?? '');
+	const brandName = options.kind === 'login'
+		? `<h1 id="page-title" class="brand-name">${escapeHtml(text.brand)}</h1>`
+		: `<span class="brand-name">${escapeHtml(text.brand)}</span>`;
+	const introduction = options.kind === 'login' ? '' : `<p class="eyebrow">${escapeHtml(label)}</p>
+			<h1 id="page-title">${escapeHtml(title)}</h1>
+			<p class="description">${escapeHtml(description)}</p>`;
 	const error = options.error ? `<div class="message" role="alert">${escapeHtml(options.error)}</div>` : '';
 	const credentials = options.kind === 'logout'
 		? `<p class="account"><span>${escapeHtml(text.signedInAs)}</span><strong>${username}</strong></p>`
@@ -510,8 +516,9 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 		body { margin: 0; background: var(--page); color: var(--text); font: 400 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 		.shell { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
 		.card { width: min(100%, 400px); padding: 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 20px 60px rgba(0, 0, 0, .24); }
-		.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; color: var(--muted); font-size: 12px; }
-		.mark { display: block; width: 40px; height: 40px; flex-shrink: 0; }
+		.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; }
+		.brand-name { margin: 0; color: var(--text); font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: -.02em; }
+		.mark { display: block; width: 40px; height: 40px; flex-shrink: 0; filter: drop-shadow(0 1px 2px var(--vscode-widget-shadow, rgba(0, 0, 0, .2))); }
 		.eyebrow { margin: 0 0 6px; color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 		h1 { margin: 0; font-size: 26px; line-height: 1.2; font-weight: 600; letter-spacing: -.02em; }
 		.description { margin: 12px 0 24px; color: var(--muted); }
@@ -537,12 +544,10 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 <body>
 	<main class="shell">
 		<section class="card" aria-labelledby="page-title">
-			<div class="brand"><img class="mark" src="${vibeLogoDataUri}" width="40" height="40" alt=""><span>${escapeHtml(text.brand)}</span></div>
-			<p class="eyebrow">${escapeHtml(label)}</p>
-			<h1 id="page-title">${escapeHtml(title)}</h1>
-			<p class="description">${escapeHtml(description)}</p>
+			<div class="brand"><img class="mark" src="${vibeLogoDataUri}" width="40" height="40" alt="">${brandName}</div>
+			${introduction}
 			${error}
-			<form method="post" action="${authPath}/${options.kind}?lang=${options.locale}">
+			<form method="post" action="${authPath}/${options.kind}?lang=${options.locale}" aria-label="${escapeHtml(action)}">
 				<input type="hidden" name="return_to" value="${escapeHtml(options.returnTo)}">
 				${credentials}
 				<button type="submit">${escapeHtml(action)}</button>

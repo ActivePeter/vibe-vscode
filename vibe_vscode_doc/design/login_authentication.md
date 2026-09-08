@@ -99,6 +99,36 @@ sequenceDiagram
 
 ## 4. 责任与 authority
 
+### 4.1 进程与模块
+
+整个系统只有两个常驻进程。`VibeAuthenticationServer` 不是独立进程,也不监听端口,它是 Remote Server 进程里的一个 HTTP 处理器;名字里的 "Server" 只是沿用了 `WebClientServer` 的命名。
+
+```mermaid
+flowchart LR
+    subgraph CaddyP["进程 1:Caddy"]
+        FA["forward_auth 与 reverse_proxy"]
+    end
+    subgraph RemoteP["进程 2:Remote Server(server-main.js,Node)"]
+        Agent["RemoteExtensionHostAgentServer<br/>监听私有 Unix socket,分发 HTTP 与 WebSocket"]
+        Agent -->|"/auth/* 先问它,接了就结束"| AuthSrv["VibeAuthenticationServer<br/>/auth/* 页面、/verify、/api/status"]
+        AuthSrv --> AuthSvc["VibeAuthenticationService<br/>配置与生命周期"]
+        AuthSvc --> BA["Better Auth handler(黑盒)"]
+        AuthSvc --> DB[("node:sqlite<br/>better-auth.sqlite3 与 secret")]
+        Agent -->|"其余 GET"| Web["WebClientServer<br/>Workbench 页面与静态资源"]
+        Agent -->|"WebSocket 升级"| Mgmt["管理连接与扩展宿主连接"]
+    end
+    subgraph EH["子进程:Extension Host(按连接拉起)"]
+        X["与鉴权无关"]
+    end
+    Browser["浏览器"] -->|"HTTPS / WSS"| FA
+    FA -->|"私有 socket"| Agent
+    Mgmt --> X
+```
+
+Better Auth 的数据库与 secret 在 Remote Server 进程内打开和关闭,生命周期跟随 `RemoteExtensionHostAgentServer`:构造失败时一并释放,`dispose` 时关闭数据库。没有 sidecar,没有第二个端口。
+
+### 4.2 责任表
+
 | 角色 | 唯一拥有的状态或不变量 | 依赖 | 明确不拥有 |
 | --- | --- | --- | --- |
 | Remote Server 内的 Better Auth([`vibeAuthentication.ts`][auth]) | 首个管理员、密码验证、持久会话、滑动续租、可信 Origin 与失败限速 | CLI 提供的 auth state 目录、公开 Origin 和 Node 内置 SQLite | 公开 TLS、Workbench 资源授权策略 |

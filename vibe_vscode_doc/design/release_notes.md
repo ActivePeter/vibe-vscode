@@ -34,7 +34,7 @@ B 的输入框只适合一句话。所以设计上:A 是正式来源,B 退化为
 
 ### 4.1 文案文件
 
-- 路径 `docs/release-notes/<tag>.md`,`<tag>` 与 git tag 完全一致,例如 `docs/release-notes/v0.1.0.md`。
+- 路径 `docs/release-notes/<tag>.md`,`<tag>` 与 git tag 完全一致,例如 `docs/release-notes/v1.135.0-vibe.1.md`。
 - 模板 `docs/release-notes/TEMPLATE.md`,四段固定标题:本版内容、升级须知(破坏性变更、状态目录、回滚)、安装(链接 `docs/release.md`)、已知问题。CI 在末尾自动追加校验和与源码 commit,不用手写。
 - 文案随功能 PR 一起提交;版本还没定时先写成 `docs/release-notes/next.md`,打 tag 的 PR 把它改名为正式 tag 名。
 

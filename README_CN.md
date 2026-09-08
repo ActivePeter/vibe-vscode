@@ -6,6 +6,28 @@
 
 vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的便携开发编辑器”演进为可长期运行、可在多个任务上下文之间即时切换的开发工作台。当前工作的重点不是替换 VS Code 已有的编辑、终端和扩展能力，而是在其上增加一层稳定的工作上下文管理，让项目、终端和 Agent 会话在切换与网络波动中保持连续。
 
+## 快速开始
+
+Linux x64，不需要 root 和 systemd，Node 与 Caddy 随包提供。把 `<tag>` 换成[已发布的版本](https://github.com/ActivePeter/vibe-vscode/releases)，地址换成浏览器里实际输入的主机名或 IP：
+
+```bash
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
+# 浏览器打开 https://dev.example.com:18080，注册管理员，然后在界面中添加项目。
+```
+
+没有自有 TLS 证书时，按启动日志信任 Caddy 根证书；管理员注册完成前请限制访问。多入口、持久配置、做成服务、升级与回滚见[安装与启动](docs/install.md)；tag 如何变成发布包见[发布流程](docs/release.md)。
+
+从源码运行，安装依赖后用两个终端：
+
+```bash
+# 终端 1：持续编译
+npm run watch
+
+# 终端 2：启动 Web 工作台，访问 http://localhost:8080
+./scripts/code-web.sh .
+```
+
 ## 功能路线图
 
 状态标识：✅ 已实现　🚧 进行中　⬜ 未实现
@@ -15,26 +37,6 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
   - ✅ **页面加载缓存与续传**：核心启动资源压缩、分块并校验后缓存在浏览器中，加载时显示下载进度。刷新或重新打开浏览器可复用缓存，下载中断后只补齐缺失分块，版本更新时复用未变化的内容，减少重复下载并改善弱网加载体验。
   - ✅ **登录后才能访问**：所有托管的 HTTP 请求和 WebSocket 握手在到达任何 VS Code 路由之前必须先通过登录。第一个访问者注册唯一的管理员账号，之后注册关闭。会话在服务重启后仍然有效，使用中自动续期，可在 Accounts 菜单或命令面板退出。认证内嵌在远程服务器进程中，使用 Node 自带的 SQLite，由 Caddy 在网关强制执行；见[设计文档](vibe_vscode_doc/design/login_authentication.md)。
   - 🚧 **非阻塞的远程连接体验**：计划用状态栏中的重连或不可用状态替代模态打断，在网络恢复后立即推动重试，并保持当前工作内容打开；当前实现尚未包含这项能力。
-
-  Linux x64 快速开始（把 `<tag>` 换成已发布版本，地址换成浏览器实际访问的主机名或 IP）：
-
-  ```bash
-  curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
-  ~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
-  # 浏览器打开 https://dev.example.com:18080，注册管理员，然后在界面中添加项目。
-  ```
-
-  Node 与 Caddy 随包提供，无需 root 或 systemd。没有自有 TLS 证书时，按启动日志信任 Caddy 根证书；管理员注册完成前请限制初始访问。多入口、持久配置、可选服务化、升级与回滚见[安装与启动文档](docs/install.md#quick-start)。
-
-  若从源码开发，安装依赖后可用两个终端启动环境：
-
-  ```bash
-  # 终端 1：持续编译
-  npm run watch
-
-  # 终端 2：启动 Web 工作台，访问 http://localhost:8080
-  ./scripts/code-web.sh .
-  ```
 
 - ✅ **Logical Workspace（逻辑工作区）**：可从状态栏或命令面板创建、选择逻辑工作区，无需重新加载页面。切换时会保存并恢复主侧栏、底部面板和辅助侧栏的显隐、尺寸及活动视图。
   - **远程权威状态**：Workspace catalog、布局和编辑器工作集保存在 Remote SQLite；其他页面刷新或重连后读取最新快照，每个页面只在本地保存自己的当前 Workspace 选择。

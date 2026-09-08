@@ -54,6 +54,8 @@ systemctl --user enable --now vibe-vscode
 | `--base-path` | `/` | 反代到子路径时用,同时决定 `VIBE_VSCODE_AUTH_PATH` |
 | `--session-ttl` | `43200` | 透传给 `--auth-session-ttl-seconds` |
 
+**为什么 `--state-dir` 和 `--workspace` 分开。** `--state-dir` 是这个实例自己的状态:账号数据库与签名 secret、设置与服务端数据库、扩展、Caddy 的自签 CA。一个实例只有一份,权限 `0700`,升级回滚必须原样保留。`--workspace` 是用户要打开的项目目录或 `.code-workspace`,可以有很多个,在界面里随时切换,常常是 git 仓库或共享存储;它只是首次打开的默认位置,Workbench 会记住上次打开的。合在一起会把 secret 和账号库放进某个项目目录:容易提交进 git,换项目就丢登录态,权限也无法按 `0700` 管。和 VS Code 把 `--user-data-dir` 与打开的文件夹分开是同一个道理。
+
 ### 4.1.1 示例
 
 最简:只给浏览器地址,其余全部默认(端口 18080、状态目录 `~/.vibe-vscode/state`、Caddy 自签证书):

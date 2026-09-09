@@ -1,4 +1,6 @@
-# vibe vscode
+<p align="center">
+	<img src="vibe_vscode_doc/pics/readme-header.svg" alt="vibe vscode" width="1280">
+</p>
 
 [English](README.md) | [简体中文](README_CN.md)
 

@@ -12,6 +12,7 @@ import { isAbsolute } from '../../base/common/path.js';
 import { matchVibePublicOrigin } from '../common/vibeAuthentication.js';
 import type { ServerParsedArgs } from './serverEnvironmentService.js';
 import { VibeAuthenticationService } from './vibeAuthentication.js';
+import { vibeLogoDataUri } from './vibeBranding.js';
 
 const requestBodyMaximumBytes = 16 * 1024;
 const administratorEmail = 'administrator@vibe.invalid';
@@ -482,11 +483,17 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 	const alternateLocale: Locale = options.locale === 'en' ? 'zh-cn' : 'en';
 	const alternateLabel = text.alternateLanguage;
 	const localeTarget = `${authPath}/${options.kind}?lang=${alternateLocale}&return_to=${encodeURIComponent(options.returnTo)}`;
-	const title = options.kind === 'register' ? text.registerTitle : options.kind === 'login' ? text.loginTitle : text.logoutTitle;
-	const description = options.kind === 'register' ? text.registerDescription : options.kind === 'login' ? text.loginDescription : text.logoutDescription;
-	const label = options.kind === 'register' ? text.setupLabel : options.kind === 'login' ? text.loginLabel : text.logoutLabel;
+	const title = options.kind === 'register' ? text.registerTitle : options.kind === 'login' ? text.loginAction : text.logoutTitle;
+	const description = options.kind === 'register' ? text.registerDescription : text.logoutDescription;
+	const label = options.kind === 'register' ? text.setupLabel : text.logoutLabel;
 	const action = options.kind === 'register' ? text.registerAction : options.kind === 'login' ? text.loginAction : text.logoutAction;
 	const username = escapeHtml(options.username ?? '');
+	const brandName = options.kind === 'login'
+		? `<h1 id="page-title" class="brand-name">${escapeHtml(text.brand)}</h1>`
+		: `<span class="brand-name">${escapeHtml(text.brand)}</span>`;
+	const introduction = options.kind === 'login' ? '' : `<p class="eyebrow">${escapeHtml(label)}</p>
+			<h1 id="page-title">${escapeHtml(title)}</h1>
+			<p class="description">${escapeHtml(description)}</p>`;
 	const error = options.error ? `<div class="message" role="alert">${escapeHtml(options.error)}</div>` : '';
 	const credentials = options.kind === 'logout'
 		? `<p class="account"><span>${escapeHtml(text.signedInAs)}</span><strong>${username}</strong></p>`
@@ -501,15 +508,17 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<meta name="color-scheme" content="dark light">
 	<title>${escapeHtml(title)} - ${escapeHtml(text.brand)}</title>
+	<link rel="icon" href="${vibeLogoDataUri}" type="image/svg+xml" sizes="any">
 	<style nonce="${styleNonce}">
 		:root { color-scheme: dark; --page: #0f1117; --surface: #181b22; --surface-raised: #20242d; --text: #f0f1f3; --muted: #a8adb7; --border: #343945; --accent: #8ab4f8; --accent-strong: #a8c7fa; --button-text: #101318; --danger-bg: #3a2024; --danger-border: #8c3943; --focus: #9cc2ff; }
 		* { box-sizing: border-box; }
 		html, body { min-height: 100%; }
 		body { margin: 0; background: var(--page); color: var(--text); font: 400 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 		.shell { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
-		.card { width: min(100%, 400px); padding: 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 20px 60px rgba(0, 0, 0, .24); }
-		.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; color: var(--muted); font-size: 12px; }
-		.mark { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 6px; background: var(--surface-raised); color: var(--accent-strong); font-size: 18px; font-weight: 600; }
+		.card { width: min(100%, 400px); padding: var(--vscode-spacing-size400, 40px) 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 20px 60px rgba(0, 0, 0, .24); }
+		.brand { display: flex; align-items: center; justify-content: center; gap: var(--vscode-spacing-size240, 24px); margin-bottom: var(--vscode-spacing-size400, 40px); }
+		.brand-name { margin: 0; color: #2864F0; font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: -.02em; }
+		.mark { display: block; width: 40px; height: 40px; flex-shrink: 0; filter: drop-shadow(0 4px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, .14))); }
 		.eyebrow { margin: 0 0 6px; color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 		h1 { margin: 0; font-size: 26px; line-height: 1.2; font-weight: 600; letter-spacing: -.02em; }
 		.description { margin: 12px 0 24px; color: var(--muted); }
@@ -525,22 +534,20 @@ function renderAuthenticationPage(options: AuthenticationPageOptions): RenderedA
 		.account { display: grid; gap: 4px; margin: 0; padding: 16px; border-radius: 6px; background: var(--surface-raised); }
 		.account span { color: var(--muted); font-size: 11px; }
 		.account strong { font-weight: 600; overflow-wrap: anywhere; }
-		.footer { margin: 24px 0 0; text-align: center; }
+		.footer { margin: var(--vscode-spacing-size320, 32px) 0 0; text-align: center; }
 		a { color: var(--accent); text-underline-offset: 2px; }
 		@media (prefers-color-scheme: light) { :root { color-scheme: light; --page: #f4f5f7; --surface: #ffffff; --surface-raised: #eef1f5; --text: #202124; --muted: #626872; --border: #c9ced6; --accent: #315f9d; --accent-strong: #2563a9; --button-text: #ffffff; --danger-bg: #fff0f1; --danger-border: #c76a74; --focus: #245f9e; } }
-		@media (max-width: 480px) { .shell { padding: 16px; } .card { padding: 24px; } }
+		@media (max-width: 480px) { .shell { padding: 16px; } .card { padding: var(--vscode-spacing-size320, 32px) 24px; } }
 		@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
 	</style>
 </head>
 <body>
 	<main class="shell">
 		<section class="card" aria-labelledby="page-title">
-			<div class="brand"><span class="mark" aria-hidden="true">&lt;&gt;</span><span>${escapeHtml(text.brand)}</span></div>
-			<p class="eyebrow">${escapeHtml(label)}</p>
-			<h1 id="page-title">${escapeHtml(title)}</h1>
-			<p class="description">${escapeHtml(description)}</p>
+			<div class="brand"><img class="mark" src="${vibeLogoDataUri}" width="40" height="40" alt="">${brandName}</div>
+			${introduction}
 			${error}
-			<form method="post" action="${authPath}/${options.kind}?lang=${options.locale}">
+			<form method="post" action="${authPath}/${options.kind}?lang=${options.locale}" aria-label="${escapeHtml(action)}">
 				<input type="hidden" name="return_to" value="${escapeHtml(options.returnTo)}">
 				${credentials}
 				<button type="submit">${escapeHtml(action)}</button>
@@ -558,7 +565,7 @@ function authenticationDocumentHeaders(styleNonce: string, locale: Locale): http
 	return {
 		'Cache-Control': 'no-store',
 		'Content-Language': locale,
-		'Content-Security-Policy': `default-src 'none'; style-src 'nonce-${styleNonce}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
+		'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'nonce-${styleNonce}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
 		'Content-Type': 'text/html; charset=utf-8',
 		'Referrer-Policy': 'no-referrer',
 		'X-Content-Type-Options': 'nosniff',

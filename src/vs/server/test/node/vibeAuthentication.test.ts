@@ -172,6 +172,155 @@ suite('VibeAuthenticationServer', () => {
 		});
 	});
 
+	for (const basePath of ['', '/code']) {
+		test(`isolates same-host instances across ports during login, renewal, and logout at ${basePath || '/'}`, async function () {
+			this.timeout(30_000);
+			await harness.close();
+			harness = await createHarness(testDirectory, basePath);
+			const secondOrigin = 'https://vscode.example:9443';
+			const secondHost = new URL(secondOrigin).host;
+			const second = await createHarness(join(testDirectory, 'second-instance'), basePath, [secondOrigin]);
+			try {
+				const cookies = new SameHostCookieJar();
+				const form = { username: 'admin', password: validPassword, confirm_password: validPassword };
+				const firstRegistration = await postForm(harness.port, `${basePath}/auth/register`, form);
+				cookies.accept(firstRegistration.headers);
+				const secondRegistration = await postForm(second.port, `${basePath}/auth/register`, form, cookies.header, secondOrigin, secondHost);
+				cookies.accept(secondRegistration.headers);
+				const firstCookie = getSessionCookie(firstRegistration.headers);
+				const secondCookie = getSessionCookie(secondRegistration.headers);
+				const verify = async (instance: AuthenticationTestHarness, host: string) => {
+					const response = await request(instance.port, `${basePath}/auth/verify`, { headers: { host, cookie: cookies.header } });
+					cookies.accept(response.headers);
+					return response;
+				};
+				const firstHost = new URL(publicOrigin).host;
+				const afterLogin = [(await verify(harness, firstHost)).status, (await verify(second, secondHost)).status];
+				const foreignCookie = await request(harness.port, `${basePath}/auth/verify`, { headers: { cookie: secondCookie } });
+				const renamedForeignCookie = await request(harness.port, `${basePath}/auth/verify`, {
+					headers: { cookie: `${firstCookie.split('=', 1)[0]}=${secondCookie.slice(secondCookie.indexOf('=') + 1)}` },
+				});
+
+				await new Promise(resolve => setTimeout(resolve, 1_100));
+				const renewal = await verify(harness, firstHost);
+				const afterRenewal = [(await verify(harness, firstHost)).status, (await verify(second, secondHost)).status];
+				const logout = await postForm(harness.port, `${basePath}/auth/logout`, {}, cookies.header);
+				cookies.accept(logout.headers);
+				const afterLogout = [(await verify(harness, firstHost)).status, (await verify(second, secondHost)).status];
+				const replay = await request(harness.port, `${basePath}/auth/verify`, { headers: { cookie: firstCookie } });
+
+				assert.deepStrictEqual({
+					registration: [firstRegistration.status, secondRegistration.status],
+					distinctCookieNames: firstCookie.split('=', 1)[0] !== secondCookie.split('=', 1)[0],
+					afterLogin,
+					foreignCookies: [foreignCookie.status, renamedForeignCookie.status],
+					renewal: {
+						status: renewal.status,
+						cookieCount: setCookieValues(renewal.headers).length,
+						stableName: getSessionCookie(renewal.headers).split('=', 1)[0] === firstCookie.split('=', 1)[0],
+					},
+					afterRenewal,
+					logout: logout.status,
+					afterLogout,
+					replay: replay.status,
+				}, {
+					registration: [303, 303],
+					distinctCookieNames: true,
+					afterLogin: [204, 204],
+					foreignCookies: [401, 401],
+					renewal: { status: 204, cookieCount: 1, stableName: true },
+					afterRenewal: [204, 204],
+					logout: 303,
+					afterLogout: [401, 204],
+					replay: 401,
+				});
+			} finally {
+				await second.close();
+			}
+		});
+	}
+
+	test('keeps separate browsers signed in to the same instance independently', async function () {
+		this.timeout(30_000);
+		const form = { username: 'admin', password: validPassword, confirm_password: validPassword };
+		const registration = await postForm(harness.port, '/code/auth/register', form);
+		const firstCookie = getSessionCookie(registration.headers);
+		const login = await postForm(harness.port, '/code/auth/login', form);
+		const secondCookie = getSessionCookie(login.headers);
+		const verify = async (cookie: string) => (await request(harness.port, '/code/auth/verify', { headers: { cookie } })).status;
+		const afterLogin = [await verify(firstCookie), await verify(secondCookie)];
+		const logout = await postForm(harness.port, '/code/auth/logout', {}, firstCookie);
+		const afterLogout = [await verify(firstCookie), await verify(secondCookie)];
+
+		assert.deepStrictEqual({
+			login: login.status,
+			sameCookieName: firstCookie.split('=', 1)[0] === secondCookie.split('=', 1)[0],
+			distinctSessions: firstCookie !== secondCookie,
+			afterLogin,
+			logout: logout.status,
+			afterLogout,
+		}, {
+			login: 303, sameCookieName: true, distinctSessions: true,
+			afterLogin: [204, 204], logout: 303, afterLogout: [401, 204],
+		});
+	});
+
+	test('preserves the cookie namespace when persistent state moves and the public port changes', async () => {
+		const form = { username: 'admin', password: validPassword, confirm_password: validPassword };
+		const registration = await postForm(harness.port, '/code/auth/register', form);
+		const cookie = getSessionCookie(registration.headers);
+		await harness.close();
+		const movedDirectory = `${testDirectory}-moved`;
+		fs.renameSync(testDirectory, movedDirectory);
+		testDirectory = movedDirectory;
+		const movedOrigin = 'https://vscode.example:9443';
+		const movedHost = new URL(movedOrigin).host;
+		harness = await createHarness(testDirectory, '/code', [movedOrigin]);
+		const authorized = await request(harness.port, '/code/auth/verify', { headers: { host: movedHost, cookie } });
+		const login = await postForm(harness.port, '/code/auth/login', form, undefined, movedOrigin, movedHost);
+
+		assert.deepStrictEqual({
+			authorized: authorized.status,
+			login: login.status,
+			stableName: getSessionCookie(login.headers).split('=', 1)[0] === cookie.split('=', 1)[0],
+		}, { authorized: 204, login: 303, stableName: true });
+	});
+
+	test('ignores legacy shared cookies without clearing them or reviving a signed-out browser', async () => {
+		const form = { username: 'admin', password: validPassword, confirm_password: validPassword };
+		const registration = await postForm(harness.port, '/code/auth/register', form);
+		const sessionCookie = getSessionCookie(registration.headers);
+		const legacyCookie = `__Secure-vibe.session_token=${sessionCookie.slice(sessionCookie.indexOf('=') + 1)}`;
+		const cookies = new SameHostCookieJar();
+		cookies.accept({ 'set-cookie': [`${legacyCookie}; Path=/code/; Secure; HttpOnly`] });
+		const legacyOnly = await request(harness.port, '/code/auth/verify', { headers: { cookie: cookies.header } });
+		cookies.accept(legacyOnly.headers);
+		const legacyPreserved = cookies.header === legacyCookie;
+		const login = await postForm(harness.port, '/code/auth/login', form, cookies.header);
+		cookies.accept(login.headers);
+		const signedIn = await request(harness.port, '/code/auth/verify', { headers: { cookie: cookies.header } });
+		cookies.accept(signedIn.headers);
+		const logout = await postForm(harness.port, '/code/auth/logout', {}, cookies.header);
+		cookies.accept(logout.headers);
+		const signedOut = await request(harness.port, '/code/auth/verify', { headers: { cookie: cookies.header } });
+		cookies.accept(signedOut.headers);
+		const originalSession = await request(harness.port, '/code/auth/verify', { headers: { cookie: sessionCookie } });
+
+		assert.deepStrictEqual({
+			legacyOnly: legacyOnly.status,
+			legacyPreserved,
+			login: login.status,
+			signedIn: signedIn.status,
+			logout: logout.status,
+			signedOut: signedOut.status,
+			legacyStillPreserved: cookies.header === legacyCookie,
+			originalSession: originalSession.status,
+		}, {
+			legacyOnly: 401, legacyPreserved: true, login: 303, signedIn: 204,
+			logout: 303, signedOut: 401, legacyStillPreserved: true, originalSession: 204,
+		});
+	});
+
 	test('does not rate-limit session verification during workbench resource loading', async function () {
 		this.timeout(30_000);
 		const registration = await postForm(harness.port, '/code/auth/register', {
@@ -479,10 +628,31 @@ function getSessionCookie(headers: http.IncomingHttpHeaders): string {
 }
 
 function getSessionSetCookie(headers: http.IncomingHttpHeaders): string | undefined {
-	return setCookieValues(headers).find(value => /^(?:__Secure-)?vibe\.session_token=/.test(value));
+	return setCookieValues(headers).find(value => /^[^=]+\.session_token=/.test(value));
 }
 
 function setCookieValues(headers: http.IncomingHttpHeaders): string[] {
 	const value = headers['set-cookie'];
 	return Array.isArray(value) ? value : value ? [value] : [];
+}
+
+/** Models cookies for one browser hostname and Path; ports deliberately do not partition the jar. */
+class SameHostCookieJar {
+	private readonly cookies = new Map<string, string>();
+
+	get header(): string {
+		return [...this.cookies.values()].join('; ');
+	}
+
+	accept(headers: http.IncomingHttpHeaders): void {
+		for (const value of setCookieValues(headers)) {
+			const cookie = value.split(';', 1)[0];
+			const name = cookie.split('=', 1)[0];
+			if (/;\s*Max-Age=0(?:;|$)/i.test(value)) {
+				this.cookies.delete(name);
+			} else {
+				this.cookies.set(name, cookie);
+			}
+		}
+	}
 }

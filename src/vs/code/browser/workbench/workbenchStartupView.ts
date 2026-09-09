@@ -11,7 +11,6 @@ import type { IWorkbenchStartupState } from './workbenchStartupController.js';
 /** Projects startup state into the existing accessible overlay; owns no loading or persistence. */
 export class WorkbenchStartupView extends Disposable {
 	private readonly numberFormats = [0, 1, 2].map(maximumFractionDigits => safeIntl.NumberFormat(undefined, { maximumFractionDigits }));
-	private readonly mode: HTMLElement;
 	private readonly title: HTMLElement;
 	private readonly detail: HTMLElement;
 	private readonly progress: HTMLElement;
@@ -31,7 +30,6 @@ export class WorkbenchStartupView extends Disposable {
 			}
 			return value;
 		};
-		this.mode = element('mode');
 		this.title = element('title');
 		this.detail = element('detail');
 		this.progress = element('progress');
@@ -63,7 +61,6 @@ export class WorkbenchStartupView extends Disposable {
 		this.overlay.setAttribute('data-cache-mode', state.mode);
 		this.overlay.setAttribute('data-state', state.phase);
 		this.overlay.setAttribute('aria-busy', String(state.phase !== 'ready' && state.phase !== 'error'));
-		this.mode.textContent = messages[`${state.mode}Mode`];
 		this.title.textContent = messages[`${state.mode}Title`];
 		this.detail.textContent = {
 			loading: messages.loadingResources, starting: messages.startingWorkbench,

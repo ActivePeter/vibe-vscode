@@ -6,13 +6,15 @@ Vibe VS Code releases target Linux x64 and run the Web workbench with a remote s
 
 ## Quick start
 
-Choose a **published** tag from [GitHub Releases](https://github.com/ActivePeter/vibe-vscode/releases), replace `<tag>`, and use the HTTPS address you will open in the browser:
+Install [v1.135.0-vibe.1](https://github.com/ActivePeter/vibe-vscode/releases/tag/v1.135.0-vibe.1), and replace the example HTTPS address with the one you will open in the browser:
 
 ```bash
-curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/<tag>/install.sh' | bash -s -- --tag '<tag>'
+curl -fsSL 'https://github.com/ActivePeter/vibe-vscode/releases/download/v1.135.0-vibe.1/install.sh' | bash -s -- --tag 'v1.135.0-vibe.1'
 ~/.vibe-vscode/current/bin/vibe-vscode start --origin https://dev.example.com:18080
 # Open https://dev.example.com:18080; register the administrator, then add projects in the workbench.
 ```
+
+Installation downloads are available only for **published** releases, not drafts.
 
 No root, systemd, separate Node installation, or separate Caddy installation is required. The host needs Bash, curl, tar, find, GNU coreutils (including sha256sum), and util-linux (flock and setsid). Use a port above 1023 for an unprivileged start. Add `--root '<absolute-install-root>'` to the installer for a custom installation.
 
@@ -33,7 +35,7 @@ The default port is `18080`, state is `<root>/state`, and the default origin is 
   --origin https://localhost:18080
 ```
 
-These are an explicit HTTPS allowlist, not permission to trust arbitrary request headers. The first forwarded host, or Host when absent, only selects a listed origin; an unmatched form POST is rejected, and navigation returns to the first configured origin. Workbench connections use the same selection. Cookies are host-only: different hostnames/IPs normally have separate browser sessions and sign out independently. Cookies do **not** isolate different ports on the same hostname. The authentication contract is documented in [Full-screen login and instance authentication](../vibe_vscode_doc/design/login_authentication.md).
+These are an explicit HTTPS allowlist, not permission to trust arbitrary request headers. The first forwarded host, or Host when absent, only selects a listed origin; an unmatched form POST is rejected, and navigation returns to the first configured origin. Workbench connections use the same selection. Cookies are host-only: different hostnames/IPs normally have separate browser sessions and sign out independently. Browsers do not isolate cookies by port, but each instance names its cookies after its own persistent signing secret, so independent instances on different ports of the same hostname do not overwrite each other; that naming avoids accidental collisions and is not a security boundary against an untrusted service on the same hostname. The authentication contract is documented in [Full-screen login and instance authentication](../vibe_vscode_doc/design/login_authentication.md).
 
 Persistent defaults live in `<state-dir>/vibe-vscode.env`; the first `start` creates that directory. Edit the file as data:
 
@@ -71,6 +73,8 @@ loginctl enable-linger "$(id -un)"
 For an administrator-managed system service, run `systemd --install --user <service-account> --state-dir '<absolute-state-dir>'` as root; it writes `/etc/systemd/system/vibe-vscode.service`, then use `systemctl` without `--user`. Create the account and give it access to the installation, state and certificate files first; the generator does not change accounts or permissions. No separate Caddy service or hand-edited templates are needed.
 
 ## Upgrade, health checks, and rollback
+
+For future upgrades, replace `<new-tag>` with a newer **published** version from [GitHub Releases](https://github.com/ActivePeter/vibe-vscode/releases):
 
 ```bash
 ~/.vibe-vscode/current/bin/install.sh --tag '<new-tag>'

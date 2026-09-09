@@ -12,10 +12,18 @@ vibe vscode is built on Code - OSS. It evolves the portable development editor o
 
 Status: ✅ Available　🚧 In progress　⬜ Planned
 
+*Demos were recorded before the branding refresh.*
+
 - ✅ **Web-first operation**: vibe vscode is designed for the browser first. We recommend hosting the development environment on an always-on machine or in the cloud, with the workbench always a web page away. Projects, terminals, and Agent tasks run on the server, while the browser handles interaction and state projection—no desktop client required.
 
   - ✅ **Cached page loading and resumable downloads**: Core startup resources are compressed, chunked, verified, and cached in the browser with visible download progress. Refreshing or reopening the browser reuses cached chunks, interrupted downloads resume only missing chunks, and new releases reuse unchanged content to reduce repeated downloads and improve loading on slow or unreliable connections.
+
+    ![Reloading the workbench using cached startup resources](vibe_vscode_doc/pics/roadmap/cached-loading.gif)
+
   - ✅ **Sign-in required**: Every hosted HTTP request and WebSocket handshake must pass sign-in before it reaches any VS Code route. The first visitor registers the single administrator account, after which registration closes. Sessions survive server restarts, renew while in use, and can be revoked from the Accounts menu or the Command Palette. Authentication is embedded in the remote server with Node's built-in SQLite and enforced by Caddy at the gateway; see the [design document](vibe_vscode_doc/design/login_authentication.md).
+
+    ![Registering the administrator, signing out, and signing back in](vibe_vscode_doc/pics/roadmap/sign-in.gif)
+
   - 🚧 **Non-blocking remote connectivity**: Replace modal interruption with status-bar reconnect state, immediate retry after network recovery, and uninterrupted access to the current work. This is not yet included in the current implementation.
 
 - ✅ **Logical Workspace**: Create and select logical workspaces from the status bar or Command Palette without reloading the page. Switching saves and restores the visibility, size, and active view of the primary sidebar, panel, and secondary sidebar.
@@ -26,18 +34,13 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
   ![Logical Workspace demo](vibe_vscode_doc/pics/vibe_vscode_workspace.gif)
 
 - ✅ **Project Context**: Select or add a project folder inside a single multi-root physical Workspace. Explorer and Source Control follow the same state projection: switching Project focuses the Explorer root and shows only Git repositories inside the current Project, while open editors, terminals, and sessions remain intact. Separate status-bar entries distinguish Workspace from Project.
+
+  ![Switching projects updates Explorer and Source Control](vibe_vscode_doc/pics/roadmap/project-context.gif)
+
 - ⬜ **Fullscreen session management panel**: Provide a workbench-wide interface for viewing, creating, switching, and managing Agent sessions in one place.
 - ⬜ **Document-driven development**: Select document content in the editor and create a new Agent session from the context menu, using the selection as context so requirements and design documents can directly drive implementation.
 - ⬜ **Codex Agent-first interaction**: Treat Codex Agent as the primary session experience, with priority given to session creation, interaction, status visibility, and restoration.
 - 🚧 **Agent workflows**: Explore [Sim](https://github.com/simstudioai/sim) for repeatable development workflows with Agent, condition, parallel, and approval steps. Workflow integration and automated triggers are in progress.
-
-  *Sim workflow canvas reference.*
-
-  ![Sim workflow canvas with Start and Agent nodes](vibe_vscode_doc/pics/roadmap/sim-workflow-canvas.png)
-
-  *Earlier workflow task prototype: Git diff analysis tasks organized by project.*
-
-  ![Earlier prototype showing per-project Git diff workflow tasks](vibe_vscode_doc/pics/roadmap/workflow-tasks-prototype.png)
 
 ## Install
 

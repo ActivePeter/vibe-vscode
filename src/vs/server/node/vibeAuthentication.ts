@@ -32,7 +32,13 @@ export class VibeAuthenticationService {
 	private readonly database: DatabaseSync;
 	private disposed = false;
 
-	private constructor(authenticationHandler: (request: Request) => Promise<Response>, database: DatabaseSync, public readonly publicOrigins: readonly string[], public readonly basePath: string) {
+	private constructor(
+		authenticationHandler: (request: Request) => Promise<Response>,
+		database: DatabaseSync,
+		public readonly publicOrigins: readonly string[],
+		public readonly basePath: string,
+		public readonly sessionCookieName: string,
+	) {
 		this.authenticationHandler = authenticationHandler;
 		this.database = database;
 	}
@@ -66,6 +72,9 @@ export class VibeAuthenticationService {
 		await fs.mkdir(options.stateDirectory, { recursive: true, mode: 0o700 });
 		await fs.chmod(options.stateDirectory, 0o700);
 		const secret = await readOrCreateSecret(join(options.stateDirectory, authenticationSecretFileName));
+		// Cookies do not isolate ports. Bind every auth cookie to the persistent signing
+		// identity, not to a request Host, deployment path, or process lifetime.
+		const cookiePrefix = `vibe-${crypto.createHmac('sha256', secret).update('vibe-authentication-cookie-namespace').digest('hex').slice(0, 32)}`;
 		const databasePath = join(options.stateDirectory, authenticationDatabaseFileName);
 		const databaseFile = await fs.open(databasePath, 'a', 0o600);
 		await databaseFile.close();
@@ -122,7 +131,7 @@ export class VibeAuthenticationService {
 				},
 				trustedOrigins: publicOrigins,
 				advanced: {
-					cookiePrefix: 'vibe',
+					cookiePrefix,
 					useSecureCookies: true,
 					ipAddress: {
 						ipAddressHeaders: ['x-vibe-client-ip'],
@@ -151,7 +160,8 @@ export class VibeAuthenticationService {
 			const authentication = betterAuth(authenticationOptions);
 			const migrations = await getMigrations(authentication.options);
 			await migrations.runMigrations();
-			return new VibeAuthenticationService(authentication.handler, database, publicOrigins, basePath);
+			const sessionCookieName = (await authentication.$context).authCookies.sessionToken.name;
+			return new VibeAuthenticationService(authentication.handler, database, publicOrigins, basePath, sessionCookieName);
 		} catch (error) {
 			database.close();
 			throw error;

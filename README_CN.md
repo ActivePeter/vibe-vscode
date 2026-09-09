@@ -29,6 +29,15 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
 - ⬜ **全屏会话管理面板**：提供覆盖整个工作台的会话管理界面，用于集中查看、创建、切换和管理 Agent 会话。
 - ⬜ **文档驱动开发**：支持在编辑器中选中文档内容，通过右键菜单以选区作为上下文创建新的 Agent 会话，让需求和设计文档直接驱动开发。
 - ⬜ **Codex Agent 优先交互**：以 Codex Agent 作为首要会话形态，优先完善会话创建、交互、状态呈现与恢复体验。
+- 🚧 **Agent 工作流**：基于 [Sim](https://github.com/simstudioai/sim) 探索可重复执行的研发流程，用 Agent、条件、并行与人工确认等节点组织任务。工作流集成与自动触发能力正在推进。
+
+  *Sim 工作流画布参考。*
+
+  ![包含 Start 与 Agent 节点的 Sim 工作流画布](vibe_vscode_doc/pics/roadmap/sim-workflow-canvas.png)
+
+  *早期工作流任务原型：按项目组织 Git Diff 分析任务。*
+
+  ![按项目展示 Git Diff 工作流任务的早期原型](vibe_vscode_doc/pics/roadmap/workflow-tasks-prototype.png)
 
 ## 安装
 

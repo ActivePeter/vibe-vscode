@@ -29,6 +29,15 @@ Status: ✅ Available　🚧 In progress　⬜ Planned
 - ⬜ **Fullscreen session management panel**: Provide a workbench-wide interface for viewing, creating, switching, and managing Agent sessions in one place.
 - ⬜ **Document-driven development**: Select document content in the editor and create a new Agent session from the context menu, using the selection as context so requirements and design documents can directly drive implementation.
 - ⬜ **Codex Agent-first interaction**: Treat Codex Agent as the primary session experience, with priority given to session creation, interaction, status visibility, and restoration.
+- 🚧 **Agent workflows**: Explore [Sim](https://github.com/simstudioai/sim) for repeatable development workflows with Agent, condition, parallel, and approval steps. Workflow integration and automated triggers are in progress.
+
+  *Sim workflow canvas reference.*
+
+  ![Sim workflow canvas with Start and Agent nodes](vibe_vscode_doc/pics/roadmap/sim-workflow-canvas.png)
+
+  *Earlier workflow task prototype: Git diff analysis tasks organized by project.*
+
+  ![Earlier prototype showing per-project Git diff workflow tasks](vibe_vscode_doc/pics/roadmap/workflow-tasks-prototype.png)
 
 ## Install
 

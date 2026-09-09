@@ -1,4 +1,6 @@
-# vibe vscode
+<p align="center">
+	<img src="vibe_vscode_doc/pics/readme-header.svg" alt="vibe vscode" width="1280">
+</p>
 
 [English](README.md) | [简体中文](README_CN.md)
 
@@ -10,10 +12,18 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
 
 状态标识：✅ 已实现　🚧 进行中　⬜ 未实现
 
+*演示录制于品牌视觉更新前。*
+
 - ✅ **Web 优先运行**：vibe vscode 首先为浏览器而设计。我们推荐把开发环境放在一台常驻机器或云端，通过网页随时进入工作台。项目、终端和 Agent 任务运行在服务端，网页负责交互与状态投影，无需安装桌面客户端。
 
   - ✅ **页面加载缓存与续传**：核心启动资源压缩、分块并校验后缓存在浏览器中，加载时显示下载进度。刷新或重新打开浏览器可复用缓存，下载中断后只补齐缺失分块，版本更新时复用未变化的内容，减少重复下载并改善弱网加载体验。
+
+    ![刷新页面后复用缓存的启动资源进入工作台](vibe_vscode_doc/pics/roadmap/cached-loading.gif)
+
   - ✅ **登录后才能访问**：所有托管的 HTTP 请求和 WebSocket 握手在到达任何 VS Code 路由之前必须先通过登录。第一个访问者注册唯一的管理员账号，之后注册关闭。会话在服务重启后仍然有效，使用中自动续期，可在 Accounts 菜单或命令面板退出。认证内嵌在远程服务器进程中，使用 Node 自带的 SQLite，由 Caddy 在网关强制执行；见[设计文档](vibe_vscode_doc/design/login_authentication.md)。
+
+    ![注册管理员账号、退出并重新登录](vibe_vscode_doc/pics/roadmap/sign-in.gif)
+
   - 🚧 **非阻塞的远程连接体验**：计划用状态栏中的重连或不可用状态替代模态打断，在网络恢复后立即推动重试，并保持当前工作内容打开；当前实现尚未包含这项能力。
 
 - ✅ **Logical Workspace（逻辑工作区）**：可从状态栏或命令面板创建、选择逻辑工作区，无需重新加载页面。切换时会保存并恢复主侧栏、底部面板和辅助侧栏的显隐、尺寸及活动视图。
@@ -24,9 +34,13 @@ vibe vscode 基于 Code - OSS 构建，目标是从“Agent 前工程时代的�
   ![Logical Workspace 演示](vibe_vscode_doc/pics/vibe_vscode_workspace.gif)
 
 - ✅ **Project Context（项目上下文）**：支持在同一个多根物理 Workspace 中选择或添加项目目录。Explorer 与 Source Control 通过同一状态投影同步更新：切换 Project 会聚焦 Explorer 根目录，Git 仅展示当前 Project 内的仓库，同时保留已打开的编辑器、终端与会话；状态栏分别显示当前 Workspace 和 Project。
+
+  ![切换项目时 Explorer 与 Source Control 同步更新](vibe_vscode_doc/pics/roadmap/project-context.gif)
+
 - ⬜ **全屏会话管理面板**：提供覆盖整个工作台的会话管理界面，用于集中查看、创建、切换和管理 Agent 会话。
 - ⬜ **文档驱动开发**：支持在编辑器中选中文档内容，通过右键菜单以选区作为上下文创建新的 Agent 会话，让需求和设计文档直接驱动开发。
 - ⬜ **Codex Agent 优先交互**：以 Codex Agent 作为首要会话形态，优先完善会话创建、交互、状态呈现与恢复体验。
+- 🚧 **Agent 工作流**：基于 [Sim](https://github.com/simstudioai/sim) 探索可重复执行的研发流程，用 Agent、条件、并行与人工确认等节点组织任务。工作流集成与自动触发能力正在推进。
 
 ## 安装
 

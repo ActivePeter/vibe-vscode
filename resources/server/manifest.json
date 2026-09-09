@@ -4,15 +4,17 @@
 	"start_url": "/",
 	"lang": "en-US",
 	"display": "standalone",
-	"display_override": ["window-controls-overlay"],
+	"display_override": [
+		"window-controls-overlay"
+	],
 	"icons": [
 		{
-			"src": "code-192.png",
+			"src": "code-192.png?v=f39e9dad818a",
 			"type": "image/png",
 			"sizes": "192x192"
 		},
 		{
-			"src": "code-512.png",
+			"src": "code-512.png?v=f39e9dad818a",
 			"type": "image/png",
 			"sizes": "512x512"
 		}

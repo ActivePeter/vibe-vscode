@@ -247,7 +247,7 @@ suite('Workbench startup', () => {
 		const frame = mainWindow.document.createElement('iframe');
 		store.add(toDisposable(() => frame.remove()));
 		const configuration = JSON.stringify({ messages }).replace(/"/g, '&quot;');
-		const elements = ['mode', 'title', 'detail', 'progress', 'metrics', 'network', 'cache', 'action'].map(name => `<p id="vscode-workbench-startup-${name}"></p>`).join('');
+		const elements = ['title', 'detail', 'progress', 'metrics', 'network', 'cache', 'action'].map(name => `<p id="vscode-workbench-startup-${name}"></p>`).join('');
 		const startup = new URL('../../browser/workbench/workbenchStartup.js', import.meta.url).href;
 		frame.srcdoc = `<div id="vscode-workbench-startup" data-settings="${configuration}">${elements}</div>
 			<script type="module" src="${startup}"></script>
@@ -278,7 +278,7 @@ suite('Workbench startup', () => {
 		const resourceCache = new URL('startup-cache/manifest.json', import.meta.url).href;
 		const imports = { [new URL('loader.js', resourceCache).href]: loader };
 		const configuration = JSON.stringify({ resourceCache, messages }).replace(/"/g, '&quot;');
-		const elements = ['mode', 'title', 'detail', 'progress', 'metrics', 'network', 'cache', 'action'].map(name => `<p id="vscode-workbench-startup-${name}"></p>`).join('');
+		const elements = ['title', 'detail', 'progress', 'metrics', 'network', 'cache', 'action'].map(name => `<p id="vscode-workbench-startup-${name}"></p>`).join('');
 		const startup = new URL('../../browser/workbench/workbenchStartup.js', import.meta.url).href;
 		const documentUrl = URL.createObjectURL(new Blob([`<div id="vscode-workbench-startup" data-settings="${configuration}">${elements}</div>
 			<script type="importmap">${JSON.stringify({ imports })}</script>
@@ -315,7 +315,7 @@ suite('Workbench startup', () => {
 	test('view renders accessible chunk errors, native reloads and readiness without retaining click listeners', async () => {
 		const messages: IWebClientStartupMessages = JSON.parse(await __readFileInTests(FileAccess.asFileUri('vs/platform/remote/common/workbench-startup.nls.en.json').fsPath));
 		const overlay = mainWindow.document.createElement('div');
-		for (const name of ['mode', 'title', 'detail', 'progress', 'metrics', 'network', 'cache', 'action']) {
+		for (const name of ['title', 'detail', 'progress', 'metrics', 'network', 'cache', 'action']) {
 			const element = mainWindow.document.createElement(name === 'action' ? 'button' : 'p');
 			element.id = `vscode-workbench-startup-${name}`;
 			overlay.appendChild(element);

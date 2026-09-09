@@ -41,7 +41,7 @@ flowchart LR
 | | 是什么 | 什么时候出现在网络上 | 谁校验,拿什么校验 |
 |---|---|---|---|
 | 用户名 + 密码 | 用户输入的凭据 | 只在注册与登录的 `POST` 表单里各出现一次,HTTPS 内 | Remote Server 内嵌的 Better Auth:注册时做 scrypt 哈希写入 SQLite,明文不落盘;登录时比对哈希 |
-| 会话 cookie `__Secure-vibe.session_token` | 值为 `token.签名`。token 是服务端生成的随机串,签名是用 `better-auth.secret` 对 token 做的 HMAC | 登录成功的 303 响应以 `Set-Cookie` 下发;之后浏览器对本站每个 HTTP 请求和 WebSocket 握手自动附带,HTTPS 内 | 同一个 Better Auth:先用 secret 验签,签名不对直接当作无会话;再用 token 查 SQLite `session` 表,存在且未过期才有效 |
+| 会话 cookie(实例命名规则见第 7 节 A) | 值为 `token.签名`。token 是服务端生成的随机串,签名是用 `better-auth.secret` 对 token 做的 HMAC | 登录成功的 303 响应以 `Set-Cookie` 下发;之后浏览器对本站每个 HTTP 请求和 WebSocket 握手自动附带,HTTPS 内 | 同一个 Better Auth:先用 secret 验签,签名不对直接当作无会话;再用 token 查 SQLite `session` 表,存在且未过期才有效 |
 
 上表里的密码哈希、随机 token、HMAC 签名、`session` 表、`Origin` 校验和限速都是 Better Auth 自带的能力,本 PR 只写配置并在进程内调用它。本 PR 自己写的代码是:`/auth/*` 的注册、登录、退出页面,`/auth/verify` 的判定与 204 / 303 / 401 出口,`Caddyfile` 的转发规则,以及 Workbench 里的退出入口。
 
@@ -66,7 +66,7 @@ sequenceDiagram
     participant BA as Better Auth(黑盒)
     participant W as Workbench 路由<br/>同一 Remote Server
 
-    B->>C: 任意请求,Cookie: __Secure-vibe.session_token=…
+    B->>C: 任意请求,带本实例会话 cookie
     C->>V: forward_auth 子请求,原样带 Cookie
     V->>V: 用请求主机查显式 origin 白名单
     alt 入口命中
@@ -469,11 +469,13 @@ stateDiagram-v2
 
 - **持久化**:`<state>/auth/better-auth.sqlite3` 与 `better-auth.secret`,目录 `0700`,文件 `0600`;secret 为 32 字节 base64url,以 `wx` 独占创建,存在则读取并校验格式,格式不对直接启动失败,不重建、不清空。数据库开启 WAL、外键、5 秒 busy timeout;启动时跑 Better Auth 迁移。
 - **单管理员**:用户表附加字段 `instanceOwner`,固定值、`input: false`、唯一约束。任何注册都写同一个值,数据库层面保证只有一条能提交;`registrationOpen` 就是"用户表是否为空"。
-- **会话**:`expiresIn` 默认 12 小时(可配 60 秒到 7 天),`updateAge` 取 5 分钟与半个 TTL 的较小值;cookie 前缀 `vibe`,`Secure` / `HttpOnly` / `SameSite=Lax`,`Path` 限定到 server base path。
+- **会话**:`expiresIn` 默认 12 小时(可配 60 秒到 7 天),`updateAge` 取 5 分钟与半个 TTL 的较小值;cookie 使用 `Secure` / `HttpOnly` / `SameSite=Lax`,`Path` 限定到 server base path。不同浏览器可同时登录同一实例,退出只撤销提交的那一个会话。
+- **实例 Cookie 命名空间**:`VibeAuthenticationService` 以持久化 secret 为 HMAC-SHA256 密钥,对固定用途串 `vibe-authentication-cookie-namespace` 计算摘要,取前 32 个十六进制字符作为实例标识,将 Better Auth 的统一 `cookiePrefix` 配置为 `vibe-<instance-id>`。会话名称为 `__Secure-vibe-<instance-id>.session_token`,辅助 cookie 也使用同一前缀;HTTP 和网关层不另外推导名称。独立创建的认证状态获得不同命名空间,登录、续租与退出不会覆盖另一实例。保留 secret 的重启、状态目录搬迁或公开端口调整不改变名称,不新增持久文件或部署配置;复制整套认证状态也会保留其身份。
+- **旧 Cookie 升级**:旧版共享的 `__Secure-vibe.session_token` 不再用于认证,也不自动迁移或清除,避免影响同主机尚未升级的服务,或在显式退出后回退到旧凭据。首次升级需要用现有账号重新登录一次;账号、数据库和 secret 不重建。
 - **限速**:存 SQLite,默认 100 次每分钟;`/sign-in/username`、`/sign-up/email` 各 5 次每分钟;`/get-session` 免限速,因为 Caddy 对每个 Workbench 资源都会调它。
 - **续租 cookie**:显式关闭 `session.cookieCache`,成功的 `/auth/verify` 最多发一个 `session_token` cookie;拒绝时允许多个清除 cookie。HTTP 请求与握手触发续租,单靠已建立 WebSocket 的帧不会续租。
 - **可信 Origin**:`--public-origin` 可重复或逗号分隔,每项必须是完整 HTTPS Origin,不能含凭据、非根路径、查询、片段、控制字符或通配符。`create` 在打开持久状态前规范化、去重并冻结为只读 `publicOrigins`;Better Auth 的 `trustedOrigins` 使用全表,`baseURL` 使用第一项。请求头只能选中表内地址,不能新增可信来源。面向用户的域名/IP 多入口配置见[安装与启动](../../docs/install.md#configuration-and-browser-addresses)。
-- **cookie 的主机边界**:不设置 `Domain`,不同 hostname/IP 通常各有浏览器会话,各自登录和退出;同一 hostname 的不同端口不隔离 cookie。token 本身不是按入口绑定的凭据,手动复制的有效 cookie 仍须按泄露凭据处理。
+- **cookie 的主机边界**:不设置 `Domain`,不同 hostname/IP 通常各有浏览器会话,各自登录和退出;浏览器不按端口隔离 cookie,同主机独立实例依靠上述命名空间避免误覆盖。这不是同主机不可信服务之间的安全隔离。token 本身不是按入口绑定的凭据,手动复制的有效 cookie 仍须按泄露凭据处理。
 - **basePath**:`create` 同时验证并规范化 base path,根路径 `/` 转为空前缀,HTTP adapter 直接使用服务的 `basePath`,不维护第二份校验或独立配置。
 - **取舍**:嵌入进程而不是 sidecar,是为了一个进程、一个 socket、一次生命周期;用 Better Auth 而不是自研,是为了不自己维护密码哈希、会话与限速。使用 Node 内置 `node:sqlite` 的 `DatabaseSync`,不新增原生 SQLite 构建依赖;数据库文件与 secret 格式保持不变。
 
@@ -570,7 +572,7 @@ Caddy 将认证路由直接转发到同一个 Remote Server socket;其他路径�
 
 | 验证层 | 关键场景 |
 | --- | --- |
-| [认证域与 HTTP 回归][auth-tests] | 未注册时的导航与 WebSocket 门禁;注册、持久化、续期、退出;并发单管理员与预先关闭注册;`/verify` 免限速;第二入口与独立会话、表外请求不调用 Better Auth、规范化跳转、配置白名单/空 state/basePath 校验、双语错误映射、两种传输下的流式限长;状态损坏时失败关闭 |
+| [认证域与 HTTP 回归][auth-tests] | 未注册时的导航与 WebSocket 门禁;注册、持久化、续期、退出;同主机双端口共用 Cookie 容器时的实例隔离、多浏览器独立会话、状态搬迁与端口调整、旧 Cookie 不复活会话;并发单管理员与预先关闭注册;`/verify` 免限速;第二入口与独立会话、表外请求不调用 Better Auth、规范化跳转、配置白名单/空 state/basePath 校验、双语错误映射、两种传输下的流式限长;状态损坏时失败关闭 |
 | [Workbench contribution 回归][contribution-tests] | Accounts 子菜单、命令面板与 base path 导航;原菜单保留;标准 NLS title 与英文搜索别名;404、会话过期、网络失败与销毁后的迟到响应;纳入 Vibe CI 的完整 focused runGlob,确认套件实际执行,不以单目录运行替代组合验证 |
 | 隔离 Web Workbench 界面验证 | 已验证 Accounts → 实例账号 → Sign Out → 确认页 → 登录页;GET 确认页不撤销会话,确认 POST 后 status 为未登录;重新登录后测试 provider 账号仍在,退出该 provider 后实例 status 仍为已登录;使用一次性认证扩展、账号与状态,不操作真实 GitHub / Microsoft 会话 |
 | [Web Client 服务端回归][web-client-tests] | 同一匹配规则选中白名单第二项、表外 Host 回第一项、原 token server 回退,以及缓存与启动路径 |

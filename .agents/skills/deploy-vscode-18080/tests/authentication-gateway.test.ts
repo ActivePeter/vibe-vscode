@@ -114,7 +114,8 @@ try {
 	const deniedHost = await request('/auth/register', { method: 'POST', headers: { ...headers, Origin: publicOrigin }, body: form });
 	const registration = await request('/auth/register', { method: 'POST', headers: { ...headers, 'X-Forwarded-Host': `${new URL(secondOrigin).host}, proxy.invalid`, Origin: secondOrigin }, body: form });
 	assert.deepEqual([deniedRegistration.status, deniedHost.status, registration.status, registration.headers.location], [403, 403, 303, `${secondOrigin}/`]);
-	const sessionCookie = registration.headers['set-cookie']?.find(value => value.startsWith('__Secure-vibe.session_token='));
+	assert.match(authentication.sessionCookieName, /^__Secure-vibe-[0-9a-f]{32}\.session_token$/);
+	const sessionCookie = registration.headers['set-cookie']?.find(value => value.startsWith(`${authentication.sessionCookieName}=`));
 	assert.ok(sessionCookie);
 	const cookie = sessionCookie.split(';', 1)[0];
 	await delay(1100);
@@ -122,7 +123,7 @@ try {
 	assert.equal(allowed.status, 200);
 	const renewalCookies = allowed.headers['set-cookie'] ?? [];
 	assert.equal(renewalCookies.length, 1);
-	assert.match(renewalCookies[0], /^__Secure-vibe\.session_token=/);
+	assert.equal(renewalCookies[0].split('=', 1)[0], authentication.sessionCookieName);
 	assert.deepEqual(JSON.parse(allowed.body), { renewalHeader: null });
 	const allowedSocket = await request('/websocket', { headers: { ...webSocketHeaders, Cookie: cookie } });
 	assert.equal(allowedSocket.status, 101);

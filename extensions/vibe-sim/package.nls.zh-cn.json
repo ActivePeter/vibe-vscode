@@ -1,0 +1,7 @@
+{
+	"displayName": "Sim 运行时",
+	"description": "由扩展管理 Sim Agent 运行时生命周期（预览基础设施）。",
+	"command.startRuntime": "启动插件运行时（预览）",
+	"command.stopRuntime": "停止插件运行时",
+	"command.showRuntimeStatus": "显示插件运行时状态"
+}

@@ -1,0 +1,7 @@
+{
+	"displayName": "Sim Runtime",
+	"description": "Extension-owned lifecycle for the Sim agent runtime (preview infrastructure).",
+	"command.startRuntime": "Start Plugin Runtime (Preview)",
+	"command.stopRuntime": "Stop Plugin Runtime",
+	"command.showRuntimeStatus": "Show Plugin Runtime Status"
+}

@@ -1,0 +1,57 @@
+{
+  "name": "sim",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "0.0.1",
+  "publisher": "vibe-vscode",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.134.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "l10n": "./l10n",
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": false,
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "vibe-vscode.sim.startRuntime",
+        "title": "%command.startRuntime%",
+        "category": "Sim"
+      },
+      {
+        "command": "vibe-vscode.sim.stopRuntime",
+        "title": "%command.stopRuntime%",
+        "category": "Sim"
+      },
+      {
+        "command": "vibe-vscode.sim.showRuntimeStatus",
+        "title": "%command.showRuntimeStatus%",
+        "category": "Sim"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "npm-run-all2 -lp bundle typecheck",
+    "bundle": "node ./esbuild.mts",
+    "typecheck": "node ../../node_modules/@typescript/native/lib/tsc.js --project ./tsconfig.json --noEmit",
+    "watch": "npm-run-all2 -lp watch-bundle watch-typecheck",
+    "watch-bundle": "node ./esbuild.mts --watch",
+    "watch-typecheck": "npm run typecheck -- --watch",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test ./scripts/*.test.mts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ActivePeter/vibe-vscode.git"
+  }
+}

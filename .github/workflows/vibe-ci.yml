@@ -124,6 +124,9 @@ jobs:
       - name: Compile client and Vibe extension
         run: npm exec -- npm-run-all2 -lp compile-client compile-vibe-vscode
 
+      - name: Test Sim plugin runtime lifecycle
+        run: npm --prefix extensions/vibe-sim test
+
       - name: Test Vibe extension protocol
         run: npm --prefix extensions/vibe-vscode run test-web
 
@@ -229,7 +232,9 @@ jobs:
           ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Verify clean extension checkout
-        run: test ! -e extensions/vibe-vscode/dist
+        run: |
+          test ! -e extensions/vibe-vscode/dist
+          test ! -e extensions/vibe-sim/dist
 
       - name: Free runner disk space
         run: |
@@ -277,6 +282,10 @@ jobs:
           PACKAGE_ROOT: ${{ github.workspace }}/../vscode-reh-web-linux-x64
         run: |
           test -f "$PACKAGE_ROOT/extensions/vibe-vscode/dist/browser/extension.js"
+          test -f "$PACKAGE_ROOT/extensions/vibe-sim/dist/extension.js"
+          test -f "$PACKAGE_ROOT/extensions/vibe-sim/dist/runtimeHost.js"
+          test -f "$PACKAGE_ROOT/extensions/vibe-sim/l10n/bundle.l10n.zh-cn.json"
+          node -e "const manifest = require(process.env.PACKAGE_ROOT + '/extensions/vibe-sim/package.json'); if (manifest.main !== './dist/extension.js' || manifest.browser || manifest.extensionKind.join() !== 'workspace') { throw new Error('Unexpected Sim extension host contract'); }"
           test -f "$PACKAGE_ROOT/extensions/vibe-vscode/package.nls.zh-cn.json"
           test -f "$PACKAGE_ROOT/extensions/vibe-vscode/l10n/bundle.l10n.json"
           test -f "$PACKAGE_ROOT/extensions/vibe-vscode/l10n/bundle.l10n.zh-cn.json"

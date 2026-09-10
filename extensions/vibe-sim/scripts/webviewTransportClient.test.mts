@@ -27,7 +27,7 @@ function harness() {
 		module: { exports: {} }, window, navigator, document: { baseURI: 'https://resources.vscode.invalid/' },
 		acquireVsCodeApi: () => ({ postMessage: (message: TransportRequest) => messages.push(message), getState: () => state, setState: (value: object) => { state = value; } }),
 		URL, URLSearchParams, Headers, Request, Response, Blob, FormData, ReadableStream, TextDecoderStream, Uint8Array, ArrayBuffer,
-		TextEncoder, EventTarget, Event, MessageEvent, AbortSignal, AbortController, DOMException, setTimeout, clearTimeout,
+		TextEncoder, EventTarget, Event, MessageEvent, CloseEvent, AbortSignal, AbortController, DOMException, setTimeout, clearTimeout,
 	}) as typeof import('../src/webviewTransportClient.ts');
 	install({ token: 'test-view', path: '/workspace/one', resourceOrigin: 'https://resources.vscode.invalid/' });
 	return {
@@ -38,6 +38,55 @@ function harness() {
 }
 
 describe('native browser transport compatibility', () => {
+	it('preserves fragmented SSE events and resumes with the last event ID without replaying a mutation', async t => {
+		const view = harness();
+		const stream = new view.window.EventSource('/api/events');
+		t.after(() => stream.close());
+		const events: { data: string; id: string }[] = [];
+		stream.addEventListener('progress', event => { const message = event as MessageEvent; events.push({ data: message.data, id: message.lastEventId }); });
+		await waitFor(() => view.messages.length === 1, 'event stream request');
+		view.reply({ type: 'response', id: 1, status: 200, statusText: 'OK', headers: [['content-type', 'text/event-stream']], path: '/api/events', redirected: false, body: true });
+		const chunks = ['retry: 100\nid: turn-7\nevent: progress\ndata: fir', 'st\r', '\ndata: second\r\n\r\n'];
+		for (let index = 0; index < chunks.length; index++) {
+			await waitFor(() => view.messages.filter(message => message.type === 'pull').length > index, 'event stream backpressure');
+			view.reply({ type: 'chunk', id: 1, data: new TextEncoder().encode(chunks[index]) });
+		}
+		await waitFor(() => events.length === 1, 'fragmented event dispatch');
+		view.reply({ type: 'end', id: 1 });
+		await waitFor(() => view.messages.filter(message => message.type === 'fetch').length === 2, 'read-only event reconnect');
+		const resumed = view.messages.filter(message => message.type === 'fetch')[1];
+		stream.close();
+		assert.deepStrictEqual({
+			events, method: resumed.method, path: resumed.path, lastId: new Headers(resumed.headers).get('last-event-id'),
+			closed: stream.readyState, cancelled: view.messages.some(message => message.type === 'cancel' && message.id === resumed.id),
+		}, { events: [{ data: 'first\nsecond', id: 'turn-7' }], method: 'GET', path: '/api/events', lastId: 'turn-7', closed: 2, cancelled: true });
+	});
+
+	it('preserves WebSocket binary frames, acknowledgements and ordered writes before close', async t => {
+		const view = harness();
+		const socket = new view.window.WebSocket('wss://sim.vscode.invalid/socket.io/?EIO=4&transport=websocket');
+		t.after(() => socket.close());
+		const frames: number[][] = [];
+		const closures: { code: number; reason: string; clean: boolean }[] = [];
+		socket.binaryType = 'arraybuffer';
+		socket.onmessage = event => frames.push([...new Uint8Array(event.data)]);
+		socket.onclose = event => closures.push({ code: event.code, reason: event.reason, clean: event.wasClean });
+		assert.throws(() => socket.send('too early'), { name: 'InvalidStateError' });
+		view.reply({ type: 'socketOpened', id: 1, protocol: '', extensions: '' });
+		socket.send(new Blob([new Uint8Array([7, 8])]));
+		socket.send('next');
+		view.reply({ type: 'socketData', id: 1, data: new Uint8Array([1, 2, 3]) });
+		socket.close(1000, 'finished');
+		await waitFor(() => view.messages.some(message => message.type === 'socketClose'), 'ordered socket close');
+		view.reply({ type: 'socketSent', id: 1, bytes: 6 });
+		view.reply({ type: 'socketClosed', id: 1, code: 1000, reason: 'finished', clean: true });
+		assert.deepStrictEqual({
+			frames, closures, ready: socket.readyState, buffered: socket.bufferedAmount,
+			writes: view.messages.filter(message => message.type === 'socketSend' || message.type === 'socketClose').map(message => message.type),
+			acknowledged: view.messages.filter(message => message.type === 'socketAck').length,
+		}, { frames: [[1, 2, 3]], closures: [{ code: 1000, reason: 'finished', clean: true }], ready: 3, buffered: 0, writes: ['socketSend', 'socketSend', 'socketClose'], acknowledged: 1 });
+	});
+
 	it('ignores forged and malformed replies without completing another pending request', async () => {
 		const view = harness();
 		let completed = false;

@@ -207,6 +207,7 @@ grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-
 	touch "$runtime_root/package.json" "$runtime_root/product.json" "$runtime_root/out/server-main.js" \
 		"$runtime_root/extensions/vibe-vscode/package.json" "$runtime_root/extensions/vibe-vscode/dist/browser/extension.js" \
 		"$runtime_root/out/vs/code/browser/workbench/workbench.html"
+	printf '{}\n' > "$runtime_root/package.json"
 	validate_runtime_root "$runtime_root" || fail_test 'production layout unexpectedly requires development-only paths'
 	if validate_candidate_runtime_root "$runtime_root"; then
 		fail_test 'pre-launcher runtime was accepted as a new candidate'
@@ -227,6 +228,7 @@ grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-
 		fail_test 'candidate without a complete native Sim package was accepted'
 	fi
 	mkdir -p "$runtime_root/extensions/vibe-sim/dist"
+	printf '{}\n' > "$runtime_root/extensions/vibe-sim/package.json"
 	printf 'process.exit(1);\n' > "$runtime_root/extensions/vibe-sim/dist/verifyRuntime.js"
 	if validate_candidate_runtime_root "$runtime_root"; then
 		fail_test 'candidate with a failed native Sim preflight was accepted'

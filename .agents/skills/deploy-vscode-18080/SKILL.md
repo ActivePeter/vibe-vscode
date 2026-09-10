@@ -20,11 +20,21 @@ Before running the deployment, tell the user which mode is starting. Run the bun
 ./scripts/deploy-18080.sh --mode snapshot --update-snapshot
 ```
 
+When the user explicitly requests an isolated alternate development port, keep the same deployment
+entry point and set the port for that invocation:
+
+```bash
+VIBE_VSCODE_PUBLIC_PORT=18082 ./scripts/deploy-18080.sh
+```
+
+The default remains 18080. An alternate port derives its own tmux session, XDG state, socket,
+runtime release root, log, and deployment lock, so it cannot stop or promote the 18080 service.
+
 Automatic service recovery always reuses its selected release; it never rebuilds. Do not add Supervisor.
 
 The script resolves the source root from its own repository location. Mutable state and TLS files
 default to XDG state/config directories. An operator can override those locations through the
-existing `VIBE_VSCODE_SERVICE_STATE_ROOT`, `VIBE_VSCODE_SERVICE_LOG`,
+existing `VIBE_VSCODE_PUBLIC_PORT`, `VIBE_VSCODE_SERVICE_STATE_ROOT`, `VIBE_VSCODE_SERVICE_LOG`,
 `VIBE_VSCODE_TLS_CERT_PATH`, and `VIBE_VSCODE_TLS_KEY_PATH` environment inputs without editing
 tracked files. `VIBE_VSCODE_SERVER_BASE_PATH` selects an optional simple URL base path, and
 `VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS` selects a 60-second to 7-day session lifetime.
@@ -34,6 +44,12 @@ client-supplied proxy headers or substitute a localhost probe address for a remo
 
 The account, session, and request authorization contract is canonical in
 [Full-screen login and instance authentication](../../../vibe_vscode_doc/design/login_authentication.md).
+
+Sim is packaged with the workspace extension, which owns its private runtime and storage.
+The update builds the locked native package and validates its complete contents before
+stopping the active service. New Caddy releases do not forward shared Sim routes or load
+shared Sim configuration. See the canonical
+[Sim plugin runtime contract](../../../vibe_vscode_doc/design/sim_plugin_runtime.md).
 
 The script must remain the single automation entry for this skill. It:
 
@@ -65,6 +81,13 @@ authentication environment inputs. Such a release cannot become a newly selected
 The server module also exists in that pre-CLI release, so its presence alone cannot establish
 CLI support. This bridge is limited to the live, verified rollback anchor; there is no separate
 compatibility snapshot-building mode.
+
+For the first migration from a pre-authentication release, the same rollback-only bridge may
+retain the exact recognized live runtime when its metadata has no authentication contract, its
+embedded authentication module is absent, and both its original public/private health gates pass
+(Workbench `200`, authentication paths `404`). Only restoration of that anchor may use those old
+gates. New candidates and selected snapshot restarts still require authentication. A running
+service with no verified rollback anchor is left untouched; no candidate is activated without one.
 
 A running pre-launcher or source-linked release may remain only the verified rollback anchor after
 passing both health boundaries. New candidates and selected snapshot restarts must satisfy the

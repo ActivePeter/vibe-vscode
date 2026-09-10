@@ -1,6 +1,4 @@
 {
 	"displayName": "vibe vscode",
-	"description": "Opens the privileged vibe vscode fullscreen panel.",
-	"command.openFullscreenPanel": "Open Fullscreen Panel",
-	"command.closeFullscreenPanel": "Close Fullscreen Panel"
+	"description": "Provides file context and editor capabilities to hosted Sim surfaces."
 }

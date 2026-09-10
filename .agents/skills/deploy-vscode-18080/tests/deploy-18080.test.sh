@@ -19,26 +19,25 @@ assert_equal() {
 
 export VIBE_VSCODE_PUBLIC_ORIGIN=https://public.example
 bash -n "$DEPLOY_SCRIPT"
-custom_configuration="$(
-	VIBE_VSCODE_DEPLOY_NAME=deploy-vscode-18084 \
-	VIBE_VSCODE_SERVICE_SESSION=vibe_vscode_18084 \
-	VIBE_VSCODE_SERVICE_PORT=18084 \
-	VIBE_VSCODE_SOCKET_ROOT=/test/socket-18084 \
-	VIBE_VSCODE_BACKEND_SOCKET=/test/socket-18084/backend-custom.sock \
-	VIBE_VSCODE_SERVICE_STATE_ROOT=/test/state-18084 \
-	VIBE_VSCODE_SERVICE_LOG=/test/log-18084.log \
-	VIBE_VSCODE_SERVICE_RUNTIME_ROOT=/test/runtime-18084 \
-	VIBE_VSCODE_DEPLOY_ENTRYPOINT="$DEPLOY_SCRIPT" \
-		bash -c '
-			source "$1"
-			printf "%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
-				"$SERVICE_DEPLOY_NAME" "$SERVICE_SESSION" "$SERVICE_PORT" "$SERVICE_SOCKET_ROOT" \
-				"$SERVICE_BACKEND_SOCKET" "$SERVICE_STATE_ROOT" "$SERVICE_LOG" "$SERVICE_RUNTIME_ROOT" "$SCRIPT_PATH"
-		' bash "$DEPLOY_SCRIPT"
-)"
-assert_equal "deploy-vscode-18084|vibe_vscode_18084|18084|/test/socket-18084|/test/socket-18084/backend-custom.sock|/test/state-18084|/test/log-18084.log|/test/runtime-18084|$DEPLOY_SCRIPT" "$custom_configuration"
+unset VIBE_VSCODE_PUBLIC_PORT
 source "$DEPLOY_SCRIPT"
 assert_equal "$(cd -- "$TEST_ROOT/../../../.." && pwd -P)" "$SOURCE_ROOT"
+assert_equal 18080 "$SERVICE_PORT"
+assert_equal vibe_vscode_latest "$SERVICE_SESSION"
+assert_equal vibe-vscode-18080 "${SERVICE_SOCKET_ROOT##*/}"
+assert_equal vibe-vscode-18080 "${SERVICE_RUNTIME_ROOT##*/}"
+alternate_configuration="$(
+	VIBE_VSCODE_PUBLIC_PORT=18082 bash -c '
+		set -euo pipefail
+		source "$1"
+		validate_service_port
+		printf "%s|%s|%s|%s\n" "$SERVICE_PORT" "$SERVICE_SESSION" "${SERVICE_SOCKET_ROOT##*/}" "${SERVICE_RUNTIME_ROOT##*/}"
+	' bash "$DEPLOY_SCRIPT"
+)"
+assert_equal '18082|vibe_vscode_18082|vibe-vscode-18082|vibe-vscode-18082' "$alternate_configuration"
+if VIBE_VSCODE_PUBLIC_PORT=65536 bash -c 'source "$1"; validate_service_port' bash "$DEPLOY_SCRIPT" >/dev/null 2>&1; then
+	fail_test 'deployment accepted an out-of-range alternate port'
+fi
 assert_equal https://public.example "$PUBLIC_ORIGIN"
 host_mount_prefix='/mnt/'"ceph"
 if grep -Fq "$host_mount_prefix" "$DEPLOY_SCRIPT"; then
@@ -50,6 +49,17 @@ snapshot_definition="$(declare -f prepare_snapshot_restart)"
 eval "${snapshot_definition/prepare_snapshot_restart/prepare_real_snapshot_restart}"
 active_definition="$(declare -f prepare_active_runtime)"
 eval "${active_definition/prepare_active_runtime/prepare_real_active_runtime}"
+
+start_command="$(
+	validate_candidate_runtime_startup() { :; }
+	is_backend_socket_listening() { return 1; }
+	rm() { :; }
+	tmux() { printf '%s\n' "$*"; }
+	start_service /test/runtime /test/workspace.code-workspace
+)"
+for propagated_input in VIBE_VSCODE_PUBLIC_PORT VIBE_VSCODE_SOCKET_ROOT VIBE_VSCODE_BACKEND_SOCKET VIBE_VSCODE_SERVICE_STATE_ROOT VIBE_VSCODE_SERVICE_LOG VIBE_VSCODE_TLS_CERT_PATH VIBE_VSCODE_TLS_KEY_PATH VIBE_VSCODE_SERVER_BASE_PATH VIBE_VSCODE_PUBLIC_ORIGIN VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS; do
+	[[ "$start_command" == *"$propagated_input="* ]] || fail_test "service start omitted $propagated_input"
+done
 
 assert_equal restart "$(resolve_deploy_action snapshot false)"
 assert_equal update "$(resolve_deploy_action snapshot true)"
@@ -104,6 +114,7 @@ assert_equal 'require-update ensure-caddy require-source prepare-active:/test/wo
 
 temporary_root="$(mktemp -d)"
 holder_pid=
+copy_previous_root=
 copy_test_root=
 cleanup() {
 	touch "$temporary_root/release" 2>/dev/null || true
@@ -114,20 +125,33 @@ cleanup() {
 	if [[ -n "$copy_test_root" ]]; then
 		rm -rf -- "$copy_test_root"
 	fi
+	if [[ -n "$copy_previous_root" ]]; then
+		rm -rf -- "$copy_previous_root"
+	fi
 }
 trap cleanup EXIT
 
-mkdir -p "$SOURCE_ROOT/.build"
-copy_test_root="$(mktemp -d "$SOURCE_ROOT/.build/deploy-copy-test.XXXXXX")"
-mkdir -p "$copy_test_root/source" "$copy_test_root/releases/previous/lib"
+owned_path="$temporary_root/owned-socket-path"
+replacement_path="$temporary_root/replacement-socket-path"
+touch "$owned_path" "$replacement_path"
+owned_identity="$(path_identity "$owned_path")"
+mv -f -- "$replacement_path" "$owned_path"
+replacement_identity="$(path_identity "$owned_path")"
+[[ "$owned_identity" != "$replacement_identity" ]] || fail_test 'replacement path unexpectedly retained the previous identity'
+remove_path_if_identity_matches "$owned_path" "$owned_identity"
+[[ -e "$owned_path" ]] || fail_test 'delayed cleanup removed a replacement path owned by a newer service generation'
+remove_path_if_identity_matches "$owned_path" "$replacement_identity"
+[[ ! -e "$owned_path" ]] || fail_test 'cleanup did not remove the path owned by its service generation'
+
+mkdir -p "$SERVICE_RUNTIME_ROOT" "$SERVICE_RELEASES_ROOT"
+copy_test_root="$(mktemp -d "$SERVICE_RUNTIME_ROOT/deploy-copy-test.XXXXXX")"
+copy_previous_root="$(mktemp -d "$SERVICE_RELEASES_ROOT/deploy-copy-previous.XXXXXX")"
+mkdir -p "$copy_test_root/source" "$copy_previous_root/lib"
 printf 'unchanged dependency\n' > "$copy_test_root/source/dependency.js"
-cp -a "$copy_test_root/source/dependency.js" "$copy_test_root/releases/previous/lib/dependency.js"
-VIBE_VSCODE_SERVICE_RUNTIME_ROOT="$copy_test_root" bash -c '
-	source "$1"
-	copy_runtime_tree "$2/source" "$2/candidate" "$2/releases/previous/lib"
-	copy_runtime_tree "$2/source" "$2/mutable-candidate" "$2/source"
-' bash "$DEPLOY_SCRIPT" "$copy_test_root"
-[[ "$copy_test_root/candidate/dependency.js" -ef "$copy_test_root/releases/previous/lib/dependency.js" ]] || fail_test 'staging did not reuse an unchanged immutable dependency below the checkout'
+cp -a "$copy_test_root/source/dependency.js" "$copy_previous_root/lib/dependency.js"
+copy_runtime_tree "$copy_test_root/source" "$copy_test_root/candidate" "$copy_previous_root/lib"
+copy_runtime_tree "$copy_test_root/source" "$copy_test_root/mutable-candidate" "$copy_test_root/source"
+[[ "$copy_test_root/candidate/dependency.js" -ef "$copy_previous_root/lib/dependency.js" ]] || fail_test 'staging did not reuse an unchanged immutable dependency below the checkout'
 [[ ! "$copy_test_root/mutable-candidate/dependency.js" -ef "$copy_test_root/source/dependency.js" ]] || fail_test 'staging linked to mutable source'
 
 if grep -Eq -- 'run_legacy_server|--tls-(key|cert)-path' "$DEPLOY_SCRIPT"; then
@@ -155,6 +179,21 @@ assert_equal "$(printf '%s\n' \
 	'authentication-backend:/test/backend.sock' \
 	'backend:/test/backend.sock')" "$(cat "$proxy_health_calls")"
 
+(
+	runtime_predates_authentication() { [[ "$1" == /test/anonymous ]]; }
+	authentication_public_health_status() { printf '404'; }
+	root_health_status() { printf '200'; }
+	authentication_backend_health_status() { printf '404'; }
+	backend_health_status() { printf '200'; }
+	if is_runtime_healthy /test/backend.sock; then
+		fail_test 'new candidate passed health checks without authentication'
+	fi
+	is_runtime_healthy /test/backend.sock /test/anonymous || fail_test 'verified pre-authentication rollback could not pass its original health gates'
+	if is_runtime_healthy /test/backend.sock /test/authenticated; then
+		fail_test 'broken authenticated runtime was downgraded to anonymous health checks'
+	fi
+)
+
 grep -Fq -- 'local -a server=("$runtime_root/bin/vibe-vscode-server")' "$DEPLOY_SCRIPT" || fail_test 'deployment does not use the shared runtime launcher'
 grep -Fq -- '"$SOURCE_ROOT/build/web-release.ts" prepare' "$DEPLOY_SCRIPT" || fail_test 'deployment does not use the consolidated preparation command'
 grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" --development' "$DEPLOY_SCRIPT" || fail_test 'deployment does not stamp source identity and the development profile inside staging'
@@ -168,6 +207,7 @@ grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-
 	touch "$runtime_root/package.json" "$runtime_root/product.json" "$runtime_root/out/server-main.js" \
 		"$runtime_root/extensions/vibe-vscode/package.json" "$runtime_root/extensions/vibe-vscode/dist/browser/extension.js" \
 		"$runtime_root/out/vs/code/browser/workbench/workbench.html"
+	printf '{}\n' > "$runtime_root/package.json"
 	validate_runtime_root "$runtime_root" || fail_test 'production layout unexpectedly requires development-only paths'
 	if validate_candidate_runtime_root "$runtime_root"; then
 		fail_test 'pre-launcher runtime was accepted as a new candidate'
@@ -184,6 +224,16 @@ grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-
 		fail_test 'candidate without authentication metadata was accepted'
 	fi
 	printf '{"authentication":"embedded-cli-v1"}\n' > "$runtime_root/vibe-release.json"
+	if validate_candidate_runtime_root "$runtime_root"; then
+		fail_test 'candidate without a complete native Sim package was accepted'
+	fi
+	mkdir -p "$runtime_root/extensions/vibe-sim/dist"
+	printf '{}\n' > "$runtime_root/extensions/vibe-sim/package.json"
+	printf 'process.exit(1);\n' > "$runtime_root/extensions/vibe-sim/dist/verifyRuntime.js"
+	if validate_candidate_runtime_root "$runtime_root"; then
+		fail_test 'candidate with a failed native Sim preflight was accepted'
+	fi
+	printf 'process.exit(0);\n' > "$runtime_root/extensions/vibe-sim/dist/verifyRuntime.js"
 	validate_candidate_runtime_root "$runtime_root" || fail_test 'complete runtime failed the shared launcher preflight'
 	mv "$runtime_root/out/vs/code/browser/workbench/workbench.html" "$runtime_root/out/vs/code/browser/workbench/workbench-dev.html"
 	validate_candidate_runtime_root "$runtime_root" || fail_test 'source layout failed the shared runtime contract'
@@ -222,19 +272,25 @@ legacy_gateway_call="$(
 )"
 assert_equal '/test/pre-launcher-runtime|/test/workspace.code-workspace|true' "$legacy_gateway_call"
 
-# The real two-process startup uses CLI inputs for candidates and preserves the
-# old embedded server's environment contract only for a verified rollback.
+# The real two-process startup uses CLI inputs for candidates and restores the
+# original contract of a verified embedded or pre-authentication rollback anchor.
 gateway_fixture="$temporary_root/gateway"
-mkdir -p "$gateway_fixture/bin" "$gateway_fixture/out"
+mkdir -p "$gateway_fixture/bin" "$gateway_fixture/out/vs/server/node"
 ln -s "$(command -v node)" "$gateway_fixture/node"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "$TEST_ARGUMENTS"\nprintf "%%s|%%s\\n" "${VIBE_VSCODE_AUTH_STATE_DIR-}" "${VIBE_VSCODE_AUTH_SESSION_TTL_SECONDS-}" > "$TEST_ENVIRONMENT"\n' > "$gateway_fixture/bin/vibe-vscode-server"
 printf '#!/bin/sh\nexec sleep 30\n' > "$gateway_fixture/caddy"
 chmod +x "$gateway_fixture/bin/vibe-vscode-server" "$gateway_fixture/caddy"
-for legacy in false true; do
-	if [[ "$legacy" == true ]]; then
+for authentication in cli embedded anonymous; do
+	legacy=true
+	touch "$gateway_fixture/$EMBEDDED_AUTH_SERVER_RELATIVE_PATH"
+	if [[ "$authentication" != cli ]]; then
 		printf '{}\n' > "$gateway_fixture/vibe-release.json"
 	else
+		legacy=false
 		printf '{"authentication":"embedded-cli-v1"}\n' > "$gateway_fixture/vibe-release.json"
+	fi
+	if [[ "$authentication" == anonymous ]]; then
+		rm "$gateway_fixture/$EMBEDDED_AUTH_SERVER_RELATIVE_PATH"
 	fi
 	set +e
 	VIBE_VSCODE_SERVICE_STATE_ROOT="$gateway_fixture/state" \
@@ -248,10 +304,15 @@ for legacy in false true; do
 	gateway_status=$?
 	set -e
 	assert_equal 1 "$gateway_status"
-	if [[ "$legacy" == true ]]; then
+	if [[ "$authentication" == embedded ]]; then
 		assert_equal "$gateway_fixture/state/auth|43200" "$(cat "$gateway_fixture/environment")"
 		if grep -Fxq -- '--auth-state-dir' "$gateway_fixture/arguments"; then
 			fail_test 'rollback passed new CLI flags to the older embedded server'
+		fi
+	elif [[ "$authentication" == anonymous ]]; then
+		assert_equal '|43200' "$(cat "$gateway_fixture/environment")"
+		if grep -Fxq -- '--auth-state-dir' "$gateway_fixture/arguments"; then
+			fail_test 'pre-authentication rollback received unsupported authentication flags'
 		fi
 	else
 		assert_equal '|43200' "$(cat "$gateway_fixture/environment")"
@@ -308,6 +369,7 @@ mkdir -p "$runtime_links_root/lib" "$external_links_root"
 touch "$runtime_links_root/lib/internal" "$external_links_root/external"
 ln -s lib/internal "$runtime_links_root/internal-link"
 validate_runtime_links "$runtime_links_root"
+
 ln -s "$external_links_root/external" "$runtime_links_root/external-link"
 if validate_runtime_links "$runtime_links_root" >/dev/null 2>&1; then
 	fail_test 'runtime accepted a symbolic link outside its immutable release'
@@ -347,13 +409,31 @@ assert_equal '/test/running|true' "$legacy_anchor"
 set +e
 (
 	trap - EXIT
+	tmux() { [[ "$1" == has-session ]]; }
+	is_recognized_service_session() { :; }
+	service_runtime_root() { printf '/test/running\n'; }
+	validate_caddy_runtime_root() { :; }
+	is_runtime_healthy() { return 1; }
+	resolve_runtime_link() { return 1; }
+	stop_service() { touch "$temporary_root/stopped-without-rollback"; }
+	prepare_real_active_runtime /test/workspace.code-workspace
+) >"$temporary_root/no-rollback.log" 2>&1
+no_rollback_status=$?
+set -e
+assert_equal 1 "$no_rollback_status"
+[[ ! -e "$temporary_root/stopped-without-rollback" ]] || fail_test 'unverified running service was stopped without a rollback anchor'
+grep -Fq 'leaving it untouched' "$temporary_root/no-rollback.log" || fail_test 'missing rollback did not explain the pre-stop failure'
+
+set +e
+(
+	trap - EXIT
 	ACTIVE_RUNTIME_ROOT=/test/running
 	ACTIVE_RUNTIME_ALLOW_LEGACY_RUNTIME=true
 	validate_candidate_runtime_root() { :; }
 	stop_service() { printf 'stop\n' >> "$temporary_root/rollback.calls"; }
 	start_service() { printf 'start:%s:%s\n' "$1" "${3:-false}" >> "$temporary_root/rollback.calls"; }
 	wait_until_ready() {
-		printf 'wait:%s:%s\n' "$1" "$2" >> "$temporary_root/rollback.calls"
+		printf 'wait:%s:%s:%s\n' "$1" "$2" "${3:-false}" >> "$temporary_root/rollback.calls"
 		[[ "$1" == 'restored last-known-good runtime' ]]
 	}
 	print_log_tail() { :; }
@@ -364,6 +444,8 @@ rollback_status=$?
 set -e
 assert_equal 1 "$rollback_status"
 grep -Fxq 'start:/test/running:true' "$temporary_root/rollback.calls" || fail_test 'rollback did not restart the verified legacy runtime through the bounded compatibility path'
+grep -Fxq 'wait:candidate runtime:/test/candidate:false' "$temporary_root/rollback.calls" || fail_test 'candidate health checks allowed the legacy contract'
+grep -Fxq 'wait:restored last-known-good runtime:/test/running:true' "$temporary_root/rollback.calls" || fail_test 'rollback health checks lost the verified legacy contract'
 if grep -Fq "link:$SERVICE_CURRENT_LINK:/test/running" "$temporary_root/rollback.calls"; then
 	fail_test 'legacy rollback runtime became the strict selected snapshot'
 fi
@@ -445,6 +527,41 @@ assert_equal 1 "$(grep -c '^' "$temporary_root/actions")"
 touch "$temporary_root/release"
 wait "$holder_pid"
 holder_pid=
+
+graceful_shutdown_calls="$temporary_root/graceful-shutdown.calls"
+(
+	trap - EXIT
+	process_group_alive=true
+	tmux() {
+		case "$1" in
+		has-session)
+			return 0
+			;;
+		display-message)
+			printf 'exec %s --internal-run /test/runtime /test/workspace.code-workspace\n' "$SCRIPT_PATH"
+			;;
+		kill-session)
+			printf 'kill-session\n' >> "$graceful_shutdown_calls"
+			;;
+		esac
+	}
+	service_runtime_root() { printf '/test/runtime\n'; }
+	validate_runtime_root() { :; }
+	service_process_group() { printf '4242\n'; }
+	is_port_listening() { return 1; }
+	is_backend_socket_listening() { return 1; }
+	is_process_group_alive() { [[ "$process_group_alive" == true ]]; }
+	force_stop_process_group() { fail_test 'graceful shutdown unexpectedly forced the service process group'; }
+	sleep() {
+		printf 'sleep:%s\n' "$1" >> "$graceful_shutdown_calls"
+		process_group_alive=false
+	}
+	rm() { printf 'remove-socket\n' >> "$graceful_shutdown_calls"; }
+	stop_service
+) >"$temporary_root/graceful-shutdown.log" 2>&1
+grep -Fxq 'kill-session' "$graceful_shutdown_calls" || fail_test 'recognized service session was not stopped'
+grep -Fxq 'sleep:0.1' "$graceful_shutdown_calls" || fail_test 'deployment did not wait for the old service process group cleanup to finish'
+grep -Fxq 'remove-socket' "$graceful_shutdown_calls" || fail_test 'backend socket cleanup did not run after the old process group exited'
 
 ownership_calls="$temporary_root/ownership.calls"
 set +e

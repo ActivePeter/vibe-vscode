@@ -50,6 +50,7 @@ import { basename, dirname as uriDirname } from '../../../../base/common/resourc
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import './logicalWorkspace.contribution.js';
+import './vibeProjectContext.js';
 import './logicalWorkspaceEditorAdapter.js';
 import './logicalWorkspaceTerminalAdapter.js';
 import { LogicalWorkspaceLayoutAdapter } from './logicalWorkspaceLayoutAdapter.js';

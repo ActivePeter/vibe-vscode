@@ -38,6 +38,8 @@ import { IWorkbenchLayoutService, Parts } from '../../../services/layout/browser
 import { extensionDefaultIcon } from '../../../services/extensionManagement/common/extensionsIcons.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { GettingStartedInput } from './gettingStartedInput.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../../base/common/product.js';
+import product from '../../../../platform/product/common/product.js';
 
 export const HasMultipleNewFileEntries = new RawContextKey<boolean>('hasMultipleNewFileEntries', false);
 
@@ -438,7 +440,7 @@ export class WalkthroughsService extends Disposable implements IWalkthroughsServ
 
 		const hadLastFoucs = await this.hostService.hadLastFocus();
 		const startupEditor = this.configurationService.getValue<string>('workbench.startupEditor');
-		if (hadLastFoucs && sectionToOpen && this.configurationService.getValue<string>('workbench.welcomePage.walkthroughs.openOnInstall') && startupEditor !== 'agentSessionsWelcomePage') {
+		if (hadLastFoucs && sectionToOpen && this.configurationService.getValue<string>('workbench.welcomePage.walkthroughs.openOnInstall') && (startupEditor !== 'agentSessionsWelcomePage' || !isNativeAgentSessionsUIEnabled(product))) {
 			type GettingStartedAutoOpenClassification = {
 				owner: 'lramos15';
 				comment: 'When a walkthrough is opened upon extension installation';

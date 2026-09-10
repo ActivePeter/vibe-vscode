@@ -10,7 +10,7 @@ import { IExtensionService } from '../../../../services/extensions/common/extens
 import { ExtensionIdentifier } from '../../../../../platform/extensions/common/extensions.js';
 import { IExtensionManagementService, InstallOperation } from '../../../../../platform/extensionManagement/common/extensionManagement.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
-import { IDefaultChatAgent } from '../../../../../base/common/product.js';
+import { IDefaultChatAgent, isNativeAgentSessionsUIEnabled } from '../../../../../base/common/product.js';
 import { IChatWidgetService } from '../chat.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 
@@ -67,7 +67,7 @@ export class ChatGettingStartedContribution extends Disposable implements IWorkb
 
 		// Don't reveal if user prefers the agent sessions welcome page
 		const startupEditor = this.configurationService.getValue<string>('workbench.startupEditor');
-		if (startupEditor !== 'agentSessionsWelcomePage') {
+		if (startupEditor !== 'agentSessionsWelcomePage' || !isNativeAgentSessionsUIEnabled(this.productService)) {
 			// Open Chat view
 			this.chatWidgetService.revealWidget();
 		}

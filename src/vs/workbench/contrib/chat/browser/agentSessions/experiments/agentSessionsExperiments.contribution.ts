@@ -12,7 +12,7 @@ import { AgentTitleBarStatusRendering } from './agentTitleBarStatusWidget.js';
 import { AgentTitleBarStatusService, IAgentTitleBarStatusService } from './agentTitleBarStatusService.js';
 import { Codicon } from '../../../../../../base/common/codicons.js';
 import { localize } from '../../../../../../nls.js';
-import { ContextKeyExpr } from '../../../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, IContextKeyService, RawContextKey } from '../../../../../../platform/contextkey/common/contextkey.js';
 import { ProductQualityContext } from '../../../../../../platform/contextkey/common/contextkeys.js';
 import { InEditorZenModeContext } from '../../../../../common/contextkeys.js';
 import { ChatAgentLocation, ChatConfiguration } from '../../../common/constants.js';
@@ -26,6 +26,9 @@ import { IChatEditingService, ModifiedFileEntryState } from '../../../common/edi
 import { isSessionInProgressStatus } from '../agentSessionsModel.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { autorun } from '../../../../../../base/common/observable.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../../../../base/common/product.js';
+import product from '../../../../../../platform/product/common/product.js';
+import { IProductService } from '../../../../../../platform/product/common/productService.js';
 
 import './unifiedQuickAccessActions.js'; // Register unified quick access actions
 
@@ -240,70 +243,89 @@ class AgentSessionReadyContribution extends Disposable implements IWorkbenchCont
 
 // #region Agent Session Projection & Status
 
-registerAction2(EnterAgentSessionProjectionAction);
-registerAction2(ExitAgentSessionProjectionAction);
-registerAction2(ToggleUnifiedAgentsBarAction);
+const NativeAgentSessionsUIEnabledContext = new RawContextKey<boolean>('nativeAgentSessionsUIEnabled', true);
+
+class NativeAgentSessionsUIContextContribution implements IWorkbenchContribution {
+	static readonly ID = 'chat.nativeAgentSessionsUIContext';
+
+	constructor(
+		@IContextKeyService contextKeyService: IContextKeyService,
+		@IProductService productService: IProductService,
+	) {
+		NativeAgentSessionsUIEnabledContext.bindTo(contextKeyService).set(isNativeAgentSessionsUIEnabled(productService));
+	}
+}
+
+registerWorkbenchContribution2(NativeAgentSessionsUIContextContribution.ID, NativeAgentSessionsUIContextContribution, WorkbenchPhase.BlockStartup);
 
 registerSingleton(IAgentSessionProjectionService, AgentSessionProjectionService, InstantiationType.Delayed);
 registerSingleton(IAgentTitleBarStatusService, AgentTitleBarStatusService, InstantiationType.Delayed);
 
-registerWorkbenchContribution2(AgentTitleBarStatusRendering.ID, AgentTitleBarStatusRendering, WorkbenchPhase.AfterRestored);
-registerWorkbenchContribution2(AgentSessionReadyContribution.ID, AgentSessionReadyContribution, WorkbenchPhase.AfterRestored);
+if (isNativeAgentSessionsUIEnabled(product)) {
+	registerAction2(EnterAgentSessionProjectionAction);
+	registerAction2(ExitAgentSessionProjectionAction);
+	registerAction2(ToggleUnifiedAgentsBarAction);
 
-// Register Agent Status as a menu item in the command center (alongside the search box, not replacing it)
-MenuRegistry.appendMenuItem(MenuId.CommandCenter, {
-	submenu: MenuId.AgentsTitleBarControlMenu,
-	title: localize('agentsControl', "Agents"),
-	icon: Codicon.chatSparkle,
-	when: ContextKeyExpr.and(
-		ChatContextKeys.enabled,
-		ContextKeyExpr.notEquals(`config.${ChatConfiguration.AgentStatusEnabled}`, 'hidden'),
-		ContextKeyExpr.notEquals(`config.${ChatConfiguration.AgentStatusEnabled}`, false),
-		InEditorZenModeContext.negate()
-	),
-	order: 10002 // to the right of the chat button
-});
+	registerWorkbenchContribution2(AgentTitleBarStatusRendering.ID, AgentTitleBarStatusRendering, WorkbenchPhase.AfterRestored);
+	registerWorkbenchContribution2(AgentSessionReadyContribution.ID, AgentSessionReadyContribution, WorkbenchPhase.AfterRestored);
 
-// Add to the global title bar if command center is disabled
-MenuRegistry.appendMenuItem(MenuId.TitleBar, {
-	submenu: MenuId.ChatTitleBarMenu,
-	title: localize('title4', "Chat"),
-	group: 'navigation',
-	icon: Codicon.chatSparkle,
-	when: ContextKeyExpr.and(
-		ChatContextKeys.supported,
-		ContextKeyExpr.and(
-			ChatContextKeys.Setup.hidden.negate(),
+	// Register Agent Status as a menu item in the command center (alongside the search box, not replacing it)
+	MenuRegistry.appendMenuItem(MenuId.CommandCenter, {
+		submenu: MenuId.AgentsTitleBarControlMenu,
+		title: localize('agentsControl', "Agents"),
+		icon: Codicon.chatSparkle,
+		when: ContextKeyExpr.and(
+			NativeAgentSessionsUIEnabledContext,
+			ChatContextKeys.enabled,
+			ContextKeyExpr.notEquals(`config.${ChatConfiguration.AgentStatusEnabled}`, 'hidden'),
+			ContextKeyExpr.notEquals(`config.${ChatConfiguration.AgentStatusEnabled}`, false),
+			InEditorZenModeContext.negate()
 		),
-		ContextKeyExpr.has('config.window.commandCenter').negate(),
-	),
-	order: 1
-});
+		order: 10002 // to the right of the chat button
+	});
 
-// Register a placeholder action to the submenu so it appears (required for submenus)
-MenuRegistry.appendMenuItem(MenuId.AgentsTitleBarControlMenu, {
-	command: {
-		id: 'workbench.action.chat.toggle',
-		title: localize('openChat', "Open Chat"),
-	},
-	when: ChatContextKeys.enabled,
-	group: 'a_open',
-	order: 1
-});
+	// Add to the global title bar if command center is disabled
+	MenuRegistry.appendMenuItem(MenuId.TitleBar, {
+		submenu: MenuId.ChatTitleBarMenu,
+		title: localize('title4', "Chat"),
+		group: 'navigation',
+		icon: Codicon.chatSparkle,
+		when: ContextKeyExpr.and(
+			ChatContextKeys.supported,
+			ContextKeyExpr.and(
+				ChatContextKeys.Setup.hidden.negate(),
+			),
+			ContextKeyExpr.has('config.window.commandCenter').negate(),
+		),
+		order: 1
+	});
 
-// Toggle for Agent Quick Input (Insiders only)
-MenuRegistry.appendMenuItem(MenuId.AgentsTitleBarControlMenu, {
-	command: {
-		id: `toggle.${ChatConfiguration.UnifiedAgentsBar}`,
-		title: localize('toggleAgentQuickInput', "Agent Quick Input (Experimental)"),
-		toggled: ContextKeyExpr.has(`config.${ChatConfiguration.UnifiedAgentsBar}`),
-	},
-	when: ContextKeyExpr.and(
-		ChatContextKeys.enabled,
-		ProductQualityContext.notEqualsTo('stable')
-	),
-	group: 'z_experimental',
-	order: 10
-});
+	// Register a placeholder action to the submenu so it appears (required for submenus)
+	MenuRegistry.appendMenuItem(MenuId.AgentsTitleBarControlMenu, {
+		command: {
+			id: 'workbench.action.chat.toggle',
+			title: localize('openChat', "Open Chat"),
+		},
+		when: ChatContextKeys.enabled,
+		group: 'a_open',
+		order: 1
+	});
+
+	// Toggle for Agent Quick Input (Insiders only)
+	MenuRegistry.appendMenuItem(MenuId.AgentsTitleBarControlMenu, {
+		command: {
+			id: `toggle.${ChatConfiguration.UnifiedAgentsBar}`,
+			title: localize('toggleAgentQuickInput', "Agent Quick Input (Experimental)"),
+			toggled: ContextKeyExpr.has(`config.${ChatConfiguration.UnifiedAgentsBar}`),
+		},
+		when: ContextKeyExpr.and(
+			ChatContextKeys.enabled,
+			ProductQualityContext.notEqualsTo('stable')
+		),
+		group: 'z_experimental',
+		order: 10
+	});
+
+}
 
 //#endregion

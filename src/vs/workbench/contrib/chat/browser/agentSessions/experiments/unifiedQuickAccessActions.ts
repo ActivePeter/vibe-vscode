@@ -10,6 +10,8 @@ import { ChatContextKeys } from '../../../common/actions/chatContextKeys.js';
 import { ChatConfiguration } from '../../../common/constants.js';
 import { ContextKeyExpr } from '../../../../../../platform/contextkey/common/contextkey.js';
 import { UnifiedQuickAccess, DEFAULT_UNIFIED_QUICK_ACCESS_TABS } from './unifiedQuickAccess.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../../../../base/common/product.js';
+import product from '../../../../../../platform/product/common/product.js';
 
 // Singleton instance for the unified quick access
 let unifiedQuickAccessInstance: UnifiedQuickAccess | undefined;
@@ -131,7 +133,9 @@ export class ShowFilesQuickAccessAction extends Action2 {
 }
 
 // Register actions
-registerAction2(ShowUnifiedQuickAccessAction);
-registerAction2(ShowAgentSessionsQuickAccessAction);
-registerAction2(ShowCommandsQuickAccessAction);
-registerAction2(ShowFilesQuickAccessAction);
+if (isNativeAgentSessionsUIEnabled(product)) {
+	registerAction2(ShowUnifiedQuickAccessAction);
+	registerAction2(ShowAgentSessionsQuickAccessAction);
+	registerAction2(ShowCommandsQuickAccessAction);
+	registerAction2(ShowFilesQuickAccessAction);
+}

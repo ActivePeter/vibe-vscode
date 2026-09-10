@@ -1844,6 +1844,7 @@ export default defineConfig(
 						'vs/workbench/contrib/terminal/terminalContribChatExports*',
 						'vs/workbench/contrib/terminal/terminalContribExports*',
 						'vscode-notebook-renderer', // Type only import
+						'vibe-vscode', // Type-only public project plugin contract; no runtime dependency
 						'@vscode/tree-sitter-wasm', // type import
 						{
 							'when': 'hasBrowser',

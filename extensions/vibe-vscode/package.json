@@ -11,17 +11,17 @@
   "categories": [
     "Other"
   ],
+  "main": "./dist/browser/extension.js",
   "browser": "./dist/browser/extension.js",
+  "types": "./api.d.ts",
   "l10n": "./l10n",
   "extensionKind": [
     "ui"
   ],
-  "enabledApiProposals": [
-    "vibeVscodeFullscreenPanel"
-  ],
   "activationEvents": [
-    "onCommand:vibe-vscode.openFullscreenPanel",
-    "onCommand:vibe-vscode.closeFullscreenPanel"
+    "onCommand:_vibe-vscode.projectContext.changed",
+    "onCommand:vibe-vscode.projectContext.subscribe",
+    "onCommand:vibe-vscode.projectContext.unsubscribe"
   ],
   "capabilities": {
     "virtualWorkspaces": true,
@@ -29,23 +29,10 @@
       "supported": true
     }
   },
-  "contributes": {
-    "commands": [
-      {
-        "command": "vibe-vscode.openFullscreenPanel",
-        "title": "%command.openFullscreenPanel%",
-        "category": "vibe vscode"
-      },
-      {
-        "command": "vibe-vscode.closeFullscreenPanel",
-        "title": "%command.closeFullscreenPanel%",
-        "category": "vibe vscode"
-      }
-    ]
-  },
   "scripts": {
     "compile-web": "npm-run-all2 -lp bundle-web typecheck-web",
     "bundle-web": "node ./esbuild.browser.mts",
+    "test-web": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test ./scripts/*.test.mts",
     "typecheck-web": "node ../../node_modules/@typescript/native/lib/tsc.js --project ./tsconfig.browser.json --noEmit",
     "watch-web": "npm-run-all2 -lp watch-bundle-web watch-typecheck-web",
     "watch-bundle-web": "node ./esbuild.browser.mts --watch",

@@ -42,10 +42,12 @@
 			@renewedSession header X-Vibe-Auth-Set-Cookie *
 			header @renewedSession +Set-Cookie {http.request.header.X-Vibe-Auth-Set-Cookie}
 
-			reverse_proxy {$VIBE_VSCODE_BACKEND_ADDRESS} {
-				header_up X-Forwarded-Proto https
-				header_up X-Forwarded-Host {vibe_public_host}
-				header_up -X-Vibe-Auth-Set-Cookie
+			handle {
+				reverse_proxy {$VIBE_VSCODE_BACKEND_ADDRESS} {
+					header_up X-Forwarded-Proto https
+					header_up X-Forwarded-Host {vibe_public_host}
+					header_up -X-Vibe-Auth-Set-Cookie
+				}
 			}
 		}
 	}

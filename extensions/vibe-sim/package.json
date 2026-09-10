@@ -1,0 +1,90 @@
+{
+  "name": "sim",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "0.0.1",
+  "publisher": "vibe-vscode",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.134.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "l10n": "./l10n",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onWebviewPanel:vibe-vscode.sim.editor"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": false,
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "vibe-vscode.sim.startRuntime",
+        "title": "%command.startRuntime%",
+        "category": "Sim"
+      },
+      {
+        "command": "vibe-vscode.sim.stopRuntime",
+        "title": "%command.stopRuntime%",
+        "category": "Sim"
+      },
+      {
+        "command": "vibe-vscode.sim.showRuntimeStatus",
+        "title": "%command.showRuntimeStatus%",
+        "category": "Sim"
+      },
+      { "command": "vibe-vscode.openSim", "title": "%command.openSim%", "category": "Sim" },
+      { "command": "vibe-vscode.openAgentMonitor", "title": "%command.openMonitor%", "category": "Sim", "icon": "$(pulse)" },
+      { "command": "vibe-vscode.createSimChatFromSelection", "title": "%command.createChat%", "category": "Sim", "enablement": "editorHasSelection" },
+      { "command": "vibe-vscode.sim.signInAgent", "title": "%command.signInAgent%", "category": "Sim" },
+      { "command": "vibe-vscode.sim.openAgentConfiguration", "title": "%command.openAgentConfiguration%", "category": "Sim" },
+      { "command": "vibe-vscode.sim.configureAgentExecutables", "title": "%command.configureAgentExecutables%", "category": "Sim" }
+    ],
+    "viewsContainers": {
+      "activitybar": [{ "id": "vibe-vscode-sim", "title": "Sim", "icon": "media/sim.svg" }]
+    },
+    "views": {
+      "vibe-vscode-sim": [{ "id": "vibe-vscode.sim.sidebar", "name": "Sim", "type": "webview" }]
+    },
+    "menus": {
+      "editor/context": [{ "command": "vibe-vscode.createSimChatFromSelection", "when": "editorHasSelection", "group": "1_modification@1" }],
+      "view/title": [
+        { "command": "vibe-vscode.openAgentMonitor", "when": "view == vibe-vscode.sim.sidebar", "group": "navigation" },
+        { "command": "vibe-vscode.sim.signInAgent", "when": "view == vibe-vscode.sim.sidebar", "group": "agent@1" },
+        { "command": "vibe-vscode.sim.openAgentConfiguration", "when": "view == vibe-vscode.sim.sidebar", "group": "agent@2" },
+        { "command": "vibe-vscode.sim.configureAgentExecutables", "when": "view == vibe-vscode.sim.sidebar", "group": "agent@3" }
+      ]
+    },
+    "configuration": {
+      "title": "Sim",
+      "properties": {
+        "sim.agent.codexExecutable": { "type": "string", "default": "codex", "scope": "machine", "markdownDescription": "%configuration.codexExecutable%" },
+        "sim.agent.claudeExecutable": { "type": "string", "default": "claude", "scope": "machine", "markdownDescription": "%configuration.claudeExecutable%" },
+        "sim.agent.codexSandbox": { "type": "string", "enum": ["read-only", "workspace-write"], "default": "read-only", "scope": "machine", "markdownDescription": "%configuration.codexSandbox%" },
+        "sim.agent.allowUnrestricted": { "type": "boolean", "default": false, "scope": "machine", "markdownDescription": "%configuration.allowUnrestricted%" }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "npm-run-all2 -lp bundle typecheck",
+    "bundle": "node ./esbuild.mts",
+    "typecheck": "node ../../node_modules/@typescript/native/lib/tsc.js --project ./tsconfig.json --noEmit",
+    "watch": "npm-run-all2 -lp watch-bundle watch-typecheck",
+    "watch-bundle": "node ./esbuild.mts --watch",
+    "watch-typecheck": "npm run typecheck -- --watch",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test ./scripts/*.test.mts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ActivePeter/vibe-vscode.git"
+  }
+}

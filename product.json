@@ -35,6 +35,7 @@
 	"electronArtifactFeed": "",
 	"urlProtocol": "code-oss",
 	"agentsTelemetryAppName": "agents",
+	"nativeAgentSessionsUIEnabled": false,
 	"webviewContentExternalBaseUrlTemplate": "https://{{uuid}}.vscode-cdn.net/insider/de8cc55dae905582f191fdcfb6dff8c811a743c4/out/vs/workbench/contrib/webview/browser/pre/",
 	"builtInExtensions": [
 		{

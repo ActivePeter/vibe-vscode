@@ -124,6 +124,12 @@ jobs:
       - name: Compile client and Vibe extension
         run: npm exec -- npm-run-all2 -lp compile-client compile-vibe-vscode
 
+      - name: Test Sim plugin runtime lifecycle
+        run: npm --prefix extensions/vibe-sim test
+
+      - name: Test Vibe public project API
+        run: npm --prefix extensions/vibe-vscode run test-web
+
       - name: Repository hygiene
         id: hygiene
         continue-on-error: true
@@ -226,7 +232,9 @@ jobs:
           ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Verify clean extension checkout
-        run: test ! -e extensions/vibe-vscode/dist
+        run: |
+          test ! -e extensions/vibe-vscode/dist
+          test ! -e extensions/vibe-sim/dist
 
       - name: Free runner disk space
         run: |
@@ -250,7 +258,7 @@ jobs:
       - name: Install packaging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev libnotify-bin libkrb5-dev
+          sudo apt-get install -y build-essential bison flex rsync pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev libnotify-bin libkrb5-dev
 
       - name: Build clean Web Server product (${{ matrix.variant }})
         run: npm run gulp vscode-reh-web-linux-${{ env.VSCODE_ARCH }}${{ matrix.task_suffix }}
@@ -274,11 +282,21 @@ jobs:
           PACKAGE_ROOT: ${{ github.workspace }}/../vscode-reh-web-linux-x64
         run: |
           test -f "$PACKAGE_ROOT/extensions/vibe-vscode/dist/browser/extension.js"
+          test -f "$PACKAGE_ROOT/extensions/vibe-sim/dist/extension.js"
+          test -f "$PACKAGE_ROOT/extensions/vibe-sim/dist/runtimeHost.js"
+          node "$PACKAGE_ROOT/extensions/vibe-sim/dist/verifyRuntime.js"
+          test -f "$PACKAGE_ROOT/extensions/vibe-sim/l10n/bundle.l10n.zh-cn.json"
+          node -e "const manifest = require(process.env.PACKAGE_ROOT + '/extensions/vibe-sim/package.json'); if (manifest.main !== './dist/extension.js' || manifest.browser || manifest.extensionKind.join() !== 'workspace') { throw new Error('Unexpected Sim extension host contract'); }"
           test -f "$PACKAGE_ROOT/extensions/vibe-vscode/package.nls.zh-cn.json"
           test -f "$PACKAGE_ROOT/extensions/vibe-vscode/l10n/bundle.l10n.json"
           test -f "$PACKAGE_ROOT/extensions/vibe-vscode/l10n/bundle.l10n.zh-cn.json"
           node -e "const manifest = require(process.env.PACKAGE_ROOT + '/extensions/vibe-vscode/package.json'); if (manifest.browser !== './dist/browser/extension.js') { throw new Error('Unexpected packaged browser entry: ' + manifest.browser); }"
-          node -e "const bundle = require(process.env.PACKAGE_ROOT + '/extensions/vibe-vscode/l10n/bundle.l10n.zh-cn.json'); if (bundle['Close'] !== '关闭') { throw new Error('Missing Vibe runtime translation'); }"
+          node -e "const bundle = require(process.env.PACKAGE_ROOT + '/extensions/vibe-vscode/l10n/bundle.l10n.zh-cn.json'); if (bundle['Invalid project context subscription.'] !== '项目上下文订阅无效。') { throw new Error('Missing Vibe runtime translation'); }"
+
+      - name: Verify native Sim instance isolation
+        env:
+          VIBE_SIM_NATIVE_TEST_PACKAGE: ${{ github.workspace }}/../vscode-reh-web-linux-x64/extensions/vibe-sim/runtime
+        run: node --test extensions/vibe-sim/scripts/nativeRuntime.test.mts
 
   required:
     name: Vibe CI Required

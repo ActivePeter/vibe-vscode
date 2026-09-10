@@ -6,6 +6,7 @@
 import { app } from 'electron';
 import { coalesce } from '../../../base/common/arrays.js';
 import { IProcessEnvironment, isMacintosh } from '../../../base/common/platform.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../base/common/product.js';
 import { URI } from '../../../base/common/uri.js';
 import { whenDeleted } from '../../../base/node/pfs.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
@@ -18,6 +19,7 @@ import { ICodeWindow } from '../../window/electron-main/window.js';
 import { IWindowSettings } from '../../window/common/window.js';
 import { IOpenConfiguration, IWindowsMainService, OpenContext } from '../../windows/electron-main/windows.js';
 import { IProtocolUrl } from '../../url/electron-main/url.js';
+import product from '../../product/common/product.js';
 
 export const ID = 'launchMainService';
 export const ILaunchMainService = createDecorator<ILaunchMainService>(ID);
@@ -144,7 +146,7 @@ export class LaunchMainService implements ILaunchMainService {
 		}
 
 		// Agents window
-		else if (args['agents']) {
+		else if (args['agents'] && isNativeAgentSessionsUIEnabled(product)) {
 			usedWindows = await this.windowsMainService.openAgentsWindow(baseConfig);
 		}
 

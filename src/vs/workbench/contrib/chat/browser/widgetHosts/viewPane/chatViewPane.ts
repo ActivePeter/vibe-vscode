@@ -19,6 +19,7 @@ import { autorun, IObservable, IReader, observableFromEvent, observableValue } f
 import { getComparisonKey, isEqual } from '../../../../../../base/common/resources.js';
 import { ScrollbarVisibility } from '../../../../../../base/common/scrollable.js';
 import { URI } from '../../../../../../base/common/uri.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../../../../base/common/product.js';
 import { localize } from '../../../../../../nls.js';
 import { MenuWorkbenchToolBar } from '../../../../../../platform/actions/browser/toolbar.js';
 import { MenuId } from '../../../../../../platform/actions/common/actions.js';
@@ -88,6 +89,7 @@ import { IAgentTitleBarStatusService } from '../../agentSessions/experiments/age
 import { IVoicePlaybackService } from '../../../common/voicePlaybackService.js';
 import { VOICE_AGENT_PROGRESS_SETTING } from '../../../common/voiceClient/voiceClientService.js';
 import { IWorkbenchEnvironmentService } from '../../../../../services/environment/common/environmentService.js';
+import { IProductService } from '../../../../../../platform/product/common/productService.js';
 
 interface IChatViewPaneState extends Partial<IChatModelInputState> {
 	/**
@@ -169,6 +171,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		@IAgentTitleBarStatusService _agentTitleBarStatusService: IAgentTitleBarStatusService,
 		@IVoicePlaybackService _voicePlaybackService: IVoicePlaybackService,
 		@IWorkbenchEnvironmentService _workbenchEnvironmentService: IWorkbenchEnvironmentService,
+		@IProductService private readonly productService: IProductService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IAgentHostEnablementService private readonly agentHostEnablementService: IAgentHostEnablementService,
 		@IAccessibilityService private readonly accessibilityService: IAccessibilityService,
@@ -392,6 +395,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 
 	private async handleMouseBackNavigation(event: MouseEvent): Promise<void> {
 		if (
+			!isNativeAgentSessionsUIEnabled(this.productService) ||
 			event.button !== 3 ||
 			this.sessionsViewerOrientation !== AgentSessionsViewerOrientation.Stacked ||
 			this.sessionsViewerVisible ||
@@ -427,7 +431,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 	private createControls(parent: HTMLElement): void {
 
 		// Sessions Control
-		const sessionsControl = this.createSessionsControl(parent);
+		const sessionsControl = isNativeAgentSessionsUIEnabled(this.productService) ? this.createSessionsControl(parent) : undefined;
 
 		// Welcome Control (used to show chat specific extension provided welcome views via `chatViewsWelcome` contribution point)
 		const welcomeController = this.welcomeController = this._register(this.instantiationService.createInstance(ChatViewWelcomeController, parent, this, ChatAgentLocation.Chat));
@@ -436,10 +440,12 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		const chatWidget = this.createChatControl(parent);
 
 		// Controls Listeners
-		this.registerControlsListeners(sessionsControl, chatWidget, welcomeController);
+		if (sessionsControl) {
+			this.registerControlsListeners(sessionsControl, chatWidget, welcomeController);
 
-		// Update sessions control visibility when all controls are created
-		this.updateSessionsControlVisibility();
+			// Update sessions control visibility when all controls are created
+			this.updateSessionsControlVisibility();
+		}
 	}
 
 	//#region Voice Agent Bar
@@ -990,7 +996,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		}
 
 		let newSessionsContainerVisible: boolean;
-		if (!this.configurationService.getValue<boolean>(ChatConfiguration.ChatViewSessionsEnabled)) {
+		if (!isNativeAgentSessionsUIEnabled(this.productService) || !this.configurationService.getValue<boolean>(ChatConfiguration.ChatViewSessionsEnabled)) {
 			newSessionsContainerVisible = false; // disabled in settings
 		} else {
 
@@ -1114,6 +1120,10 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 	}
 
 	private createChatTitleControl(parent: HTMLElement): void {
+		if (!isNativeAgentSessionsUIEnabled(this.productService)) {
+			return;
+		}
+
 		this.titleControl = this._register(this.instantiationService.createInstance(ChatViewTitleControl,
 			parent,
 			{

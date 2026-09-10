@@ -20,7 +20,7 @@ import { webClientCacheDirectory } from '../../../platform/remote/common/webClie
 import { IWebClientStartupConfiguration, IWebClientStartupMessages } from '../../../platform/remote/common/webClientStartup.js';
 import { NoneServerConnectionToken } from '../../node/serverConnectionToken.js';
 import { IServerEnvironmentService } from '../../node/serverEnvironmentService.js';
-import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientPreferredEncodings, getWebClientRemoteAuthority, getWebClientResourceScheme, getWebClientStartupLocaleCandidates, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRoute, parseWebClientStartupTemplate, serveFile, WebClientServer, WebClientStartupMessages } from '../../node/webClientServer.js';
+import { CacheControl, getBuiltinExtensionPackageNLSCandidates, getWebClientPreferredEncodings, getWebClientProductConfiguration, getWebClientRemoteAuthority, getWebClientResourceScheme, getWebClientStartupLocaleCandidates, getWebClientStaticAssetCacheControl, getWebClientStaticAssetRoute, parseWebClientStartupTemplate, serveFile, WebClientServer, WebClientStartupMessages } from '../../node/webClientServer.js';
 
 suite('WebClientServer', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -138,6 +138,19 @@ suite('WebClientServer', () => {
 			forwardedHttps: 'https',
 			forwardedChain: 'https',
 			invalid: 'http',
+		});
+	});
+
+	test('forwards product configuration required by the web client', () => {
+		assert.deepStrictEqual(getWebClientProductConfiguration({
+			remoteConnectionSigning: false,
+			voiceWsUrl: 'wss://example.com/voice',
+			nativeAgentSessionsUIEnabled: false,
+		}), {
+			embedderIdentifier: 'server-distro',
+			remoteConnectionSigning: false,
+			voiceWsUrl: 'wss://example.com/voice',
+			nativeAgentSessionsUIEnabled: false,
 		});
 	});
 

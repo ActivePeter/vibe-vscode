@@ -5,7 +5,7 @@
 	<meta charset="UTF-8">
 
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-FFQoOVVa2tOE3uqUvirwaMNT20TZmrHcL2aaOjJ8BUo=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'sha256-L97od8eD3mE0yAG105W56oqn/IsBhD2MtJ7uqreelAQ=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"
@@ -63,7 +63,8 @@
 			let isFocused = document.hasFocus();
 			setInterval(() => {
 				const target = getActiveFrame();
-				const isCurrentlyFocused = document.hasFocus() || !!(target && target.contentDocument && target.contentDocument.body.classList.contains('vscode-context-menu-visible'));
+				// A replacement frame can have a document before its body has been parsed.
+				const isCurrentlyFocused = document.hasFocus() || !!target?.contentDocument?.body?.classList.contains('vscode-context-menu-visible');
 				if (isCurrentlyFocused === isFocused) {
 					return;
 				}
@@ -1017,6 +1018,7 @@
 				}
 
 				const newFrame = document.createElement('iframe');
+				const isCurrentFrame = () => currentUpdateId === updateId && newFrame === getPendingFrame();
 				newFrame.title = data.title;
 				newFrame.setAttribute('id', 'pending-frame');
 				newFrame.setAttribute('frameborder', '0');
@@ -1060,9 +1062,15 @@
 
 					// Workaround for https://bugs.chromium.org/p/chromium/issues/detail?id=978325
 					setTimeout(() => {
+						if (!isCurrentFrame() || newFrame.contentDocument !== contentDocument) {
+							return;
+						}
 						contentDocument.open();
 						contentDocument.write(newDocument);
 						contentDocument.close();
+						if (!isCurrentFrame()) {
+							return;
+						}
 						hookupOnLoadHandlers(newFrame);
 						perfMark('content/wroteInnerContent')
 
@@ -1100,6 +1108,9 @@
 				 * @param {Window} contentWindow
 				 */
 				const onLoad = (contentDocument, contentWindow) => {
+					if (!isCurrentFrame()) {
+						return;
+					}
 					if (contentDocument && contentDocument.body) {
 						// Workaround for https://github.com/microsoft/vscode/issues/12865
 						// check new scrollY and reset if necessary
@@ -1151,9 +1162,15 @@
 				 * @param {HTMLIFrameElement} newFrame
 				 */
 				function hookupOnLoadHandlers(newFrame) {
+					if (!isCurrentFrame()) {
+						return;
+					}
 					clearTimeout(loadTimeout);
 					loadTimeout = undefined;
 					loadTimeout = setTimeout(() => {
+						if (!isCurrentFrame()) {
+							return;
+						}
 						clearTimeout(loadTimeout);
 						loadTimeout = undefined;
 						onLoad(assertIsDefined(newFrame.contentDocument), assertIsDefined(newFrame.contentWindow));
@@ -1164,7 +1181,7 @@
 					contentWindow.addEventListener('load', function (e) {
 						const contentDocument = /** @type {Document} */ (e.target);
 
-						if (loadTimeout) {
+						if (loadTimeout && isCurrentFrame()) {
 							clearTimeout(loadTimeout);
 							loadTimeout = undefined;
 							onLoad(contentDocument, this);
@@ -1228,10 +1245,8 @@
 
 			// propagate vscode-context-menu-visible class
 			hostMessaging.onMessage('set-context-menu-visible', (_event, data) => {
-				const target = getActiveFrame();
-				if (target && target.contentDocument) {
-					target.contentDocument.body.classList.toggle('vscode-context-menu-visible', data.visible);
-				}
+				const body = getActiveFrame()?.contentDocument?.body;
+				body?.classList.toggle('vscode-context-menu-visible', data.visible);
 			});
 
 			hostMessaging.onMessage('set-title', async (_event, data) => {

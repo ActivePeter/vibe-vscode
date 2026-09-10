@@ -313,6 +313,16 @@ export function getWebClientResourceScheme(forwardedProto: string | undefined): 
 	return publicScheme === Schemas.https ? Schemas.https : Schemas.http;
 }
 
+/** Returns the product settings that the server must preserve for web clients. */
+export function getWebClientProductConfiguration(product: Pick<IProductConfiguration, 'remoteConnectionSigning' | 'voiceWsUrl' | 'nativeAgentSessionsUIEnabled'>): Partial<Mutable<IProductConfiguration>> {
+	return {
+		embedderIdentifier: 'server-distro',
+		remoteConnectionSigning: product.remoteConnectionSigning,
+		voiceWsUrl: product.voiceWsUrl,
+		nativeAgentSessionsUIEnabled: product.nativeAgentSessionsUIEnabled,
+	};
+}
+
 /** Authentication selects only configured identities; token-based servers retain their proxy host contract. */
 export function getWebClientRemoteAuthority(publicOrigins: readonly string[] | undefined, forwardedHost: string | undefined, host: string | undefined): string | undefined {
 	if (publicOrigins) {
@@ -603,9 +613,11 @@ export class WebClientServer {
 		} : undefined;
 
 		const productConfiguration: Partial<Mutable<IProductConfiguration>> = {
-			embedderIdentifier: 'server-distro',
-			remoteConnectionSigning: this._remoteConnectionSigning,
-			voiceWsUrl: this._productService.voiceWsUrl,
+			...getWebClientProductConfiguration({
+				remoteConnectionSigning: this._remoteConnectionSigning,
+				voiceWsUrl: this._productService.voiceWsUrl,
+				nativeAgentSessionsUIEnabled: this._productService.nativeAgentSessionsUIEnabled,
+			}),
 			extensionsGallery: this._webExtensionResourceUrlTemplate && this._productService.extensionsGallery ? {
 				...this._productService.extensionsGallery,
 				resourceUrlTemplate: this._webExtensionResourceUrlTemplate.with({

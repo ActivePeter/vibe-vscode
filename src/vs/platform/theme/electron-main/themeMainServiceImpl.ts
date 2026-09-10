@@ -7,6 +7,7 @@ import electron from 'electron';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { isLinux, isMacintosh, isWindows } from '../../../base/common/platform.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../base/common/product.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { IStateService } from '../../state/node/state.js';
 import { IPartsSplash } from '../common/themeService.js';
@@ -17,6 +18,7 @@ import { coalesce } from '../../../base/common/arrays.js';
 import { getAllWindowsExcludingOffscreen } from '../../windows/electron-main/windows.js';
 import { ILogService, LogLevel } from '../../log/common/log.js';
 import { IThemeMainService } from './themeMainService.js';
+import product from '../../product/common/product.js';
 
 // These default colors match our default themes
 // editor background color ("Dark Modern", etc...)
@@ -376,9 +378,10 @@ export class ThemeMainService extends Disposable implements IThemeMainService {
 			} else if (auxiliaryBarVisible === false) {
 				auxiliaryBarWidth = 0;
 			} else {
-				if (startupEditor !== 'agentSessionsWelcomePage' && (auxiliaryBarDefaultVisibility === 'visible' || auxiliaryBarDefaultVisibility === 'visibleInWorkspace')) {
+				const useAgentSessionsWelcomeLayout = startupEditor === 'agentSessionsWelcomePage' && isNativeAgentSessionsUIEnabled(product);
+				if (!useAgentSessionsWelcomeLayout && (auxiliaryBarDefaultVisibility === 'visible' || auxiliaryBarDefaultVisibility === 'visibleInWorkspace')) {
 					auxiliaryBarWidth = override.layoutInfo.auxiliaryBarWidth || partSplash.layoutInfo.auxiliaryBarWidth || ThemeMainService.DEFAULT_BAR_WIDTH;
-				} else if (startupEditor !== 'agentSessionsWelcomePage' && (auxiliaryBarDefaultVisibility === 'maximized' || auxiliaryBarDefaultVisibility === 'maximizedInWorkspace')) {
+				} else if (!useAgentSessionsWelcomeLayout && (auxiliaryBarDefaultVisibility === 'maximized' || auxiliaryBarDefaultVisibility === 'maximizedInWorkspace')) {
 					auxiliaryBarWidth = Number.MAX_SAFE_INTEGER; // marker for a maximised auxiliary bar
 				} else {
 					auxiliaryBarWidth = 0;

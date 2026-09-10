@@ -5,6 +5,7 @@
 
 import { localize } from '../../../../nls.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { isNativeAgentSessionsUIEnabled } from '../../../../base/common/product.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { registerWorkbenchContribution2, WorkbenchPhase, IWorkbenchContribution } from '../../../common/contributions.js';
@@ -24,25 +25,28 @@ import { Action2, registerAction2 } from '../../../../platform/actions/common/ac
 import { ChatContextKeys } from '../../chat/common/actions/chatContextKeys.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IChatEntitlementService } from '../../../services/chat/common/chatEntitlementService.js';
+import product from '../../../../platform/product/common/product.js';
 
 // Registration priority
 const agentSessionsWelcomeInputTypeId = 'workbench.editors.agentSessionsWelcomeInput';
 
-// Register editor serializer
-Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory)
-	.registerEditorSerializer(agentSessionsWelcomeInputTypeId, AgentSessionsWelcomeInputSerializer);
+if (isNativeAgentSessionsUIEnabled(product)) {
+	// Register editor serializer
+	Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory)
+		.registerEditorSerializer(agentSessionsWelcomeInputTypeId, AgentSessionsWelcomeInputSerializer);
 
-// Register editor pane
-Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(
-		AgentSessionsWelcomePage,
-		AgentSessionsWelcomePage.ID,
-		localize('agentSessionsWelcome', "Agent Sessions Welcome")
-	),
-	[
-		new SyncDescriptor(AgentSessionsWelcomeInput)
-	]
-);
+	// Register editor pane
+	Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+		EditorPaneDescriptor.create(
+			AgentSessionsWelcomePage,
+			AgentSessionsWelcomePage.ID,
+			localize('agentSessionsWelcome', "Agent Sessions Welcome")
+		),
+		[
+			new SyncDescriptor(AgentSessionsWelcomeInput)
+		]
+	);
+}
 
 const getWorkspaceKind = (workspaceContextService: IWorkspaceContextService) => {
 	const state = workspaceContextService.getWorkbenchState();
@@ -94,24 +98,26 @@ class AgentSessionsWelcomeEditorResolverContribution extends Disposable implemen
 	}
 }
 
-// Register command to open agent sessions welcome page
-registerAction2(class OpenAgentSessionsWelcomeAction extends Action2 {
-	constructor() {
-		super({
-			id: AgentSessionsWelcomePage.COMMAND_ID,
-			title: localize('openAgentSessionsWelcome', "Open Agent Sessions Welcome"),
-			precondition: ChatContextKeys.enabled
-		});
-	}
+if (isNativeAgentSessionsUIEnabled(product)) {
+	// Register command to open agent sessions welcome page
+	registerAction2(class OpenAgentSessionsWelcomeAction extends Action2 {
+		constructor() {
+			super({
+				id: AgentSessionsWelcomePage.COMMAND_ID,
+				title: localize('openAgentSessionsWelcome', "Open Agent Sessions Welcome"),
+				precondition: ChatContextKeys.enabled
+			});
+		}
 
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const editorService = accessor.get(IEditorService);
-		const instantiationService = accessor.get(IInstantiationService);
-		const workspaceContextService = accessor.get(IWorkspaceContextService);
-		const input = instantiationService.createInstance(AgentSessionsWelcomeInput, { initiator: 'command', workspaceKind: getWorkspaceKind(workspaceContextService) });
-		await editorService.openEditor(input, { pinned: true });
-	}
-});
+		async run(accessor: ServicesAccessor): Promise<void> {
+			const editorService = accessor.get(IEditorService);
+			const instantiationService = accessor.get(IInstantiationService);
+			const workspaceContextService = accessor.get(IWorkspaceContextService);
+			const input = instantiationService.createInstance(AgentSessionsWelcomeInput, { initiator: 'command', workspaceKind: getWorkspaceKind(workspaceContextService) });
+			await editorService.openEditor(input, { pinned: true });
+		}
+	});
+}
 
 // Runner contribution - handles opening on startup
 class AgentSessionsWelcomeRunnerContribution extends Disposable implements IWorkbenchContribution {
@@ -167,6 +173,8 @@ class AgentSessionsWelcomeRunnerContribution extends Disposable implements IWork
 	}
 }
 
-// Register contributions
-registerWorkbenchContribution2(AgentSessionsWelcomeEditorResolverContribution.ID, AgentSessionsWelcomeEditorResolverContribution, WorkbenchPhase.BlockStartup);
-registerWorkbenchContribution2(AgentSessionsWelcomeRunnerContribution.ID, AgentSessionsWelcomeRunnerContribution, WorkbenchPhase.AfterRestored);
+if (isNativeAgentSessionsUIEnabled(product)) {
+	// Register contributions
+	registerWorkbenchContribution2(AgentSessionsWelcomeEditorResolverContribution.ID, AgentSessionsWelcomeEditorResolverContribution, WorkbenchPhase.BlockStartup);
+	registerWorkbenchContribution2(AgentSessionsWelcomeRunnerContribution.ID, AgentSessionsWelcomeRunnerContribution, WorkbenchPhase.AfterRestored);
+}

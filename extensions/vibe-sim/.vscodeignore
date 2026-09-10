@@ -1,0 +1,7 @@
+src/**
+scripts/**
+native/**
+out/**
+tsconfig*.json
+esbuild.mts
+**/*.map

@@ -435,6 +435,7 @@ export const TIP_CATALOG: readonly ITipDefinition[] = [
 			return new MarkdownString(message);
 		},
 		when: ContextKeyExpr.and(IsWebContext.negate(), OPEN_AGENTS_WINDOW_PRECONDITION),
+		requiresCommands: [OPEN_AGENTS_WINDOW_COMMAND_ID],
 		excludeWhenCommandsExecuted: [
 			OPEN_AGENTS_WINDOW_COMMAND_ID,
 			OPEN_WORKSPACE_IN_AGENTS_WINDOW_COMMAND_ID,

@@ -1,6 +1,3 @@
 {
-	"vibe vscode": "vibe vscode",
-	"vibe vscode fullscreen panel": "vibe vscode fullscreen panel",
-	"The privileged fullscreen host is active. vibe vscode interfaces can now be mounted in this surface.": "The privileged fullscreen host is active. vibe vscode interfaces can now be mounted in this surface.",
-	"Close": "Close"
+	"Invalid project context subscription.": "Invalid project context subscription."
 }

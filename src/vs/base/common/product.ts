@@ -256,6 +256,12 @@ export interface IProductConfiguration {
 	readonly builtInExtensionsEnabledWithAutoUpdates: readonly string[];
 	readonly sessionsWindowAllowedExtensions?: readonly string[];
 
+	/**
+	 * Controls whether VS Code's native Agent Sessions catalog and dedicated
+	 * Agents Window are exposed. Undefined preserves the upstream default.
+	 */
+	readonly nativeAgentSessionsUIEnabled?: boolean;
+
 	readonly msftInternalDomains?: string[];
 	readonly linkProtectionTrustedDomains?: readonly string[];
 
@@ -301,6 +307,10 @@ export interface IProductConfiguration {
 		darwinBundleIdentifier?: string;
 		urlProtocol?: string;
 	};
+}
+
+export function isNativeAgentSessionsUIEnabled(product: Pick<IProductConfiguration, 'nativeAgentSessionsUIEnabled'>): boolean {
+	return product.nativeAgentSessionsUIEnabled !== false;
 }
 
 export interface IProductOnboardingKeymap {

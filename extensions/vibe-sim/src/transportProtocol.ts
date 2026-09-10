@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { isRecord } from './protocol';
 import { isSafeSimPath } from './simSurface';
 
 export const transportSource = 'sim-native-transport';
@@ -38,6 +39,26 @@ export type TransportReply = Envelope & (
 );
 
 export type TransportReplyPayload<T = TransportReply> = T extends TransportReply ? Omit<T, 'source' | 'token'> : never;
+
+/** Validate the host envelope before applying a reply to browser-owned pending I/O. */
+export function isTransportReply(value: unknown): value is TransportReply {
+	if (!isRecord(value) || value.source !== transportSource || typeof value.token !== 'string'
+		|| !Number.isSafeInteger(value.id) || Number(value.id) < 1) { return false; }
+	switch (value.type) {
+		case 'response':
+			return Number.isInteger(value.status) && Number(value.status) >= 200 && Number(value.status) <= 599
+				&& typeof value.statusText === 'string' && Array.isArray(value.headers)
+				&& value.headers.every(pair => Array.isArray(pair) && pair.length === 2 && pair.every(part => typeof part === 'string'))
+				&& isSafeSimPath(value.path) && typeof value.redirected === 'boolean' && typeof value.body === 'boolean';
+		case 'chunk': return value.data instanceof Uint8Array && value.data.byteLength <= maxChunkBytes;
+		case 'end': case 'error': case 'socketError': return true;
+		case 'socketOpened': return typeof value.protocol === 'string' && typeof value.extensions === 'string';
+		case 'socketData': return typeof value.data === 'string' || value.data instanceof Uint8Array;
+		case 'socketSent': return Number.isSafeInteger(value.bytes) && Number(value.bytes) >= 0;
+		case 'socketClosed': return Number.isInteger(value.code) && typeof value.reason === 'string' && typeof value.clean === 'boolean';
+		default: return false;
+	}
+}
 
 export function isTransportRequest(value: unknown): value is TransportRequest {
 	if (typeof value !== 'object' || !value || !('source' in value) || value.source !== transportSource

@@ -27,9 +27,9 @@ export class ProjectContext implements vscode.Disposable {
 
 	constructor(private readonly runtime: Pick<ManagedSimRuntime, 'updateProjectContext'>, private readonly reportError: (error: Error) => void) {
 		this.disposables = [this.changed,
-			vscode.commands.registerCommand('_vibe-vscode.sim.projectContextChanged', (snapshot: unknown) => { if (isProjectContext(snapshot)) { this.accept(snapshot); } }),
-			vscode.window.onDidChangeActiveTextEditor(editor => { if (editor) { this.lastEditor = editor; } this.schedule(); }),
-			vscode.window.onDidChangeTextEditorSelection(event => { if (event.textEditor === this.lastEditor) { this.schedule(); } }),
+		vscode.commands.registerCommand('_vibe-vscode.sim.projectContextChanged', (snapshot: unknown) => { if (isProjectContext(snapshot)) { this.accept(snapshot); } }),
+		vscode.window.onDidChangeActiveTextEditor(editor => { if (editor) { this.lastEditor = editor; } this.schedule(); }),
+		vscode.window.onDidChangeTextEditorSelection(event => { if (event.textEditor === this.lastEditor) { this.schedule(); } }),
 		];
 	}
 
@@ -71,12 +71,16 @@ export class ProjectContext implements vscode.Disposable {
 
 	private context(snapshot: VibeProjectContext): HostContext {
 		const editor = vscode.window.activeTextEditor ?? this.lastEditor;
-		return { ...snapshot, language: vscode.env.language, ...(editor ? { activeFile: {
-			uri: editor.document.uri.toString(), selection: {
-				startLine: editor.selection.start.line, startCharacter: editor.selection.start.character,
-				endLine: editor.selection.end.line, endCharacter: editor.selection.end.character,
-			},
-		} } : {}) };
+		return {
+			...snapshot, language: vscode.env.language, ...(editor ? {
+				activeFile: {
+					uri: editor.document.uri.toString(), selection: {
+						startLine: editor.selection.start.line, startCharacter: editor.selection.start.character,
+						endLine: editor.selection.end.line, endCharacter: editor.selection.end.character,
+					},
+				}
+			} : {})
+		};
 	}
 
 	private schedule(): void {

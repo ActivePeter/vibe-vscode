@@ -82,12 +82,10 @@ suite('ExtHostLocalizationService', () => {
 		await service.initializeLocalizedMessages(createBuiltInExtension());
 
 		assert.deepStrictEqual({
-			changes: service.getMessage(extensionId, { message: 'Sim Changes' }),
-			task: service.getMessage(extensionId, { message: 'Sim Task' }),
+			message: service.getMessage(extensionId, { message: 'Invalid project context subscription.' }),
 			fetchedUris,
 		}, {
-			changes: 'Sim 变更',
-			task: 'Sim 任务',
+			message: '项目上下文订阅无效。',
 			fetchedUris: [URI.joinPath(extensionLocation, 'l10n', 'bundle.l10n.zh-cn.json').toString()],
 		});
 	});

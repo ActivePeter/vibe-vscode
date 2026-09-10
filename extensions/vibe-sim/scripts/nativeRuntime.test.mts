@@ -20,7 +20,7 @@ const require = createRequire(import.meta.url);
 
 test('the packaged native Sim migrates its real schema and gates its private API', { skip: !packageDirectory, timeout: 180_000 }, async t => {
 	const state = await fs.mkdtemp(path.join(tmpdir(), 'vibe-sim-application-test-'));
-	let instance: Awaited<ReturnType<SimRuntimeAdapter['start']>> | undefined;
+	let instance: Awaited<ReturnType<SimRuntimeAdapter['start']>> | undefined = undefined;
 	t.after(async () => { await instance?.stop(); await fs.rm(state, { recursive: true, force: true }); });
 	const adapter = await import(pathToFileURL(path.join(packageDirectory!, 'adapter.mjs')).href) as SimRuntimeAdapter;
 	instance = await adapter.start({ protocolVersion: 1, instanceId: 'e5e24481-1540-48d6-bf70-88f27744a640', stateDirectory: state, signal: t.signal });

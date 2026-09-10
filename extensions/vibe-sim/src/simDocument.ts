@@ -7,6 +7,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { NativeClient } from './native/nativeClient';
 import { readResponse } from './nativeResources';
+import { isRecord } from './protocol';
 import { CreateChatRequest, editorKey, HostContext, isSimMessage, SimMessage, SimSurface, simWorkspaceId, surfacePath } from './simSurface';
 import { WebviewTransport } from './webviewTransport';
 
@@ -17,7 +18,7 @@ export interface DocumentConnection {
 }
 
 function escapeHtml(value: string): string {
-	return value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
+	return value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' })[character]!);
 }
 
 /** Next's own SSR output is hosted unchanged except for the Webview's CSP, base and transport boot. */
@@ -54,8 +55,8 @@ export class SimDocument implements vscode.Disposable {
 	) {
 		void this.ready.promise.catch(() => { });
 		this.messages = webview.onDidReceiveMessage((message: unknown) => {
-			if (this.disposed || typeof message !== 'object' || !message || !('token' in message) || message.token !== this.token) { return; }
-			if ('source' in message && message.source === 'sim-retry') { void this.load(); return; }
+			if (this.disposed || !isRecord(message) || message.token !== this.token) { return; }
+			if (message.source === 'sim-retry') { void this.load(); return; }
 			if (!isSimMessage(message)) { return; }
 			if (message.type === 'ready') {
 				this.connected = true; clearTimeout(this.readyTimer); this.ready.resolve();

@@ -269,62 +269,62 @@ if (isNativeAgentSessionsUIEnabled(product)) {
 	registerWorkbenchContribution2(AgentTitleBarStatusRendering.ID, AgentTitleBarStatusRendering, WorkbenchPhase.AfterRestored);
 	registerWorkbenchContribution2(AgentSessionReadyContribution.ID, AgentSessionReadyContribution, WorkbenchPhase.AfterRestored);
 
-// Register Agent Status as a menu item in the command center (alongside the search box, not replacing it)
-MenuRegistry.appendMenuItem(MenuId.CommandCenter, {
-	submenu: MenuId.AgentsTitleBarControlMenu,
-	title: localize('agentsControl', "Agents"),
-	icon: Codicon.chatSparkle,
-	when: ContextKeyExpr.and(
-		NativeAgentSessionsUIEnabledContext,
-		ChatContextKeys.enabled,
-		ContextKeyExpr.notEquals(`config.${ChatConfiguration.AgentStatusEnabled}`, 'hidden'),
-		ContextKeyExpr.notEquals(`config.${ChatConfiguration.AgentStatusEnabled}`, false),
-		InEditorZenModeContext.negate()
-	),
-	order: 10002 // to the right of the chat button
-});
-
-// Add to the global title bar if command center is disabled
-MenuRegistry.appendMenuItem(MenuId.TitleBar, {
-	submenu: MenuId.ChatTitleBarMenu,
-	title: localize('title4', "Chat"),
-	group: 'navigation',
-	icon: Codicon.chatSparkle,
-	when: ContextKeyExpr.and(
-		ChatContextKeys.supported,
-		ContextKeyExpr.and(
-			ChatContextKeys.Setup.hidden.negate(),
+	// Register Agent Status as a menu item in the command center (alongside the search box, not replacing it)
+	MenuRegistry.appendMenuItem(MenuId.CommandCenter, {
+		submenu: MenuId.AgentsTitleBarControlMenu,
+		title: localize('agentsControl', "Agents"),
+		icon: Codicon.chatSparkle,
+		when: ContextKeyExpr.and(
+			NativeAgentSessionsUIEnabledContext,
+			ChatContextKeys.enabled,
+			ContextKeyExpr.notEquals(`config.${ChatConfiguration.AgentStatusEnabled}`, 'hidden'),
+			ContextKeyExpr.notEquals(`config.${ChatConfiguration.AgentStatusEnabled}`, false),
+			InEditorZenModeContext.negate()
 		),
-		ContextKeyExpr.has('config.window.commandCenter').negate(),
-	),
-	order: 1
-});
+		order: 10002 // to the right of the chat button
+	});
 
-// Register a placeholder action to the submenu so it appears (required for submenus)
-MenuRegistry.appendMenuItem(MenuId.AgentsTitleBarControlMenu, {
-	command: {
-		id: 'workbench.action.chat.toggle',
-		title: localize('openChat', "Open Chat"),
-	},
-	when: ChatContextKeys.enabled,
-	group: 'a_open',
-	order: 1
-});
+	// Add to the global title bar if command center is disabled
+	MenuRegistry.appendMenuItem(MenuId.TitleBar, {
+		submenu: MenuId.ChatTitleBarMenu,
+		title: localize('title4', "Chat"),
+		group: 'navigation',
+		icon: Codicon.chatSparkle,
+		when: ContextKeyExpr.and(
+			ChatContextKeys.supported,
+			ContextKeyExpr.and(
+				ChatContextKeys.Setup.hidden.negate(),
+			),
+			ContextKeyExpr.has('config.window.commandCenter').negate(),
+		),
+		order: 1
+	});
 
-// Toggle for Agent Quick Input (Insiders only)
-MenuRegistry.appendMenuItem(MenuId.AgentsTitleBarControlMenu, {
-	command: {
-		id: `toggle.${ChatConfiguration.UnifiedAgentsBar}`,
-		title: localize('toggleAgentQuickInput', "Agent Quick Input (Experimental)"),
-		toggled: ContextKeyExpr.has(`config.${ChatConfiguration.UnifiedAgentsBar}`),
-	},
-	when: ContextKeyExpr.and(
-		ChatContextKeys.enabled,
-		ProductQualityContext.notEqualsTo('stable')
-	),
-	group: 'z_experimental',
-	order: 10
-});
+	// Register a placeholder action to the submenu so it appears (required for submenus)
+	MenuRegistry.appendMenuItem(MenuId.AgentsTitleBarControlMenu, {
+		command: {
+			id: 'workbench.action.chat.toggle',
+			title: localize('openChat', "Open Chat"),
+		},
+		when: ChatContextKeys.enabled,
+		group: 'a_open',
+		order: 1
+	});
+
+	// Toggle for Agent Quick Input (Insiders only)
+	MenuRegistry.appendMenuItem(MenuId.AgentsTitleBarControlMenu, {
+		command: {
+			id: `toggle.${ChatConfiguration.UnifiedAgentsBar}`,
+			title: localize('toggleAgentQuickInput', "Agent Quick Input (Experimental)"),
+			toggled: ContextKeyExpr.has(`config.${ChatConfiguration.UnifiedAgentsBar}`),
+		},
+		when: ContextKeyExpr.and(
+			ChatContextKeys.enabled,
+			ProductQualityContext.notEqualsTo('stable')
+		),
+		group: 'z_experimental',
+		order: 10
+	});
 
 }
 

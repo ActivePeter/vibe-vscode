@@ -41,10 +41,10 @@ export class SimViews implements vscode.WebviewViewProvider, vscode.WebviewPanel
 		this.resources = new NativeResources(extension.extensionUri.fsPath);
 		this.projects = new ProjectContext(runtime, reportError);
 		this.subscriptions = [this.resources, this.projects,
-			vscode.workspace.registerFileSystemProvider(resourceScheme, this.resources, { isReadonly: true, isCaseSensitive: true }),
-			vscode.window.registerWebviewViewProvider(sidebarViewId, this, { webviewOptions: { retainContextWhenHidden: true } }),
-			vscode.window.registerWebviewPanelSerializer(editorViewType, this),
-			this.projects.onDidChange(context => { this.sidebar?.setContext(context); for (const editor of this.editors.values()) { editor.document.setContext(context); } }),
+		vscode.workspace.registerFileSystemProvider(resourceScheme, this.resources, { isReadonly: true, isCaseSensitive: true }),
+		vscode.window.registerWebviewViewProvider(sidebarViewId, this, { webviewOptions: { retainContextWhenHidden: true } }),
+		vscode.window.registerWebviewPanelSerializer(editorViewType, this),
+		this.projects.onDidChange(context => { this.sidebar?.setContext(context); for (const editor of this.editors.values()) { editor.document.setContext(context); } }),
 		];
 	}
 
@@ -160,9 +160,11 @@ export class SimViews implements vscode.WebviewViewProvider, vscode.WebviewPanel
 		if (!editor || editor.selection.isEmpty) { throw new Error(vscode.l10n.t("Select text in a project file to create a Sim chat.")); }
 		const text = editor.document.getText(editor.selection);
 		if (text.length > selectionMaxLength) { throw new Error(vscode.l10n.t("Select up to 32,000 characters to create a Sim chat.")); }
-		const selection: SourceSelection = { uri: editor.document.uri.toString(), language: editor.document.languageId, text, range: {
-			startLine: editor.selection.start.line, startCharacter: editor.selection.start.character, endLine: editor.selection.end.line, endCharacter: editor.selection.end.character,
-		} };
+		const selection: SourceSelection = {
+			uri: editor.document.uri.toString(), language: editor.document.languageId, text, range: {
+				startLine: editor.selection.start.line, startCharacter: editor.selection.start.character, endLine: editor.selection.end.line, endCharacter: editor.selection.end.character,
+			}
+		};
 		const initiatingTab = vscode.window.tabGroups.activeTabGroup.activeTab;
 		const workspaceId = simWorkspaceId(this.sidebarPath);
 		const context = await this.projects.read();

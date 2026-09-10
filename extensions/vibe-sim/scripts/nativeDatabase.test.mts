@@ -64,8 +64,8 @@ test('native PostgreSQL and Redis have independent credentials, data, lifetimes 
 		return result.stdout.trim();
 	};
 	await Promise.all([
-		query(a, "CREATE EXTENSION vector; CREATE EXTENSION btree_gin; CREATE TABLE isolation_probe (value text); INSERT INTO isolation_probe VALUES ('A')"),
-		query(b, "CREATE EXTENSION vector; CREATE TABLE isolation_probe (value text); INSERT INTO isolation_probe VALUES ('B')"),
+		query(a, `CREATE EXTENSION vector; CREATE EXTENSION btree_gin; CREATE TABLE isolation_probe (value text); INSERT INTO isolation_probe VALUES ('A')`),
+		query(b, `CREATE EXTENSION vector; CREATE TABLE isolation_probe (value text); INSERT INTO isolation_probe VALUES ('B')`),
 		redis(a, 'SET', 'native-turn', 'A'), redis(b, 'SET', 'native-turn', 'B'),
 	]);
 	const snapshot = {

@@ -192,7 +192,7 @@ export async function assembleNativeRuntime(simSource: string, services: string,
 		build({
 			entryPoints: [path.join(extensionRoot, 'src/native/nativeAdapter.ts')], bundle: true, platform: 'node', format: 'esm',
 			outfile: path.join(destination, 'adapter.mjs'),
-			banner: { js: "import { fileURLToPath as runtimeFileURLToPath } from 'node:url'; import { dirname as runtimeDirname } from 'node:path'; const __dirname = runtimeDirname(runtimeFileURLToPath(import.meta.url));" },
+			banner: { js: `import { fileURLToPath as runtimeFileURLToPath } from 'node:url'; import { dirname as runtimeDirname } from 'node:path'; const __dirname = runtimeDirname(runtimeFileURLToPath(import.meta.url));` },
 		}),
 	]);
 }

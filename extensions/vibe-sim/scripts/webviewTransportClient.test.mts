@@ -38,6 +38,23 @@ function harness() {
 }
 
 describe('native browser transport compatibility', () => {
+	it('ignores forged and malformed replies without completing another pending request', async () => {
+		const view = harness();
+		let completed = false;
+		const pending = view.window.fetch('/api/test').then(response => { completed = true; return response; });
+		await waitFor(() => view.messages.length === 1, 'fetch start');
+		const reply = { source: 'sim-native-transport', token: 'test-view', type: 'response', id: 1, status: 200, statusText: 'OK', headers: [], path: '/api/test', redirected: false, body: false };
+		for (const data of [
+			null, { ...reply, token: 'another-view' }, { ...reply, source: 'another-source' },
+			{ ...reply, id: '1' }, { ...reply, status: undefined }, { ...reply, headers: [null] },
+			{ ...reply, path: '//outside.invalid' }, { ...reply, type: 'chunk', data: 'not-binary' },
+		]) { view.window.dispatchEvent(new MessageEvent('message', { data })); }
+		await Promise.resolve();
+		assert.equal(completed, false);
+		view.reply({ type: 'response', id: 1, status: 204, statusText: 'No Content', headers: [], path: '/api/test', redirected: false, body: false });
+		assert.equal((await pending).status, 204);
+	});
+
 	it('allows Sim whole-file uploads through 50 MiB and rejects bodies above the bounded request limit', async () => {
 		const view = harness();
 		const pending = view.window.fetch('https://sim.vscode.invalid/api/upload', { method: 'PUT', body: new Uint8Array(50 * 1024 * 1024) });

@@ -33,6 +33,23 @@ const { NativeClient, publicResponseHeaders } = load<typeof import('../src/nativ
 const { WebviewTransport } = load<typeof import('../src/webviewTransport.ts')>('webviewTransport');
 const { isSafeSimPath, editorKey } = load<typeof import('../src/simSurface.ts')>('simSurface');
 
+function createDocumentConnection(): DocumentConnection {
+	const client = new class extends NativeClient {
+		override async request(path: string) {
+			return { response: new Response('<html><head></head><body>Native Sim</body></html>'), path, redirected: false, headers: [] };
+		}
+		override openSocket(): never { throw new Error('Unexpected socket in the document fixture'); }
+	}('document-test', { applicationPort: 1, realtimePort: 2, gateway: 'fixture' }, () => true);
+	const resourceRoot: vscode.Uri = {
+		scheme: 'https', authority: 'resources.vscode.invalid', path: '/', query: '', fragment: '', fsPath: '/',
+		with: () => resourceRoot, toJSON: () => ({}), toString: () => 'https://resources.vscode.invalid/',
+	};
+	return { client, resourceRoot, context: {
+		version: 1, generation: 1, language: 'en',
+		physicalWorkspace: { id: 'fixture', name: 'Fixture', remoteAuthority: '', folders: [] }, logicalWorkspaces: [],
+	} };
+}
+
 function createWebview() {
 	const listeners = new Set<(message: unknown) => void>();
 	const posted: object[] = [];
@@ -66,10 +83,7 @@ describe('native Sim Webview document projection', () => {
 		t.after(() => document.dispose());
 		const loading = document.load();
 		document.navigate(b);
-		gate.resolve({
-			client: { request: async (path: string) => ({ response: new Response('<html><head></head><body>Native Sim</body></html>'), path, redirected: false }) },
-			resourceRoot: { toString: () => 'https://resources.vscode.invalid/' }, context: {},
-		} as DocumentConnection);
+		gate.resolve(createDocumentConnection());
 		await loading;
 		const token = webview.token;
 		const send = (type: SimMessage['type'], path: string, userInitiated = false) => webview.receive({ source: 'sim', token, type, payload: { path, userInitiated } });
@@ -90,10 +104,7 @@ describe('native Sim Webview document projection', () => {
 	it('preserves native startup redirects when no host tab selection superseded them', async t => {
 		const webview = createWebview();
 		const paths: string[] = [];
-		const document = new SimDocument(webview.view, 'sidebar', '/workspace', async () => ({
-			client: { request: async () => ({ response: new Response('<html><head></head></html>'), path: '/workspace', redirected: false }) },
-			resourceRoot: { toString: () => 'https://resources.vscode.invalid/' }, context: {},
-		} as DocumentConnection), message => { if (message.type === 'routeChanged') { paths.push(message.payload!.path!); } }, error => error.message);
+		const document = new SimDocument(webview.view, 'sidebar', '/workspace', async () => createDocumentConnection(), message => { if (message.type === 'routeChanged') { paths.push(message.payload!.path!); } }, error => error.message);
 		t.after(() => document.dispose());
 		await document.load();
 		for (const type of ['ready', 'routeChanged']) { webview.receive({ source: 'sim', token: webview.token, type, payload: { path: '/workspace/created' } }); }
@@ -166,17 +177,23 @@ describe('private native Webview transport', () => {
 
 	it('cancels a pending response without accepting its late completion', async t => {
 		const webview = createWebview();
-		const gate = Promise.withResolvers<{ response: Response; path: string; redirected: boolean }>();
+		const gate = Promise.withResolvers<Awaited<ReturnType<InstanceType<typeof NativeClient>['request']>>>();
 		let signal: AbortSignal | undefined;
 		let cancelled = false;
-		const client = { request: (_path: string, options: { signal: AbortSignal }) => { signal = options.signal; return gate.promise; } } as InstanceType<typeof NativeClient>;
+		const client = new class extends NativeClient {
+			override request(_path: string, options: Parameters<InstanceType<typeof NativeClient>['request']>[1] = {}) {
+				signal = options.signal;
+				return gate.promise;
+			}
+			override openSocket(): never { throw new Error('Unexpected socket in the cancellation fixture'); }
+		}('cancellation-test', { applicationPort: 1, realtimePort: 2, gateway: 'fixture' }, () => true);
 		const transport = new WebviewTransport(webview.view, client, 'test');
 		t.after(() => transport.dispose());
 		webview.receive({ source: 'sim-native-transport', token: 'wrong', id: 1, type: 'fetch', path: '/api/test', method: 'GET', headers: [], redirect: 'follow' });
 		assert.equal(signal, undefined);
 		webview.receive({ source: 'sim-native-transport', token: 'test', id: 1, type: 'fetch', path: '/api/test', method: 'GET', headers: [], redirect: 'follow' });
 		transport.dispose();
-		gate.resolve({ response: new Response(new ReadableStream({ cancel: () => { cancelled = true; } })), path: '/api/test', redirected: false });
+		gate.resolve({ response: new Response(new ReadableStream({ cancel: () => { cancelled = true; } })), path: '/api/test', redirected: false, headers: [] });
 		await waitFor(() => cancelled, 'late response cancellation');
 		assert.deepStrictEqual({ aborted: signal?.aborted, replies: webview.posted.length }, { aborted: true, replies: 0 });
 	});

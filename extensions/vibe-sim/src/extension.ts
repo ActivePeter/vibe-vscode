@@ -50,7 +50,6 @@ export function activate(context: ExtensionContext): void {
 	const output = window.createOutputChannel(l10n.t("Sim Runtime"), { log: true });
 	context.subscriptions.push(output);
 	const storage = context.storageUri ?? Uri.joinPath(context.globalStorageUri, 'empty-workspace');
-	let views: SimViews | undefined;
 	const runtime = new ManagedSimRuntime(context.extensionUri.fsPath, Uri.joinPath(storage, 'runtime').fsPath, {
 		onDidChangeStatus: status => { output.info(describeStatus(status)); views?.onRuntimeChanged(status, describeStatus(status)); },
 		getAgentExecutables: readAgentExecutables,
@@ -66,7 +65,7 @@ export function activate(context: ExtensionContext): void {
 		output.error(message);
 		await window.showErrorMessage(message);
 	};
-	views = new SimViews(context, runtime, error => { void reportError(error); }, error => error instanceof SimRuntimeError ? describeError(error.code) : error.message);
+	const views = new SimViews(context, runtime, error => { void reportError(error); }, error => error instanceof SimRuntimeError ? describeError(error.code) : error.message);
 	context.subscriptions.push(views);
 	for (const [id, action] of [
 		['vibe-vscode.openSim', (path?: unknown) => views!.openEditor(path)],

@@ -3,7 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { maxBodyBytes, maxRequestBodyBytes, TransportReply, TransportRequest, transportSource } from './transportProtocol';
+import { isRecord } from './protocol';
+import { isTransportReply, maxBodyBytes, maxRequestBodyBytes, TransportReply, TransportRequest, transportSource } from './transportProtocol';
 
 interface WebviewApi {
 	postMessage(message: object): void;
@@ -65,16 +66,18 @@ export function install(configuration: Configuration): void {
 		api.setState({ ...api.getState(), path: `${url.pathname}${url.search}${url.hash}` });
 	}
 	persistRoute();
-	Object.defineProperty(window, 'vibeVscodeTransport', { value: Object.freeze({
-		token: configuration.token,
-		postMessage: (message: Record<string, unknown>) => {
-			if (message.type === 'titleChanged' && typeof message.payload === 'object' && message.payload && 'title' in message.payload && typeof message.payload.title === 'string') {
-				api.setState({ ...api.getState(), title: message.payload.title });
-			}
-			api.postMessage(message);
-		},
-		onMessage: (listener: (message: unknown) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
-	}) });
+	Object.defineProperty(window, 'vibeVscodeTransport', {
+		value: Object.freeze({
+			token: configuration.token,
+			postMessage: (message: Record<string, unknown>) => {
+				if (message.type === 'titleChanged' && isRecord(message.payload) && typeof message.payload.title === 'string') {
+					api.setState({ ...api.getState(), title: message.payload.title });
+				}
+				api.postMessage(message);
+			},
+			onMessage: (listener: (message: unknown) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+		})
+	});
 
 	const finish = (id: number, error?: Error) => {
 		const operation = requests.get(id);
@@ -119,12 +122,13 @@ export function install(configuration: Configuration): void {
 	};
 
 	window.addEventListener('message', (event: MessageEvent<unknown>) => {
-		if (typeof event.data !== 'object' || !event.data || !('token' in event.data) || event.data.token !== configuration.token) { return; }
-		if (!('source' in event.data) || event.data.source !== transportSource) {
+		if (!isRecord(event.data) || event.data.token !== configuration.token) { return; }
+		if (event.data.source !== transportSource) {
 			for (const listener of listeners) { listener(event.data); }
 			return;
 		}
-		const message = event.data as TransportReply;
+		if (!isTransportReply(event.data)) { return; }
+		const message = event.data;
 		const operation = requests.get(message.id);
 		if (message.type === 'response' && operation) {
 			const body = message.body ? new ReadableStream<Uint8Array<ArrayBuffer>>({

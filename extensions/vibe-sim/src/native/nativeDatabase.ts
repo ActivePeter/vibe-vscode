@@ -172,7 +172,7 @@ export async function startNativeDatabase(packageDirectory: string, stateDirecto
 				return false;
 			}
 		}, signal);
-		const present = await start(pgBinary('psql'), ['-d', 'postgres', '-Atc', "SELECT 1 FROM pg_database WHERE datname = 'sim'"], stateDirectory, pgEnvironment).result(signal);
+		const present = await start(pgBinary('psql'), ['-d', 'postgres', '-Atc', `SELECT 1 FROM pg_database WHERE datname = 'sim'`], stateDirectory, pgEnvironment).result(signal);
 		if (present.trim() !== '1') {
 			await start(pgBinary('createdb'), ['sim'], stateDirectory, pgEnvironment).result(signal);
 		}

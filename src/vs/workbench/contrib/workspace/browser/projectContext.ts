@@ -44,6 +44,8 @@ export const IProjectContextService = createDecorator<IProjectContextService>('p
  */
 export interface IProjectContextService {
 	readonly _serviceBrand: undefined;
+	/** Resolves after the complete physical catalog and restored project selection are authoritative. */
+	readonly whenReady: Promise<void>;
 	readonly onDidChangeProjectContext: Event<void>;
 	readonly workspace: IWorkspace;
 	readonly selectedFolder: IWorkspaceFolder | undefined;
@@ -120,6 +122,10 @@ export class ProjectContextService extends Disposable implements IProjectContext
 
 	get workspace(): IWorkspace {
 		return this.workspaceContextService.getWorkspace();
+	}
+
+	get whenReady(): Promise<void> {
+		return this.whenWorkspaceComplete;
 	}
 
 	get selectedFolder(): IWorkspaceFolder | undefined {

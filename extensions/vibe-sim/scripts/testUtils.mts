@@ -13,6 +13,7 @@ import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import type { ManagedSimRuntime } from '../src/managedRuntime.ts';
+import type { AgentPolicy } from '../src/protocol.ts';
 
 const require = createRequire(import.meta.url);
 const extensionSource = fileURLToPath(new URL('..', import.meta.url));
@@ -57,7 +58,7 @@ export async function processExited(pid: number): Promise<boolean> {
 		// Orphans may briefly be zombies pending their new parent's waitpid; execution has ended.
 		return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z');
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+		if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) {
 			return true;
 		}
 		throw error;
@@ -104,7 +105,7 @@ export async function createFixture(t: TestContext) {
 	};
 }
 
-export async function starts(stateDirectory: string): Promise<{ pid: number; instanceId: string; execArgv: string[]; ambientConfiguration: string[] }[]> {
+export async function starts(stateDirectory: string): Promise<{ pid: number; instanceId: string; execArgv: string[]; ambientConfiguration: string[]; agentPolicy?: AgentPolicy }[]> {
 	const value = await fs.readFile(path.join(stateDirectory, 'starts.jsonl'), 'utf8');
 	return value.trim().split('\n').map(line => JSON.parse(line));
 }

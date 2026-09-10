@@ -23,27 +23,37 @@ async function activate(t: TestContext, empty = false) {
 	const output: string[] = [];
 	const uri = (fsPath: string) => ({ scheme: 'file', fsPath });
 	const subscriptions: { dispose(): void }[] = [];
-	const workspace = { isTrusted: true };
+	const disposable = { dispose() { } };
+	const workspace = { isTrusted: true, registerFileSystemProvider: () => disposable, getConfiguration: () => ({ inspect: () => undefined }) };
 	const vscode = {
+		EventEmitter: class<T> {
+			private readonly listeners = new Set<(value: T) => void>();
+			readonly event = (listener: (value: T) => void) => { this.listeners.add(listener); return { dispose: () => this.listeners.delete(listener) }; };
+			fire(value: T) { for (const listener of this.listeners) { listener(value); } }
+			dispose() { this.listeners.clear(); }
+		},
 		workspace,
 		Uri: { joinPath: (base: { fsPath: string }, ...segments: string[]) => uri(path.join(base.fsPath, ...segments)) },
 		l10n: { t: (message: string, ...args: string[]) => message.replace(/\{(?<index>\d+)\}/g, (_match, index) => args[Number(index)]) },
-		commands: { registerCommand: (id: string, handler: () => Promise<object | undefined> | object | undefined) => {
+		commands: { executeCommand: async () => undefined, registerCommand: (id: string, handler: () => Promise<object | undefined> | object | undefined) => {
 			handlers.set(id, handler);
 			return { dispose: () => handlers.delete(id) };
 		} },
 		window: {
+			registerWebviewViewProvider: () => disposable, registerWebviewPanelSerializer: () => disposable,
+			onDidChangeActiveTextEditor: () => disposable, onDidChangeTextEditorSelection: () => disposable,
+			onDidCloseTerminal: () => disposable,
 			createOutputChannel: () => ({ info: (message: string) => output.push(message), error: (message: string) => output.push(message), show() { }, dispose() { } }),
 			showErrorMessage: async (message: string) => { errors.push(message); },
 			showInformationMessage: async (message: string) => { output.push(message); },
 		},
 	};
 	const extension = runInNewContext(`${compiled}\nmodule.exports;`, {
-		module: { exports: {} }, __dirname: fixture.distDirectory, process, setTimeout, clearTimeout,
+		module: { exports: {} }, __dirname: fixture.distDirectory, process, setTimeout, clearTimeout, Buffer, URL, TextEncoder, AbortController,
 		require: (name: string) => name === 'vscode' ? vscode : require(name),
 	}) as typeof import('../src/extension.ts');
 	const storageUri = empty ? undefined : uri(path.join(fixture.root, 'workspace'));
-	const context = { extensionUri: uri(fixture.extensionDirectory), storageUri, globalStorageUri: uri(path.join(fixture.root, 'global')), subscriptions };
+	const context = { extensionUri: uri(fixture.extensionDirectory), storageUri, globalStorageUri: uri(path.join(fixture.root, 'global')), subscriptions, workspaceState: { get: () => undefined, update: async () => { } } };
 	extension.activate(context as ExtensionContext);
 	fixture.beforeCleanup(async () => {
 		await extension.deactivate();
@@ -55,16 +65,16 @@ async function activate(t: TestContext, empty = false) {
 }
 
 describe('Sim workspace extension entry point', () => {
-	it('uses a Node workspace host and contributes no competing Sim views or startup activation', async () => {
+	it('owns the sole native Sim sidebar and resource serializer in a Node workspace host', async () => {
 		const manifest = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 		assert.deepStrictEqual({
 			main: manifest.main, browser: manifest.browser, extensionKind: manifest.extensionKind,
 			activationEvents: manifest.activationEvents, capabilities: manifest.capabilities,
 			contributionPoints: Object.keys(manifest.contributes), commands: manifest.contributes.commands.map((command: { command: string }) => command.command),
 		}, {
-			main: './dist/extension.js', browser: undefined, extensionKind: ['workspace'], activationEvents: undefined,
-			capabilities: { virtualWorkspaces: false, untrustedWorkspaces: { supported: false } }, contributionPoints: ['commands'],
-			commands: ['vibe-vscode.sim.startRuntime', 'vibe-vscode.sim.stopRuntime', 'vibe-vscode.sim.showRuntimeStatus'],
+			main: './dist/extension.js', browser: undefined, extensionKind: ['workspace'], activationEvents: ['onWebviewPanel:vibe-vscode.sim.editor'],
+			capabilities: { virtualWorkspaces: false, untrustedWorkspaces: { supported: false } }, contributionPoints: ['commands', 'viewsContainers', 'views', 'menus', 'configuration'],
+			commands: ['vibe-vscode.sim.startRuntime', 'vibe-vscode.sim.stopRuntime', 'vibe-vscode.sim.showRuntimeStatus', 'vibe-vscode.openSim', 'vibe-vscode.openAgentMonitor', 'vibe-vscode.createSimChatFromSelection', 'vibe-vscode.sim.signInAgent', 'vibe-vscode.sim.openAgentConfiguration', 'vibe-vscode.sim.configureAgentExecutables'],
 		});
 	});
 
@@ -76,12 +86,12 @@ describe('Sim workspace extension entry point', () => {
 		});
 	});
 
-	it('reports a missing native package without claiming the existing UI has been migrated', async t => {
+	it('reports a missing native package without falling back to a shared Sim service', async t => {
 		const { handlers, fixture, errors } = await activate(t);
 		await fs.rm(fixture.runtimeDirectory, { recursive: true });
 		const info = await handlers.get('vibe-vscode.sim.startRuntime')!();
 		assert.deepStrictEqual({ info, errors, storage: await exists(path.join(fixture.root, 'workspace')) }, {
-			info: undefined, errors: ['The native Sim runtime is not packaged in this build. The existing Sim interface has not been switched.'], storage: false,
+			info: undefined, errors: ['The native Sim runtime is not packaged in this build. Build or install the complete Sim extension.'], storage: false,
 		});
 	});
 
@@ -110,10 +120,12 @@ describe('Sim workspace extension entry point', () => {
 		});
 	}
 
-	it('keeps all preview labels and runtime messages localized', async () => {
+	it('keeps the native runtime messages localized', async () => {
 		const bundle = JSON.parse(await fs.readFile(new URL('../l10n/bundle.l10n.json', import.meta.url), 'utf8'));
 		const chinese = JSON.parse(await fs.readFile(new URL('../l10n/bundle.l10n.zh-cn.json', import.meta.url), 'utf8'));
-		const source = await fs.readFile(new URL('../src/extension.ts', import.meta.url), 'utf8');
+		const sourceRoot = new URL('../src/', import.meta.url);
+		const files = (await fs.readdir(sourceRoot, { recursive: true })).filter(file => file.endsWith('.ts'));
+		const source = (await Promise.all(files.map(file => fs.readFile(new URL(file, sourceRoot), 'utf8')))).join('\n');
 		const messages = [...source.matchAll(/l10n\.t\("(?<message>[^"\n]+)"/g)].map(match => match.groups!.message);
 		assert.deepStrictEqual({ missingEnglish: messages.filter(message => !bundle[message]), missingChinese: messages.filter(message => !chinese[message]) }, {
 			missingEnglish: [], missingChinese: [],

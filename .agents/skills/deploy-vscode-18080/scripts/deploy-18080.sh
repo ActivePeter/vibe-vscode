@@ -403,6 +403,8 @@ validate_candidate_runtime_startup() {
 
 	validate_caddy_runtime_root "$runtime_root" || return 1
 	runtime_uses_authentication_cli "$runtime_root" || return 1
+	[[ -f "$runtime_root/extensions/vibe-sim/dist/verifyRuntime.js" ]] || return 1
+	"$runtime_root/node" "$runtime_root/extensions/vibe-sim/dist/verifyRuntime.js" >/dev/null || return 1
 	[[ -x "$runtime_root/bin/vibe-vscode-server" && -f "$runtime_root/vibe-release.json" ]]
 }
 
@@ -668,6 +670,8 @@ build_current() {
 		"$NPM_BIN" run compile-client
 		"$NPM_BIN" run compile-web
 		"$NPM_BIN" run compile-vibe-vscode
+		"$NPM_BIN" run build-vibe-sim-native
+		"$NODE_BIN" "$SOURCE_ROOT/extensions/vibe-sim/dist/verifyRuntime.js"
 		[[ -f "$SOURCE_ROOT/out/server-main.js" ]] || fail 'compile completed without out/server-main.js'
 		[[ -f "$SOURCE_ROOT/$EMBEDDED_AUTH_SERVER_RELATIVE_PATH" ]] || fail "compile completed without $EMBEDDED_AUTH_SERVER_RELATIVE_PATH"
 		[[ -f "$SOURCE_ROOT/extensions/vibe-vscode/dist/browser/extension.js" ]] || fail 'vibe-vscode browser extension bundle is missing'

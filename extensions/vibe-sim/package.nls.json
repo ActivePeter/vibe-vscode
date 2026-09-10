@@ -1,7 +1,17 @@
 {
-	"displayName": "Sim Runtime",
-	"description": "Extension-owned lifecycle for the Sim agent runtime (preview infrastructure).",
-	"command.startRuntime": "Start Plugin Runtime (Preview)",
+	"displayName": "Sim Agent Workbench",
+	"description": "Native Sim sidebar, workflows, DAGs and agent sessions with an isolated extension-owned runtime.",
+	"command.startRuntime": "Start Plugin Runtime",
 	"command.stopRuntime": "Stop Plugin Runtime",
-	"command.showRuntimeStatus": "Show Plugin Runtime Status"
+	"command.showRuntimeStatus": "Show Plugin Runtime Status",
+	"command.openSim": "Open Sim",
+	"command.openMonitor": "Open Global Agent Monitor",
+	"command.createChat": "Create Sim Chat from Selection",
+	"command.signInAgent": "Sign In to Agent for This Instance",
+	"command.openAgentConfiguration": "Open Agent Configuration for This Instance",
+	"command.configureAgentExecutables": "Configure Agent Runtime",
+	"configuration.codexSandbox": "Default and maximum Codex sandbox permission for this Sim instance. Choose workspace-write to offer project writes. Only user/remote machine settings are used; workspace overrides are ignored. Stop and start the Sim runtime after changing this setting.",
+	"configuration.allowUnrestricted": "Allow the explicit Unrestricted choice in Sim sessions. This disables execution sandboxing and approvals for a session that selects it, allowing access outside the project with the service account's permissions. It never becomes the default. Only user/remote machine settings are used; workspace overrides are ignored. Stop and start the Sim runtime after changing this setting.",
+	"configuration.codexExecutable": "Codex executable in the workspace Extension Host. Only user/remote machine settings are used; workspace overrides are ignored. Stop and start the Sim runtime after changing this setting. Credentials and sessions always stay in this Sim instance's private profile.",
+	"configuration.claudeExecutable": "Claude Code executable in the workspace Extension Host. Only user/remote machine settings are used; workspace overrides are ignored. Stop and start the Sim runtime after changing this setting. Credentials and sessions always stay in this Sim instance's private profile."
 }

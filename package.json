@@ -28,6 +28,7 @@
     "compile-vibe-vscode": "npm-run-all2 -lp compile-vibe-project compile-vibe-sim",
     "compile-vibe-project": "npm --prefix extensions/vibe-vscode run compile-web",
     "compile-vibe-sim": "npm --prefix extensions/vibe-sim run compile",
+    "build-vibe-sim-native": "bash extensions/vibe-sim/native/build.sh",
     "build-fast": "node build/next/index.ts build-fast",
     "build-fast-extensions": "npm run gulp copy-codicons compile-extensions compile-extension-media",
     "typecheck-client": "tsc --project ./src/tsconfig.json --noEmit --skipLibCheck",

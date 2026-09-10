@@ -45,6 +45,12 @@ client-supplied proxy headers or substitute a localhost probe address for a remo
 The account, session, and request authorization contract is canonical in
 [Full-screen login and instance authentication](../../../vibe_vscode_doc/design/login_authentication.md).
 
+Sim is packaged with the workspace extension, which owns its private runtime and storage.
+The update builds the locked native package and validates its complete contents before
+stopping the active service. New Caddy releases do not forward shared Sim routes or load
+shared Sim configuration. See the canonical
+[Sim plugin runtime contract](../../../vibe_vscode_doc/design/sim_plugin_runtime.md).
+
 The script must remain the single automation entry for this skill. It:
 
 - keeps the active service on a self-contained, versioned last-known-good runtime while compiling the canonical checkout;

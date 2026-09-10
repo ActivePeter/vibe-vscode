@@ -54,7 +54,7 @@ try {
 		if (!await authenticationServer.handle(request, response)) {
 			protectedRequests++;
 			response.writeHead(200, { 'Content-Type': 'application/json' });
-			response.end(JSON.stringify({ renewalHeader: request.headers['x-vibe-auth-set-cookie'] ?? null }));
+			response.end(JSON.stringify({ path: request.url, renewalHeader: request.headers['x-vibe-auth-set-cookie'] ?? null }));
 		}
 	});
 	backend.on('upgrade', (_request, socket) => {
@@ -123,6 +123,7 @@ try {
 		assert.equal(protectedRequests, 0, `authentication route normalization bypass: ${path}, status ${traversal.status}`);
 	}
 	assert.deepEqual([navigation.status, asset.status, deniedSocket.status, protectedRequests], [303, 401, 401, 0]);
+	// Retired shared-Sim URLs remain behind login, but must never reach the old upstream.
 	const deniedSimNavigation = await request('/sim/workspace/demo', { headers: { Accept: 'text/html' } });
 	const deniedSimSocket = await request('/socket.io/?EIO=4&transport=websocket', { headers: webSocketHeaders });
 	const simResourcePaths = ['/sim/__vibe_status', '/_next/static/test.js', '/api/status', '/workspace/demo', '/socket.io/?EIO=4&transport=polling'];
@@ -144,7 +145,7 @@ try {
 	const renewalCookies = allowed.headers['set-cookie'] ?? [];
 	assert.equal(renewalCookies.length, 1);
 	assert.equal(renewalCookies[0].split('=', 1)[0], authentication.sessionCookieName);
-	assert.deepEqual(JSON.parse(allowed.body), { renewalHeader: null });
+	assert.deepEqual(JSON.parse(allowed.body), { path: '/static/resource.js', renewalHeader: null });
 	const allowedSocket = await request('/websocket', { headers: { ...webSocketHeaders, Cookie: cookie } });
 	assert.equal(allowedSocket.status, 101);
 	await delay(1100);
@@ -158,29 +159,24 @@ try {
 		renewalCookies: allowedSim.headers['set-cookie']?.length,
 	}, {
 		status: 200,
-		body: { path: '/workspace/demo', embedded: '1', renewalHeader: null },
+		body: { path: '/sim/workspace/demo', renewalHeader: null },
 		frameOptions: undefined,
-		embedderPolicy: 'unsafe-none',
-		openerPolicy: 'unsafe-none',
+		embedderPolicy: undefined,
+		openerPolicy: undefined,
 		renewalCookies: 1,
 	});
 	const allowedSimResources = await Promise.all(simResourcePaths.map(path => request(path, { headers: { Cookie: cookie } })));
-	assert.deepEqual(allowedSimResources.map(response => ({ status: response.status, body: JSON.parse(response.body) })), [
-		{ status: 200, body: { path: '/api/status', embedded: '1', renewalHeader: null } },
-		{ status: 200, body: { path: '/_next/static/test.js', embedded: '1', renewalHeader: null } },
-		{ status: 200, body: { path: '/api/status', embedded: '1', renewalHeader: null } },
-		{ status: 200, body: { path: '/workspace/demo', embedded: '1', renewalHeader: null } },
-		{ status: 200, body: { path: '/socket.io/?EIO=4&transport=polling', embedded: null, renewalHeader: null } },
-	]);
-	assert.equal(allowedSimResources[0].headers['cache-control'], 'no-store');
+	assert.deepEqual(allowedSimResources.map(response => ({ status: response.status, body: JSON.parse(response.body) })),
+		simResourcePaths.map(path => ({ status: 200, body: { path, renewalHeader: null } })));
+	assert.equal(allowedSimResources[0].headers['cache-control'], undefined);
 	const allowedSimSocket = await request('/socket.io/?EIO=4&transport=websocket', { headers: { ...webSocketHeaders, Cookie: cookie } });
 	assert.equal(allowedSimSocket.status, 101);
 	const logout = await request('/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: publicOrigin, Cookie: cookie }, body: '' });
 	const deniedAfterLogout = await request('/static/resource.js', { headers: { Cookie: cookie } });
 	const deniedSimAfterLogout = await request('/sim/workspace/demo', { headers: { Cookie: cookie } });
-	assert.deepEqual([logout.status, deniedAfterLogout.status, deniedSimAfterLogout.status, protectedRequests, simRequests], [303, 401, 401, 2, 7]);
+	assert.deepEqual([logout.status, deniedAfterLogout.status, deniedSimAfterLogout.status, protectedRequests, simRequests], [303, 401, 401, 9, 0]);
 	assert.ok((deniedAfterLogout.headers['set-cookie']?.length ?? 0) > 1, 'denials must preserve separate cookie-clearing headers');
-	console.log('Real Caddy gateway passed: navigation 303; VS Code and Sim resources/WS 401; forged origin 403; registration 303; authorized HTTP 200/WS 101; Sim route rewriting; exactly one renewal cookie; logout revocation and multi-cookie denial preserved.');
+	console.log('Real Caddy gateway passed: navigation 303; protected resources/WS 401; forged origin 403; registration 303; authorized HTTP 200/WS 101; no shared Sim forwarding; exactly one renewal cookie; logout revocation and multi-cookie denial preserved.');
 } catch (error) {
 	console.error(gatewayLog);
 	throw error;

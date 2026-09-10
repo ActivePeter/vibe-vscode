@@ -9,9 +9,42 @@ import { once } from 'node:events';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { describe, it } from 'node:test';
+import type { VibeProjectContext } from 'vibe-vscode';
+import type { AgentPolicy } from '../src/protocol.ts';
 import { createFixture, exists, processExited, starts, waitFor } from './testUtils.mts';
 
 describe('Sim runtime lifecycle with real private child processes', { skip: process.platform !== 'linux', timeout: 60000 }, () => {
+	it('captures the user permission policy for one run and forwards changes only on a new start', async t => {
+		const fixture = await createFixture(t);
+		const initial: AgentPolicy = { codexSandbox: 'read-only', allowUnrestricted: false };
+		const next: AgentPolicy = { codexSandbox: 'workspace-write', allowUnrestricted: true };
+		let policy = initial;
+		const { runtime, stateDirectory } = await fixture.createRuntime('policy', 'ready', { getAgentPolicy: () => policy });
+		const starting = runtime.start();
+		policy = next;
+		await starting;
+		await runtime.stop();
+		await runtime.start();
+		assert.deepStrictEqual((await starts(stateDirectory)).map(start => start.agentPolicy), [initial, next]);
+	});
+
+	it('acknowledges only applied project snapshots, ignores older generations and resets the generation on restart', async t => {
+		const fixture = await createFixture(t);
+		const { runtime, stateDirectory } = await fixture.createRuntime();
+		const first = await runtime.start();
+		const snapshot = (generation: number): VibeProjectContext => ({ version: 1, generation, physicalWorkspace: { id: 'physical', name: `Project ${generation}`, remoteAuthority: '', folders: [] }, logicalWorkspaces: [] });
+		await Promise.all([runtime.updateProjectContext(snapshot(5), first.runId), runtime.updateProjectContext(snapshot(3), first.runId)]);
+		const file = path.join(stateDirectory, 'project-context.json');
+		const applied = JSON.parse(await fs.readFile(file, 'utf8'));
+		await runtime.stop();
+		const second = await runtime.start();
+		await assert.rejects(runtime.updateProjectContext(snapshot(10), first.runId), { code: 'runtimeExited' });
+		await runtime.updateProjectContext(snapshot(1), second.runId);
+		assert.deepStrictEqual({ applied, restarted: JSON.parse(await fs.readFile(file, 'utf8')), mode: (await fs.stat(file)).mode & 0o777, temporary: (await fs.readdir(stateDirectory)).filter(name => name.endsWith('.tmp')) }, {
+			applied: snapshot(5), restarted: snapshot(1), mode: 0o600, temporary: [],
+		});
+	});
+
 	it('coalesces concurrent starts and does not advertise readiness before the adapter barrier', async t => {
 		const fixture = await createFixture(t);
 		const { runtime, stateDirectory } = await fixture.createRuntime('workspace-a', 'barrier');

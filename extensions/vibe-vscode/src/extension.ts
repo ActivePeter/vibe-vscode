@@ -4,122 +4,65 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import type { VibeProjectContext, VibeVSCodeApi } from 'vibe-vscode';
 
-let lastActiveTextEditor: vscode.TextEditor | undefined;
-
-/** The Workbench owns presentation. This adapter only supplies standard extension API capabilities. */
-export function activate(context: vscode.ExtensionContext): void {
-	lastActiveTextEditor = vscode.window.activeTextEditor;
-	context.subscriptions.push(
-		vscode.commands.registerCommand('_vibe-vscode.sim.getContext', () => createHostContext()),
-		vscode.commands.registerCommand('_vibe-vscode.sim.resource', (message: unknown) => handleResource(message)),
-		vscode.window.registerWebviewPanelSerializer('vibe-vscode.sim.editor', {
-			deserializeWebviewPanel: async (panel, state: unknown) => {
-				// One-way migration of a saved legacy route, never another Webview UI or Session store.
-				const path = isRecord(state) ? state.path : undefined;
-				await vscode.commands.executeCommand('vibe-vscode.openSim', path);
-				panel.dispose();
-			},
-		}),
-		vscode.window.onDidChangeActiveTextEditor(editor => {
-			if (editor) {
-				lastActiveTextEditor = editor;
-			}
-			broadcastContext();
-		}),
-		vscode.window.onDidChangeTextEditorSelection(event => {
-			if (event.textEditor === lastActiveTextEditor) {
-				broadcastContext();
-			}
-		}),
-	);
-	broadcastContext();
-}
-
-function createHostContext() {
-	const editor = vscode.window.activeTextEditor ?? lastActiveTextEditor;
-	return {
-		language: vscode.env.language,
-		...(editor ? {
-			activeFile: {
-				uri: editor.document.uri.toString(),
-				selection: {
-					startLine: editor.selection.start.line,
-					startCharacter: editor.selection.start.character,
-					endLine: editor.selection.end.line,
-					endCharacter: editor.selection.end.character,
-				},
-			},
-		} : undefined),
-	};
-}
-
-function broadcastContext(): void {
-	void vscode.commands.executeCommand('_vibe-vscode.sim.updateContext', createHostContext()).then(undefined, () => {
-		// The hosted Workbench may not be available in other products using this extension.
+/** Vibe owns the public project API, not any consuming plugin's UI or service lifecycle. */
+export function activate(context: vscode.ExtensionContext): VibeVSCodeApi {
+	const projectChanges = new vscode.EventEmitter<VibeProjectContext>();
+	const consumers = new Map<string, string>();
+	let projectGeneration = -1;
+	const api: VibeVSCodeApi = Object.freeze({
+		version: 1,
+		getProjectContext: async () => {
+			const snapshot = freezeProjectContext(await vscode.commands.executeCommand<VibeProjectContext>('vibe-vscode.getProjectContext'));
+			projectGeneration = Math.max(projectGeneration, snapshot.generation);
+			return snapshot;
+		},
+		onDidChangeProjectContext: projectChanges.event,
 	});
-}
-
-async function handleResource(message: unknown): Promise<void> {
-	if (!isRecord(message)) {
-		return;
-	}
-	switch (message.type) {
-		case 'openExternal': {
-			const uri = parseUri(message.uri, ['http', 'https']);
-			if (uri) {
-				await vscode.env.openExternal(uri);
+	context.subscriptions.push(
+		projectChanges,
+		{ dispose: () => consumers.clear() },
+		vscode.commands.registerCommand('_vibe-vscode.projectContext.changed', (snapshot: VibeProjectContext) => {
+			if (snapshot?.version === 1 && snapshot.generation > projectGeneration) {
+				projectGeneration = snapshot.generation;
+				projectChanges.fire(freezeProjectContext(snapshot));
 			}
-			return;
-		}
-		case 'openFile': {
-			const uri = parseUri(message.uri, ['file', 'vscode-remote']);
-			if (!uri) {
-				return;
+		}),
+		api.onDidChangeProjectContext(snapshot => {
+			for (const command of consumers.values()) {
+				void vscode.commands.executeCommand(command, snapshot).then(undefined, () => { /* Reconnecting consumers reconcile through getProjectContext. */ });
 			}
-			const line = toNonNegativeInteger(message.line);
-			const character = toNonNegativeInteger(message.character);
-			const document = await vscode.workspace.openTextDocument(uri);
-			await vscode.window.showTextDocument(document, {
-				preview: true,
-				selection: line === undefined ? undefined : new vscode.Range(line, character ?? 0, line, character ?? 0),
-			});
-			return;
-		}
-		case 'openDiff': {
-			const original = parseUri(message.originalUri, ['file', 'vscode-remote', 'git']);
-			const modified = parseUri(message.modifiedUri, ['file', 'vscode-remote', 'git']);
-			if (original && modified) {
-				const title = typeof message.title === 'string' ? message.title : vscode.l10n.t('Sim Changes');
-				await vscode.commands.executeCommand('vscode.diff', original, modified, title);
+		}),
+		vscode.commands.registerCommand('vibe-vscode.projectContext.subscribe', async (subscription: { id?: string; command?: string } | undefined) => {
+			if (!subscription || typeof subscription.id !== 'string' || !/^[\w.-]{1,256}$/.test(subscription.id)
+				|| typeof subscription.command !== 'string' || !/^[\w.-]{1,256}$/.test(subscription.command) || consumers.size >= 256 && !consumers.has(subscription.id)) {
+				throw new Error(vscode.l10n.t("Invalid project context subscription."));
 			}
-			return;
-		}
-		case 'openTerminal': {
-			const cwd = parseUri(message.uri, ['file', 'vscode-remote']);
-			const terminal = vscode.window.createTerminal({ name: vscode.l10n.t('Sim Task'), cwd });
-			terminal.show();
-			return;
-		}
-	}
+			// Register before awaiting readiness; the initial result and events share one generation space.
+			consumers.set(subscription.id, subscription.command);
+			try {
+				return await api.getProjectContext();
+			} catch (error) {
+				if (consumers.get(subscription.id) === subscription.command) { consumers.delete(subscription.id); }
+				throw error;
+			}
+		}),
+		vscode.commands.registerCommand('vibe-vscode.projectContext.unsubscribe', (id: string) => { consumers.delete(id); }),
+	);
+	return api;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parseUri(value: unknown, allowedSchemes: readonly string[]): vscode.Uri | undefined {
-	if (typeof value !== 'string' || !value) {
-		return undefined;
-	}
-	try {
-		const uri = vscode.Uri.parse(value, true);
-		return allowedSchemes.includes(uri.scheme) ? uri : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function toNonNegativeInteger(value: unknown): number | undefined {
-	return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+/** IPC strips freezing; each consumer receives the same read-only contract as the Workbench. */
+function freezeProjectContext(snapshot: VibeProjectContext): VibeProjectContext {
+	return Object.freeze({
+		...snapshot,
+		physicalWorkspace: Object.freeze({
+			...snapshot.physicalWorkspace,
+			folders: Object.freeze(snapshot.physicalWorkspace.folders.map(folder => Object.freeze({ ...folder }))),
+		}),
+		logicalWorkspaces: Object.freeze(snapshot.logicalWorkspaces.map(workspace => Object.freeze({ ...workspace }))),
+		logicalWorkspace: snapshot.logicalWorkspace ? Object.freeze({ ...snapshot.logicalWorkspace }) : undefined,
+		project: snapshot.project ? Object.freeze({ ...snapshot.project }) : undefined,
+	});
 }

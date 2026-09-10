@@ -43,6 +43,14 @@ const commit = getVersion(REPO_ROOT);
 const BUILD_ROOT = path.dirname(REPO_ROOT);
 const REMOTE_FOLDER = path.join(REPO_ROOT, 'remote');
 
+// Ordinary TypeScript compilation remains lightweight. Product packaging owns the
+// locked application/database binaries before the standard extension collector runs.
+const buildNativeSimRuntimeTask = task.define('build-native-sim-runtime', () => new Promise<void>((resolve, reject) => {
+	const child = cp.spawn('bash', [path.join(REPO_ROOT, 'extensions/vibe-sim/native/build.sh')], { cwd: REPO_ROOT, stdio: 'inherit' });
+	child.once('error', reject);
+	child.once('exit', code => code === 0 ? resolve() : reject(new Error(`Native Sim packaging failed (${code})`)));
+}));
+
 // Targets
 
 const BUILD_TARGETS = [
@@ -381,7 +389,8 @@ function packageTask(type: string, platform: string, arch: string, sourceFolderN
 				const manifest = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, extensionPath)).toString());
 				return !isUIExtension(manifest);
 			}).map((extensionPath) => path.basename(path.dirname(extensionPath)))
-			.filter(name => name !== 'vscode-api-tests' && name !== 'vscode-test-resolver'); // Do not ship the test extensions
+			.filter(name => name !== 'vscode-api-tests' && name !== 'vscode-test-resolver') // Do not ship the test extensions
+			.filter(name => name !== 'vibe-sim' || platform === 'linux' && arch === 'x64');
 		const builtInExtensions: Array<{ name: string; platforms?: string[]; clientOnly?: boolean }> = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'product.json'), 'utf8')).builtInExtensions;
 		const marketplaceExtensions = builtInExtensions
 			.filter(entry => !entry.platforms || new Set(entry.platforms).has(platform))
@@ -662,6 +671,7 @@ function tweakProductForServerWeb(product: typeof import('../product.json')) {
 
 			const packageTasks: task.Task[] = [
 				...(type === 'reh-web' ? [task.define(`prepare-web-client-assets${dashed(minified)}`, () => prepareWebClientAssets(sourceFolderName))] : []),
+				...(platform === 'linux' && arch === 'x64' ? [buildNativeSimRuntimeTask] : []),
 				compileNativeExtensionsBuildTask,
 				task.task(`node-${platform}-${arch}`) as task.Task,
 				util.rimraf(path.join(BUILD_ROOT, destinationFolderName)),

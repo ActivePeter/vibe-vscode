@@ -3,10 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { ChildProcess, fork } from 'node:child_process';
+import { ChildProcess, fork, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { InitializeMessage, isInstanceId, isRecord, isRuntimeErrorCode, protocolVersion, RuntimeErrorCode, ShutdownMessage, SimRuntimeError } from './protocol';
+import type { VibeProjectContext } from 'vibe-vscode';
+import { agentProfile } from './agentProfile';
+import { AgentExecutables, AgentKind, AgentPolicy, InitializeMessage, isAgentExecutables, isAgentPolicy, isInstanceId, isNativeConnectionInfo, isRecord, isRuntimeErrorCode, NativeConnectionInfo, protocolVersion, RuntimeErrorCode, ShutdownMessage, SimRuntimeError } from './protocol';
 import { loadRuntimePackage } from './runtimePackage';
 
 export interface RuntimeInfo {
@@ -28,7 +31,10 @@ interface RuntimeOptions {
 	readonly shutdownTimeoutMs?: number;
 	readonly terminateTimeoutMs?: number;
 	readonly killTimeoutMs?: number;
+	readonly projectContextTimeoutMs?: number;
 	readonly onDidChangeStatus?: (status: RuntimeStatus) => void;
+	readonly getAgentExecutables?: () => AgentExecutables;
+	readonly getAgentPolicy?: () => AgentPolicy;
 }
 
 interface RuntimeRun {
@@ -36,11 +42,16 @@ interface RuntimeRun {
 	readonly ready: PromiseWithResolvers<RuntimeInfo>;
 	readonly closed: PromiseWithResolvers<void>;
 	child?: ChildProcess;
+	supervised?: boolean;
+	connection?: NativeConnectionInfo;
+	agentExecutables?: AgentExecutables;
+	agentPolicy?: AgentPolicy;
 	startupTimer?: NodeJS.Timeout;
 	stopRequested: boolean;
 	didClose: boolean;
 	stopPromise?: Promise<void>;
 	failure?: RuntimeErrorCode;
+	readonly contextRequests: Map<string, PromiseWithResolvers<void>>;
 }
 
 /** Do not inherit shared databases, Sim credentials, NODE_OPTIONS or other injection/configuration channels. */
@@ -70,6 +81,36 @@ export class ManagedSimRuntime {
 		return this.currentStatus;
 	}
 
+	/** Only extension-owned adapters use this metadata; public status never includes addresses or credentials. */
+	async getConnection(): Promise<{ readonly info: NativeConnectionInfo; readonly runId: string }> {
+		const ready = await this.start();
+		const run = this.active;
+		if (!run || run.runId !== ready.runId || run.stopRequested || !run.connection) {
+			throw new SimRuntimeError('runtimeExited');
+		}
+		return { info: run.connection, runId: run.runId };
+	}
+
+	/** Explicit login/configuration commands must first acquire the same storage owner as execution. */
+	async getAgentProfile(agent: AgentKind) {
+		const { runId } = await this.start();
+		const run = this.active;
+		if (!run || run.runId !== runId || run.stopRequested) { throw new SimRuntimeError('runtimeExited'); }
+		return agentProfile(this.stateDirectory, agent, run.agentExecutables);
+	}
+
+	/** The storage-lease owner atomically applies the catalog before the UI may publish it. */
+	async updateProjectContext(context: VibeProjectContext, runId: string): Promise<void> {
+		const run = this.active;
+		if (!run || run.runId !== runId || run.stopRequested || this.status.phase !== 'ready' || !run.child?.connected) { throw new SimRuntimeError('runtimeExited'); }
+		const requestId = randomUUID();
+		const applied = Promise.withResolvers<void>();
+		run.contextRequests.set(requestId, applied);
+		const timer = setTimeout(() => this.fail(run, 'storageUnavailable'), this.options.projectContextTimeoutMs ?? 10000);
+		run.child.send({ type: 'projectContext', protocolVersion, runId, requestId, context }, error => { if (error) { this.fail(run, 'runtimeExited'); } });
+		try { await applied.promise; } finally { clearTimeout(timer); run.contextRequests.delete(requestId); }
+	}
+
 	/** Resolves only after the adapter is ready. Concurrent callers share the same readiness barrier. */
 	start(): Promise<RuntimeInfo> {
 		if (this.disposed) {
@@ -80,7 +121,7 @@ export class ManagedSimRuntime {
 		}
 		const run: RuntimeRun = {
 			runId: randomUUID(), ready: Promise.withResolvers<RuntimeInfo>(), closed: Promise.withResolvers<void>(),
-			stopRequested: false, didClose: false,
+			stopRequested: false, didClose: false, contextRequests: new Map(),
 		};
 		this.active = run;
 		run.startupTimer = setTimeout(() => this.fail(run, 'startTimedOut'), this.options.startupTimeoutMs ?? 15000);
@@ -110,19 +151,38 @@ export class ManagedSimRuntime {
 
 	private async launch(run: RuntimeRun): Promise<void> {
 		try {
+			run.agentExecutables = this.options.getAgentExecutables?.();
+			if (run.agentExecutables && !isAgentExecutables(run.agentExecutables)) { throw new SimRuntimeError('invalidProtocol'); }
+			run.agentPolicy = this.options.getAgentPolicy?.();
+			if (run.agentPolicy !== undefined && !isAgentPolicy(run.agentPolicy)) { throw new SimRuntimeError('invalidProtocol'); }
 			const runtimePackage = await loadRuntimePackage(this.extensionDirectory);
+			if (runtimePackage.supervisor && !run.stopRequested && this.active === run) {
+				clearTimeout(run.startupTimer);
+				run.startupTimer = setTimeout(() => this.fail(run, 'startTimedOut'), this.options.startupTimeoutMs ?? 180000);
+				await fs.mkdir(this.stateDirectory, { recursive: true, mode: 0o700 });
+			}
 			// A stop may already have completed while the package was being read. Never revive that run.
 			if (this.active !== run || run.stopRequested) {
 				return;
 			}
-			const child = fork(path.join(__dirname, 'runtimeHost.js'), [], {
+			const options = {
 				cwd: path.dirname(runtimePackage.entrypoint),
 				env: createRuntimeEnvironment(process.env),
-				execArgv: [],
-				stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-			});
+				stdio: ['ignore', 'ignore', 'ignore', 'ipc'] as ['ignore', 'ignore', 'ignore', 'ipc'],
+			};
+			const directory = runtimePackage.supervisor ? await fs.realpath(this.stateDirectory) : this.stateDirectory;
+			if (this.active !== run || run.stopRequested) { return; }
+			const child = runtimePackage.supervisor
+				? spawn(runtimePackage.supervisor, ['--lease-directory', directory, runtimePackage.nodeExecutable!, path.join(__dirname, 'runtimeHost.js')], options)
+				: fork(path.join(__dirname, 'runtimeHost.js'), [], { ...options, execArgv: [] });
+			run.supervised = !!runtimePackage.supervisor;
 			run.child = child;
-			child.once('close', () => this.finish(run));
+			child.once('close', code => {
+				if (run.supervised && !run.stopRequested && (code === 123 || code === 124)) {
+					run.failure = code === 124 ? 'storageBusy' : 'storageUnavailable';
+				}
+				this.finish(run);
+			});
 			child.on('error', () => this.fail(run, 'startFailed'));
 			child.on('message', (message: unknown) => {
 				if (this.active !== run) {
@@ -137,10 +197,17 @@ export class ManagedSimRuntime {
 				}
 				if (message.protocolVersion !== protocolVersion) {
 					this.fail(run, 'invalidProtocol');
+				} else if (message.type === 'projectContextApplied' && typeof message.requestId === 'string') {
+					run.contextRequests.get(message.requestId)?.resolve();
 				} else if (message.type === 'failed' && isRuntimeErrorCode(message.code)) {
 					this.fail(run, message.code);
 				} else if (message.type === 'ready' && isInstanceId(message.instanceId)) {
+					if (message.connection !== undefined && !isNativeConnectionInfo(message.connection)) {
+						this.fail(run, 'invalidProtocol');
+						return;
+					}
 					if (!run.stopRequested && this.status.phase === 'starting') {
+						run.connection = message.connection as NativeConnectionInfo | undefined;
 						clearTimeout(run.startupTimer);
 						this.setStatus({ phase: 'ready', runId: run.runId, instanceId: message.instanceId });
 						run.ready.resolve(Object.freeze({ protocolVersion, runId: run.runId, instanceId: message.instanceId, version: runtimePackage.version }));
@@ -149,8 +216,11 @@ export class ManagedSimRuntime {
 					this.fail(run, 'invalidProtocol');
 				}
 			});
-			const initialize: InitializeMessage = { type: 'initialize', protocolVersion, runId: run.runId, stateDirectory: this.stateDirectory, runtimePackage };
-			child.send(initialize, error => { if (error) { this.fail(run, 'startFailed'); } });
+			const initialize: InitializeMessage = { type: 'initialize', protocolVersion, runId: run.runId, stateDirectory: this.stateDirectory, runtimePackage, agentExecutables: run.agentExecutables, agentPolicy: run.agentPolicy };
+			child.send(initialize, error => {
+				// A native lease refusal closes IPC before initialize. Its authoritative exit code wins.
+				if (error && !run.supervised) { this.fail(run, 'startFailed'); }
+			});
 		} catch (error) {
 			this.fail(run, error instanceof SimRuntimeError ? error.code : 'startFailed');
 		}
@@ -176,6 +246,8 @@ export class ManagedSimRuntime {
 		const stopped = Promise.withResolvers<void>();
 		run.stopPromise = stopped.promise;
 		run.stopRequested = true;
+		for (const pending of run.contextRequests.values()) { pending.reject(new SimRuntimeError(run.failure ?? 'cancelled')); }
+		run.contextRequests.clear();
 		clearTimeout(run.startupTimer);
 		run.ready.reject(new SimRuntimeError(run.failure ?? 'cancelled'));
 		this.setStatus({ phase: 'stopping', runId: run.runId, error: run.failure });
@@ -193,15 +265,17 @@ export class ManagedSimRuntime {
 			const message: ShutdownMessage = { type: 'shutdown', protocolVersion, runId: run.runId };
 			child.send(message, () => { /* A closing IPC channel is covered by the exit barrier below. */ });
 		}
-		if (await this.waitForClose(run, this.options.shutdownTimeoutMs ?? 1500)) {
+		if (await this.waitForClose(run, this.options.shutdownTimeoutMs ?? (run.supervised ? 20000 : 1500))) {
 			return;
 		}
 		// Never look up a port/PID or signal another process. These handles came from our own fork.
 		try { child.kill('SIGTERM'); } catch { /* Confirm exit even when signalling fails. */ }
-		if (await this.waitForClose(run, this.options.terminateTimeoutMs ?? 500)) {
+		if (await this.waitForClose(run, this.options.terminateTimeoutMs ?? (run.supervised ? 5000 : 500))) {
 			return;
 		}
-		try { child.kill('SIGKILL'); } catch { /* A live child must remain owned after a timeout. */ }
+		if (!run.supervised) {
+			try { child.kill('SIGKILL'); } catch { /* A live child must remain owned after a timeout. */ }
+		}
 		if (!await this.waitForClose(run, this.options.killTimeoutMs ?? 1000)) {
 			run.failure = 'stopTimedOut';
 			this.setStatus({ phase: 'failed', runId: run.runId, error: run.failure });
@@ -233,10 +307,12 @@ export class ManagedSimRuntime {
 			return;
 		}
 		if (!run.stopRequested) {
-			run.failure = 'runtimeExited';
+			run.failure ??= 'runtimeExited';
 		}
 		run.ready.reject(new SimRuntimeError(run.failure ?? 'cancelled'));
 		this.active = undefined;
+		for (const pending of run.contextRequests.values()) { pending.reject(new SimRuntimeError(run.failure ?? 'runtimeExited')); }
+		run.contextRequests.clear();
 		this.setStatus(run.failure ? { phase: 'failed', runId: run.runId, error: run.failure } : { phase: 'stopped' });
 	}
 }

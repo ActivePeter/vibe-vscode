@@ -9,6 +9,7 @@ import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { describe, it, type TestContext } from 'node:test';
 import { runInNewContext } from 'node:vm';
+import type { VibeProjectContext } from 'vibe-vscode';
 import type { InitializeMessage, ShutdownMessage } from '../src/protocol.ts';
 import { bundle, createFixture, waitFor } from './testUtils.mts';
 
@@ -17,11 +18,11 @@ const require = createRequire(import.meta.url);
 
 class FakeChild extends EventEmitter {
 	connected = true;
-	readonly messages: (InitializeMessage | ShutdownMessage)[] = [];
+	readonly messages: (InitializeMessage | ShutdownMessage | { type: 'projectContext'; runId: string; requestId: string })[] = [];
 	readonly signals: string[] = [];
 	closeOnShutdown = true;
 
-	send(message: InitializeMessage | ShutdownMessage, callback: (error: Error | null) => void): boolean {
+	send(message: (typeof this.messages)[number], callback: (error: Error | null) => void): boolean {
 		this.messages.push(message);
 		callback(null);
 		if (message.type === 'shutdown' && this.closeOnShutdown) {
@@ -49,7 +50,7 @@ async function create(t: TestContext) {
 		require: (name: string) => name === 'node:child_process' ? { fork: () => child } : require(name),
 	}) as typeof import('../src/managedRuntime.ts');
 	const runtime = new exports.ManagedSimRuntime(fixture.extensionDirectory, fixture.root, {
-		shutdownTimeoutMs: 5, terminateTimeoutMs: 5, killTimeoutMs: 5,
+		shutdownTimeoutMs: 5, terminateTimeoutMs: 5, killTimeoutMs: 5, projectContextTimeoutMs: 30,
 	});
 	fixture.beforeCleanup(async () => { child.close(); await runtime.dispose(); });
 	return {
@@ -62,6 +63,24 @@ async function create(t: TestContext) {
 }
 
 describe('Sim parent lifecycle boundary failures', () => {
+	it('does not publish a project write before its matching acknowledgement and fails closed on timeout', async t => {
+		const { runtime, child, initialized } = await create(t);
+		const started = runtime.start(); const { runId } = await initialized();
+		child.emit('message', { type: 'ready', protocolVersion: 1, runId, instanceId: randomUUID() });
+		await started;
+		const snapshot: VibeProjectContext = { version: 1, generation: 1, physicalWorkspace: { id: 'physical', name: 'Project', remoteAuthority: '', folders: [] }, logicalWorkspaces: [] };
+		let applied = false;
+		const update = runtime.updateProjectContext(snapshot, runId).then(() => { applied = true; });
+		const request = child.messages.find(message => message.type === 'projectContext')!;
+		child.emit('message', { type: 'projectContextApplied', protocolVersion: 1, runId: randomUUID(), requestId: 'requestId' in request ? request.requestId : '' });
+		await Promise.resolve(); assert.equal(applied, false);
+		child.emit('message', { ...request, type: 'projectContextApplied', protocolVersion: 1 });
+		await update;
+		await assert.rejects(runtime.updateProjectContext({ ...snapshot, generation: 2 }, runId), { code: 'storageUnavailable' });
+		await runtime.stop();
+		assert.deepStrictEqual({ applied, phase: runtime.status.phase, error: runtime.status.error }, { applied: true, phase: 'failed', error: 'storageUnavailable' });
+	});
+
 	it('handles a child error event and joins its exit instead of leaking a pending start', async t => {
 		const { runtime, child, initialized } = await create(t);
 		const rejected = assert.rejects(runtime.start(), { code: 'startFailed' });

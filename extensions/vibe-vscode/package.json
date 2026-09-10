@@ -11,15 +11,17 @@
   "categories": [
     "Other"
   ],
+  "main": "./dist/browser/extension.js",
   "browser": "./dist/browser/extension.js",
+  "types": "./api.d.ts",
   "l10n": "./l10n",
   "extensionKind": [
     "ui"
   ],
   "activationEvents": [
-    "onCommand:_vibe-vscode.sim.getContext",
-    "onCommand:_vibe-vscode.sim.resource",
-    "onWebviewPanel:vibe-vscode.sim.editor"
+    "onCommand:_vibe-vscode.projectContext.changed",
+    "onCommand:vibe-vscode.projectContext.subscribe",
+    "onCommand:vibe-vscode.projectContext.unsubscribe"
   ],
   "capabilities": {
     "virtualWorkspaces": true,

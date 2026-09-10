@@ -9,6 +9,7 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { buildSync } from 'esbuild';
+import type { VibeProjectContext } from 'vibe-vscode';
 
 const compiled = buildSync({
 	entryPoints: [fileURLToPath(new URL('../src/extension.ts', import.meta.url))],
@@ -16,73 +17,112 @@ const compiled = buildSync({
 }).outputFiles[0].text;
 
 function create() {
-	const commands = new Map<string, (message?: unknown) => Promise<void>>();
+	const commands = new Map<string, (message?: unknown) => unknown>();
 	const calls: { command: string; args: unknown[] }[] = [];
-	let restore: ((panel: { dispose(): void }, state: unknown) => Promise<void>) | undefined;
-	let activeChanged: ((editor?: typeof editor) => void) | undefined;
-	const editor = {
-		document: { uri: { toString: () => 'file:///example.ts' } },
-		selection: { start: { line: 2, character: 3 }, end: { line: 4, character: 5 } },
+	const snapshot: VibeProjectContext = {
+		version: 1, generation: 1,
+		physicalWorkspace: { id: 'physical', name: 'Example', remoteAuthority: '', folders: [{ name: 'Example', uri: 'file:///project', index: 0 }] },
+		logicalWorkspaces: [{ id: 'logical', name: 'Work' }],
+		logicalWorkspace: { id: 'logical', name: 'Work' },
+		project: { name: 'Example', uri: 'file:///project' },
 	};
-	const disposable = { dispose() { } };
+	let read = async () => snapshot;
 	const vscode = {
-		env: { language: 'en', openExternal: async (uri: object) => { calls.push({ command: 'external', args: [uri] }); } },
-		l10n: { t: (value: string) => value },
-		Uri: { parse: (value: string) => ({ scheme: value.split(':')[0], value }) },
-		commands: {
-			registerCommand: (id: string, handler: (message?: unknown) => Promise<void>) => { commands.set(id, handler); return disposable; },
-			executeCommand: async (command: string, ...args: unknown[]) => { calls.push({ command, args: JSON.parse(JSON.stringify(args)) }); },
+		EventEmitter: class<T> {
+			private readonly listeners = new Set<(event: T) => void>();
+			readonly event = (listener: (event: T) => void) => {
+				this.listeners.add(listener);
+				return { dispose: () => this.listeners.delete(listener) };
+			};
+			fire(value: T) { for (const listener of this.listeners) { listener(value); } }
+			dispose() { this.listeners.clear(); }
 		},
-		window: {
-			activeTextEditor: editor as typeof editor | undefined,
-			registerWebviewPanelSerializer: (_id: string, serializer: { deserializeWebviewPanel: typeof restore }) => { restore = serializer.deserializeWebviewPanel; return disposable; },
-			onDidChangeActiveTextEditor: (callback: typeof activeChanged) => { activeChanged = callback; return disposable; },
-			onDidChangeTextEditorSelection: () => disposable,
+		l10n: { t: (value: string) => value },
+		commands: {
+			registerCommand: (id: string, handler: (message?: unknown) => unknown) => {
+				commands.set(id, handler);
+				return { dispose: () => commands.delete(id) };
+			},
+			executeCommand: async (command: string, ...args: unknown[]) => {
+				calls.push({ command, args: structuredClone(args) });
+				return command === 'vibe-vscode.getProjectContext' ? read() : undefined;
+			},
 		},
 	};
 	const extension = runInNewContext(`${compiled}\nmodule.exports;`, {
 		module: { exports: {} }, require: (name: string) => { assert.strictEqual(name, 'vscode'); return vscode; },
 	}) as typeof import('../src/extension.ts');
 	const context: Pick<Parameters<typeof extension.activate>[0], 'subscriptions'> = { subscriptions: [] };
-	extension.activate(context as Parameters<typeof extension.activate>[0]);
-	return { commands, calls, restore: restore!, vscode, activeChanged: activeChanged! };
+	const api = extension.activate(context as Parameters<typeof extension.activate>[0]);
+	return {
+		commands, calls, api, snapshot,
+		setRead: (handler: typeof read) => { read = handler; },
+		dispose: () => { for (const subscription of context.subscriptions) { subscription.dispose(); } },
+	};
 }
 
-describe('Sim extension capability adapter', () => {
-	it('does not contribute a competing Webview surface or public commands', () => {
+describe('Vibe public project context API', () => {
+	it('owns only the public context contract, without any Sim UI or private capability adapter', () => {
 		const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 		assert.deepStrictEqual({ contributes: manifest.contributes, proposals: manifest.enabledApiProposals, commands: [...create().commands.keys()] }, {
-			contributes: undefined, proposals: undefined, commands: ['_vibe-vscode.sim.getContext', '_vibe-vscode.sim.resource'],
+			contributes: undefined, proposals: undefined,
+			commands: ['_vibe-vscode.projectContext.changed', 'vibe-vscode.projectContext.subscribe', 'vibe-vscode.projectContext.unsubscribe'],
 		});
 	});
 
-	it('migrates the saved route to the native editor before closing the legacy panel', async () => {
-		const { restore, calls } = create();
-		await restore({ dispose: () => calls.push({ command: 'dispose', args: [] }) }, { path: '/workspace/existing/chat' });
-		assert.deepStrictEqual(calls.slice(-2), [
-			{ command: 'vibe-vscode.openSim', args: ['/workspace/existing/chat'] },
-			{ command: 'dispose', args: [] },
-		]);
-	});
-
-	it('keeps the last text selection when Sim takes focus', () => {
-		const { vscode, activeChanged, calls } = create();
-		vscode.window.activeTextEditor = undefined;
-		activeChanged(undefined);
-		assert.deepStrictEqual(calls.at(-1), {
-			command: '_vibe-vscode.sim.updateContext', args: [{
-				language: 'en', activeFile: { uri: 'file:///example.ts', selection: { startLine: 2, startCharacter: 3, endLine: 4, endCharacter: 5 } },
-			}],
+	it('returns an immutable ready snapshot to same-host exports and cross-host commands', async () => {
+		const { api, commands, snapshot } = create();
+		const direct = await api.getProjectContext();
+		const remote = await commands.get('vibe-vscode.projectContext.subscribe')!({ id: 'consumer', command: 'consumer.changed' }) as VibeProjectContext;
+		assert.deepStrictEqual({ direct: structuredClone(direct), remote: structuredClone(remote), frozen: [Object.isFrozen(direct), Object.isFrozen(remote.physicalWorkspace.folders[0]), Object.isFrozen(remote.logicalWorkspaces)] }, {
+			direct: snapshot, remote: snapshot, frozen: [true, true, true],
 		});
 	});
 
-	it('rejects arbitrary commands and non-HTTP external URLs', async () => {
-		const { commands, calls } = create();
-		const resource = commands.get('_vibe-vscode.sim.resource')!;
-		await resource({ type: 'executeCommand', command: 'workbench.action.terminal.new' });
-		await resource({ type: 'openExternal', uri: 'command:unsafe' });
-		await resource({ type: 'openExternal', uri: {} });
-		await resource({ type: 'openExternal', uri: 'https://example.invalid' });
-		assert.deepStrictEqual(calls.filter(call => call.command !== '_vibe-vscode.sim.updateContext').map(call => call.command), ['external']);
+	it('subscribes before readiness and preserves the initiating snapshot while newer events arrive', async () => {
+		const { api, commands, calls, snapshot, setRead } = create();
+		const gate = Promise.withResolvers<VibeProjectContext>();
+		setRead(() => gate.promise);
+		const received: number[] = [];
+		api.onDidChangeProjectContext(value => received.push(value.generation));
+		const pending = commands.get('vibe-vscode.projectContext.subscribe')!({ id: 'consumer', command: 'consumer.changed' });
+		commands.get('_vibe-vscode.projectContext.changed')!({ ...snapshot, generation: 3 });
+		gate.resolve(snapshot);
+		const initial = await pending as VibeProjectContext;
+		commands.get('_vibe-vscode.projectContext.changed')!({ ...snapshot, generation: 2 });
+		commands.get('vibe-vscode.projectContext.unsubscribe')!('consumer');
+		commands.get('_vibe-vscode.projectContext.changed')!({ ...snapshot, generation: 4 });
+		assert.deepStrictEqual({ initial: initial.generation, received, remote: calls.filter(call => call.command === 'consumer.changed').map(call => (call.args[0] as VibeProjectContext).generation) }, {
+			initial: 1, received: [3, 4], remote: [3],
+		});
+	});
+
+	it('does not regress events behind an authoritative initial read', async () => {
+		const { api, commands, snapshot, setRead } = create();
+		const received: number[] = [];
+		api.onDidChangeProjectContext(value => received.push(value.generation));
+		setRead(async () => ({ ...snapshot, generation: 5 }));
+		await api.getProjectContext();
+		for (const generation of [4, 5, 6]) { commands.get('_vibe-vscode.projectContext.changed')!({ ...snapshot, generation }); }
+		assert.deepStrictEqual(received, [6]);
+	});
+
+	it('rejects malformed subscriptions and removes failed initial subscriptions', async () => {
+		const { commands, calls, snapshot, setRead } = create();
+		const subscribe = commands.get('vibe-vscode.projectContext.subscribe')!;
+		for (const input of [undefined, {}, { id: 'x', command: '' }, { id: '/path', command: 'consumer.changed' }]) {
+			await assert.rejects(Promise.resolve(subscribe(input)), /Invalid project context subscription/);
+		}
+		setRead(async () => { throw new Error('authority unavailable'); });
+		await assert.rejects(Promise.resolve(subscribe({ id: 'consumer', command: 'consumer.changed' })), /authority unavailable/);
+		commands.get('_vibe-vscode.projectContext.changed')!({ ...snapshot, generation: 2 });
+		assert.deepStrictEqual(calls.map(call => call.command), ['vibe-vscode.getProjectContext']);
+	});
+
+	it('disposes subscriptions without starting or stopping consumer services', async () => {
+		const { commands, calls, dispose } = create();
+		await commands.get('vibe-vscode.projectContext.subscribe')!({ id: 'consumer', command: 'consumer.changed' });
+		dispose();
+		assert.deepStrictEqual({ commands: commands.size, calls: calls.map(call => call.command) }, { commands: 0, calls: ['vibe-vscode.getProjectContext'] });
 	});
 });

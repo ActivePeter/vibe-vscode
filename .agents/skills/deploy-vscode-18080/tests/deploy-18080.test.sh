@@ -223,6 +223,15 @@ grep -Fq -- '"$STAGING_RUNTIME_ROOT" "$release_id" "$(git -C "$SOURCE_ROOT" rev-
 		fail_test 'candidate without authentication metadata was accepted'
 	fi
 	printf '{"authentication":"embedded-cli-v1"}\n' > "$runtime_root/vibe-release.json"
+	if validate_candidate_runtime_root "$runtime_root"; then
+		fail_test 'candidate without a complete native Sim package was accepted'
+	fi
+	mkdir -p "$runtime_root/extensions/vibe-sim/dist"
+	printf 'process.exit(1);\n' > "$runtime_root/extensions/vibe-sim/dist/verifyRuntime.js"
+	if validate_candidate_runtime_root "$runtime_root"; then
+		fail_test 'candidate with a failed native Sim preflight was accepted'
+	fi
+	printf 'process.exit(0);\n' > "$runtime_root/extensions/vibe-sim/dist/verifyRuntime.js"
 	validate_candidate_runtime_root "$runtime_root" || fail_test 'complete runtime failed the shared launcher preflight'
 	mv "$runtime_root/out/vs/code/browser/workbench/workbench.html" "$runtime_root/out/vs/code/browser/workbench/workbench-dev.html"
 	validate_candidate_runtime_root "$runtime_root" || fail_test 'source layout failed the shared runtime contract'

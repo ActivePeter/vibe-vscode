@@ -13,17 +13,6 @@
 		default {http.request.header.X-Forwarded-Host}
 	}
 
-	@simStatus path /sim/__vibe_status
-	@simRealtime path /socket.io /socket.io/*
-	@simApp path \
- /sim /sim/* \
- /_next/* /api /api/* \
- /workspace /workspace/* /plan-graph-demo /plan-graph-demo/* \
- /login /signup /invite/* /account/* /organization/* /selfhost/* \
- /oauth-* /oauth/* /desktop/* /cli/* /upgrade /playground \
- /chat/* /resume/* /w/* /f/* /ingest/* \
- /manifest.webmanifest /icon.svg /favicon/* /logo/* /landing/* /footer/* /social/* /enterprise/* /twitter/*
-
 	@authentication path {$VIBE_VSCODE_AUTH_PATH} {$VIBE_VSCODE_AUTH_PATH}/*
 	handle @authentication {
 		reverse_proxy {$VIBE_VSCODE_AUTH_ADDRESS} {
@@ -52,41 +41,6 @@
 			}
 			@renewedSession header X-Vibe-Auth-Set-Cookie *
 			header @renewedSession +Set-Cookie {http.request.header.X-Vibe-Auth-Set-Cookie}
-
-			# Sim and VS Code share the same authentication boundary, including upgrades.
-			handle @simStatus {
-				rewrite * /api/status
-				reverse_proxy {$VIBE_SIM_BACKEND_ADDRESS:127.0.0.1:3300} {
-					header_up X-Vibe-Vscode-Embed 1
-					header_up X-Forwarded-Proto https
-					header_up X-Forwarded-Host {vibe_public_host}
-					header_up -X-Vibe-Auth-Set-Cookie
-					header_down Access-Control-Allow-Origin *
-					header_down -Access-Control-Allow-Credentials
-					header_down Cache-Control "no-store"
-				}
-			}
-
-			handle @simRealtime {
-				reverse_proxy {$VIBE_SIM_REALTIME_BACKEND_ADDRESS:127.0.0.1:3002} {
-					header_up X-Forwarded-Proto https
-					header_up X-Forwarded-Host {vibe_public_host}
-					header_up -X-Vibe-Auth-Set-Cookie
-				}
-			}
-
-			handle @simApp {
-				uri strip_prefix /sim
-				reverse_proxy {$VIBE_SIM_BACKEND_ADDRESS:127.0.0.1:3300} {
-					header_up X-Vibe-Vscode-Embed 1
-					header_up X-Forwarded-Proto https
-					header_up X-Forwarded-Host {vibe_public_host}
-					header_up -X-Vibe-Auth-Set-Cookie
-					header_down -X-Frame-Options
-					header_down Cross-Origin-Embedder-Policy unsafe-none
-					header_down Cross-Origin-Opener-Policy unsafe-none
-				}
-			}
 
 			handle {
 				reverse_proxy {$VIBE_VSCODE_BACKEND_ADDRESS} {

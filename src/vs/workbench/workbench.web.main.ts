@@ -156,7 +156,6 @@ import './contrib/welcomeBanner/browser/welcomeBanner.contribution.js';
 
 // Hosted instance authentication
 import './contrib/vibeAuthentication/browser/vibeAuthentication.contribution.js';
-import './contrib/sim/browser/sim.contribution.js';
 
 // Webview
 import './contrib/webview/browser/webview.web.contribution.js';

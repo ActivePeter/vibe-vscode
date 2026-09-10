@@ -45,6 +45,19 @@ export async function loadRuntimePackage(extensionDirectory: string): Promise<Ru
 		if (!isInside(runtime, entrypoint) || !(await fs.stat(entrypoint)).isFile()) {
 			throw new SimRuntimeError('invalidPackage');
 		}
+		if (value.supervisor !== undefined) {
+			if (process.platform !== 'linux' || process.arch !== 'x64') { throw new SimRuntimeError('unsupportedPlatform'); }
+			if (value.supervisor !== './bin/process-supervisor' || value.node !== './bin/node') {
+				throw new SimRuntimeError('invalidPackage');
+			}
+			const supervisor = await fs.realpath(path.join(runtime, value.supervisor));
+			const nodeExecutable = await fs.realpath(path.join(runtime, value.node));
+			for (const executable of [supervisor, nodeExecutable]) {
+				const metadata = await fs.stat(executable);
+				if (!isInside(runtime, executable) || !metadata.isFile() || !(metadata.mode & 0o111)) { throw new SimRuntimeError('invalidPackage'); }
+			}
+			return Object.freeze({ entrypoint, version: value.version, supervisor, nodeExecutable });
+		}
 		return Object.freeze({ entrypoint, version: value.version });
 	} catch (error) {
 		if (error instanceof SimRuntimeError) {

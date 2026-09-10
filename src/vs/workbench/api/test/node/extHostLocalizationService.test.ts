@@ -82,14 +82,12 @@ suite('ExtHostLocalizationService', () => {
 		await service.initializeLocalizedMessages(createBuiltInExtension());
 
 		assert.deepStrictEqual({
-			title: service.getMessage(extensionId, { message: 'vibe vscode fullscreen panel' }),
-			description: service.getMessage(extensionId, { message: 'The privileged fullscreen host is active. vibe vscode interfaces can now be mounted in this surface.' }),
-			close: service.getMessage(extensionId, { message: 'Close' }),
+			changes: service.getMessage(extensionId, { message: 'Sim Changes' }),
+			task: service.getMessage(extensionId, { message: 'Sim Task' }),
 			fetchedUris,
 		}, {
-			title: 'vibe vscode 全屏面板',
-			description: '受信任的全屏宿主已激活。现在可以在此界面中挂载 vibe vscode 功能。',
-			close: '关闭',
+			changes: 'Sim 变更',
+			task: 'Sim 任务',
 			fetchedUris: [URI.joinPath(extensionLocation, 'l10n', 'bundle.l10n.zh-cn.json').toString()],
 		});
 	});

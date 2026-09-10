@@ -43,7 +43,8 @@ function create() {
 	const extension = runInNewContext(`${compiled}\nmodule.exports;`, {
 		module: { exports: {} }, require: (name: string) => { assert.strictEqual(name, 'vscode'); return vscode; },
 	}) as typeof import('../src/extension.ts');
-	extension.activate({ subscriptions: [] } as Parameters<typeof extension.activate>[0]);
+	const context: Pick<Parameters<typeof extension.activate>[0], 'subscriptions'> = { subscriptions: [] };
+	extension.activate(context as Parameters<typeof extension.activate>[0]);
 	return { commands, calls, restore: restore!, vscode, activeChanged: activeChanged! };
 }
 

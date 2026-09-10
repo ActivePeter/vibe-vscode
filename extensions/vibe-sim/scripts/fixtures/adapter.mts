@@ -7,8 +7,9 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { setTimeout } from 'node:timers/promises';
+import type { SimRuntimeAdapter } from '../../src/protocol.ts';
 
-export async function start({ stateDirectory, instanceId, signal }) {
+export async function start({ stateDirectory, instanceId, signal }: Parameters<SimRuntimeAdapter['start']>[0]): ReturnType<SimRuntimeAdapter['start']> {
 	const { mode } = JSON.parse(await fs.readFile(path.join(stateDirectory, 'control.json'), 'utf8'));
 	await fs.appendFile(path.join(stateDirectory, 'starts.jsonl'), JSON.stringify({
 		instanceId, pid: process.pid, execArgv: process.execArgv,

@@ -4,16 +4,18 @@
  *--------------------------------------------------------------------------------------------*/
 
 // An intentionally misbehaving child validates the parent's late-message guard independently.
-const { randomUUID } = require('node:crypto');
-const { writeFileSync } = require('node:fs');
-const { join } = require('node:path');
-let request;
-process.on('message', message => {
+import { randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { InitializeMessage, ShutdownMessage } from '../../src/protocol.ts';
+
+let request: InitializeMessage;
+process.on('message', (message: InitializeMessage | ShutdownMessage) => {
 	if (message.type === 'initialize') {
 		request = message;
 		writeFileSync(join(message.stateDirectory, 'late-host-started'), String(process.pid));
 	} else if (message.type === 'shutdown') {
-		process.send({ type: 'ready', protocolVersion: 1, runId: request.runId, instanceId: randomUUID() });
+		process.send!({ type: 'ready', protocolVersion: 1, runId: request.runId, instanceId: randomUUID() });
 		setTimeout(() => process.exit(0), 50);
 	}
 });

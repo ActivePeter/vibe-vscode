@@ -9,7 +9,6 @@ import { once } from 'node:events';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import { createFixture, exists, processExited, starts, waitFor } from './testUtils.mts';
 
 describe('Sim runtime lifecycle with real private child processes', { skip: process.platform !== 'linux', timeout: 60000 }, () => {
@@ -111,7 +110,7 @@ describe('Sim runtime lifecycle with real private child processes', { skip: proc
 
 	it('ignores an actual ready IPC message sent after shutdown was requested', async t => {
 		const fixture = await createFixture(t);
-		await fs.copyFile(new URL('./fixtures/lateHost.cjs', import.meta.url), path.join(fixture.distDirectory, 'runtimeHost.js'));
+		await fs.writeFile(path.join(fixture.distDirectory, 'runtimeHost.js'), fixture.lateHostBundle);
 		const phases: string[] = [];
 		const { runtime, stateDirectory } = await fixture.createRuntime('workspace-a', 'ready', { onDidChangeStatus: status => phases.push(status.phase) });
 		const rejected = assert.rejects(runtime.start(), { code: 'cancelled' });
@@ -209,7 +208,7 @@ describe('Sim runtime lifecycle with real private child processes', { skip: proc
 		it(`cleans up after Extension Host IPC disconnect (${mode}), without deactivate`, async t => {
 			const fixture = await createFixture(t);
 			const { runtime, stateDirectory } = await fixture.createRuntime('workspace-a', mode);
-			const parent = fork(fileURLToPath(new URL('./fixtures/parent.mjs', import.meta.url)), [path.join(fixture.distDirectory, 'manager.cjs'), fixture.extensionDirectory, stateDirectory], {
+			const parent = fork(path.join(fixture.distDirectory, 'parent.mjs'), [path.join(fixture.distDirectory, 'manager.cjs'), fixture.extensionDirectory, stateDirectory], {
 				execArgv: ['--conditions=fixture-parent'], stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
 				env: { ...process.env, DATABASE_URL: 'shared-fixture', REDIS_URL: 'shared-fixture', SIM_TOKEN: 'shared-fixture', NODE_OPTIONS: '--conditions=fixture-parent' },
 			});

@@ -28,6 +28,17 @@ const hostBundle = bundle('runtimeHost');
 const managerBundle = bundle('managedRuntime');
 const packageBundle = bundle('runtimePackage');
 
+function bundleFixture(name: string, format: 'esm' | 'cjs'): string {
+	return buildSync({
+		entryPoints: [fileURLToPath(new URL(`./fixtures/${name}.mts`, import.meta.url))],
+		bundle: true, platform: 'node', format, write: false,
+	}).outputFiles[0].text;
+}
+
+const adapterBundle = bundleFixture('adapter', 'esm');
+const parentBundle = bundleFixture('parent', 'esm');
+const lateHostBundle = bundleFixture('lateHost', 'cjs');
+
 export async function waitFor(condition: () => boolean | Promise<boolean>, description: string, timeout = 5000): Promise<void> {
 	const deadline = Date.now() + timeout;
 	while (!await condition()) {
@@ -69,15 +80,16 @@ export async function createFixture(t: TestContext) {
 	await fs.mkdir(distDirectory);
 	await Promise.all([
 		fs.writeFile(path.join(runtimeDirectory, 'sim-runtime.json'), JSON.stringify({ protocolVersion: 1, version: '0.0.1-test', entrypoint: './adapter.mjs' })),
-		fs.copyFile(new URL('./fixtures/adapter.mjs', import.meta.url), path.join(runtimeDirectory, 'adapter.mjs')),
+		fs.writeFile(path.join(runtimeDirectory, 'adapter.mjs'), adapterBundle),
 		fs.writeFile(path.join(distDirectory, 'runtimeHost.js'), hostBundle),
 		fs.writeFile(path.join(distDirectory, 'manager.cjs'), managerBundle),
 		fs.writeFile(path.join(distDirectory, 'package.cjs'), packageBundle),
+		fs.writeFile(path.join(distDirectory, 'parent.mjs'), parentBundle),
 	]);
 	const { ManagedSimRuntime: Manager, createRuntimeEnvironment } = require(path.join(distDirectory, 'manager.cjs')) as typeof import('../src/managedRuntime.ts');
 	const { loadRuntimePackage } = require(path.join(distDirectory, 'package.cjs')) as typeof import('../src/runtimePackage.ts');
 	return {
-		root, extensionDirectory, runtimeDirectory, distDirectory, loadRuntimePackage, createRuntimeEnvironment,
+		root, extensionDirectory, runtimeDirectory, distDirectory, loadRuntimePackage, createRuntimeEnvironment, lateHostBundle,
 		async createRuntime(name = 'workspace-a', mode = 'ready', options: ConstructorParameters<typeof Manager>[2] = {}) {
 			const stateDirectory = path.join(root, name);
 			await fs.mkdir(stateDirectory, { recursive: true });
